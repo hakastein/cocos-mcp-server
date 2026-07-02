@@ -221,9 +221,52 @@ export class SceneTools implements ToolExecutor {
     }
 
     private async saveSceneAs(path: string): Promise<ToolResponse> {
+        // NOTE: the editor's `scene/save-as-scene` channel only opens the native file
+        // dialog (and blocks until dismissed), so it is unusable headlessly. There is also
+        // no `scene/serialize` message in 3.8.x. Instead we flush the current scene to its
+        // own file and copy that file to the target path via the asset database.
         try {
-            await (Editor.Message.request as any)('scene', 'save-as-scene');
-            return { success: true, data: { path, message: 'Scene save-as dialog opened' } };
+            if (!path || !path.startsWith('db://')) {
+                return {
+                    success: false,
+                    error: 'save_scene_as requires a db:// target path, e.g. db://assets/scenes/MyScene.scene'
+                };
+            }
+            const targetPath = path.endsWith('.scene') ? path : `${path}.scene`;
+
+            // Flush in-memory edits so the copy reflects the current scene state.
+            // (This also writes the current scene's own file, as a real "Save As" does.)
+            await Editor.Message.request('scene', 'save-scene');
+
+            // Resolve the current scene's source url from its (runtime) root uuid.
+            const tree: any = await Editor.Message.request('scene', 'query-node-tree');
+            const sceneUuid: string | undefined = tree?.uuid;
+            const sourceUrl: string | null = sceneUuid
+                ? await Editor.Message.request('asset-db', 'query-url', sceneUuid).catch(() => null)
+                : null;
+            if (!sourceUrl) {
+                return { success: false, error: 'Could not resolve the current scene source file to copy from' };
+            }
+            if (sourceUrl === targetPath) {
+                return { success: true, data: { path: targetPath, message: 'Target equals current scene; saved in place' } };
+            }
+
+            // Copy the scene asset directly to the target (overwrite if it exists) — no dialog.
+            const existing: string | null = await Editor.Message.request('asset-db', 'query-uuid', targetPath).catch(() => null);
+            const result: any = await (Editor.Message.request as any)(
+                'asset-db', 'copy-asset', sourceUrl, targetPath, { overwrite: true }
+            );
+
+            return {
+                success: true,
+                data: {
+                    path: result?.url ?? targetPath,
+                    uuid: result?.uuid ?? null,
+                    source: sourceUrl,
+                    overwritten: !!existing,
+                    message: `Scene saved to ${targetPath} (headless copy of ${sourceUrl}, no dialog)`
+                }
+            };
         } catch (err: any) {
             return { success: false, error: err.message };
         }
