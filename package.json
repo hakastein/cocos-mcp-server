@@ -101,6 +101,7 @@
             "script": "./dist/scene.js",
             "methods": [
                 "createNewScene",
+                "evalInScene",
                 "addComponentToNode",
                 "removeComponentFromNode",
                 "getNodeInfo",

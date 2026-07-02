@@ -191,11 +191,18 @@ export class DebugTools implements ToolExecutor {
 
     private async executeScript(script: string): Promise<ToolResponse> {
         try {
-            const result = await Editor.Message.request('scene', 'execute-scene-script', {
-                name: 'console',
-                method: 'eval',
+            // Route through OUR own registered scene-script method rather than the
+            // editor-internal `console` package (which is missing in some 3.8.x builds
+            // and returns "Scenario scripts do not exist: console").
+            const result: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'evalInScene',
                 args: [script]
             });
+            // evalInScene already returns a ToolResponse-shaped object; pass it through.
+            if (result && typeof result === 'object' && 'success' in result) {
+                return result;
+            }
             return { success: true, data: { result, message: 'Script executed successfully' } };
         } catch (err: any) {
             return { success: false, error: err.message };

@@ -237,6 +237,34 @@ export const methods: { [key: string]: (...any: any) => any } = {
         }
     },
 
+    // Evaluate arbitrary JavaScript in the scene (engine) context, where the `cc`
+    // module and the live `director`/scene are available. This replaces the previous
+    // dependency on the editor-internal `console` scene package (whose `eval` method
+    // is not present in every 3.8.x build — the source of the
+    // "Scenario scripts do not exist: console" error).
+    evalInScene(code: string) {
+        try {
+            const cc = require('cc');
+            const { director } = cc;
+            const scene = director.getScene();
+            // `cc`, `director` and `scene` are in scope for the evaluated code.
+            void scene;
+            // eslint-disable-next-line no-eval
+            const result = eval(code);
+            // Only return JSON-serialisable results across the IPC boundary.
+            let data: any;
+            try {
+                JSON.stringify(result);
+                data = result;
+            } catch {
+                data = result === undefined ? undefined : String(result);
+            }
+            return { success: true, data: { result: data } };
+        } catch (error: any) {
+            return { success: false, error: error.message, stack: error.stack };
+        }
+    },
+
     setComponentProperty(nodeUuid: string, componentType: string, property: string, value: any) {
         try {
             const scene = requireActiveScene();
