@@ -271,6 +271,20 @@ export const methods: { [key: string]: (...any: any) => any } = {
                         });
                     }
                 });
+            } else if (property === 'mesh' && typeof value === 'string') {
+                // Load Mesh (incl. fbx sub-asset uuid like "<uuid>@<sub>") by UUID and assign
+                cc.assetManager.loadAny({ uuid: value }, (err: any, asset: any) => {
+                    if (!err && asset) {
+                        component.mesh = asset;
+                    } else {
+                        console.warn('[mcp] failed to load mesh asset', value, err);
+                    }
+                });
+            } else if (typeof value === 'string' && value.indexOf('@') !== -1) {
+                // Generic sub-asset uuid (mesh/texture/etc. sub-assets) -> load and assign
+                cc.assetManager.loadAny({ uuid: value }, (err: any, asset: any) => {
+                    component[property] = (err || !asset) ? value : asset;
+                });
             } else {
                 component[property] = value;
             }
