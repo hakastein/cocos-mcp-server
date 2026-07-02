@@ -449,6 +449,13 @@ export class NodeTools implements ToolExecutor {
                     }
                 }
 
+                // Editor-faithful UI wiring: a cc.Canvas gets a full UI camera + UI_2D
+                // layer setup (mirroring Create > UI > Canvas); UI child nodes are placed
+                // on the UI_2D layer so the UI camera can render them.
+                if (uuid) {
+                    await this.ensureUiSetup(uuid, args);
+                }
+
                 // Fetch created node info for verification
                 let verificationData: any = null;
                 try {
@@ -494,6 +501,146 @@ export class NodeTools implements ToolExecutor {
                     error: `Failed to create node: ${err.message}. Args: ${JSON.stringify(args)}`
                 });
             }
+        });
+    }
+
+    /** True for cc.* UI components that must live on the UI_2D layer to render. */
+    private isUiComponent(type: string): boolean {
+        return !!type && (
+            type.includes('cc.UITransform') || type.includes('cc.Sprite') || type.includes('cc.Label') ||
+            type.includes('cc.RichText') || type.includes('cc.Button') || type.includes('cc.Layout') ||
+            type.includes('cc.Widget') || type.includes('cc.Mask') || type.includes('cc.Graphics') ||
+            type.includes('cc.ScrollView') || type.includes('cc.ProgressBar') || type.includes('cc.Toggle') ||
+            type.includes('cc.Slider') || type.includes('cc.EditBox')
+        );
+    }
+
+    /** Set a node's rendering layer via the persistent set-property channel. */
+    private async setNodeLayer(uuid: string, layer: number): Promise<void> {
+        try {
+            await Editor.Message.request('scene', 'set-property', {
+                uuid, path: 'layer', dump: { value: layer }
+            });
+        } catch (err) {
+            console.warn('[NodeTools] setNodeLayer failed:', err);
+        }
+    }
+
+    /** Find a component's index within a node's raw __comps__ dump, or -1. */
+    private async findComponentIndex(uuid: string, type: string): Promise<number> {
+        try {
+            const raw: any = await Editor.Message.request('scene', 'query-node', uuid);
+            if (raw?.__comps__) {
+                for (let i = 0; i < raw.__comps__.length; i++) {
+                    const t = raw.__comps__[i].__type__ || raw.__comps__[i].cid || raw.__comps__[i].type;
+                    if (t === type) return i;
+                }
+            }
+        } catch { /* ignore */ }
+        return -1;
+    }
+
+    /** Walk up the tree (incl. self) to detect whether a node lives under a cc.Canvas. */
+    private async hasCanvasAncestor(uuid: string): Promise<boolean> {
+        try {
+            let raw: any = await Editor.Message.request('scene', 'query-node', uuid);
+            let guard = 0;
+            while (raw && guard++ < 64) {
+                const comps = raw.__comps__ || [];
+                if (comps.some((c: any) => (c.__type__ || c.cid || c.type || '').includes('cc.Canvas'))) {
+                    return true;
+                }
+                const parentUuid = raw.parent?.value?.uuid;
+                if (!parentUuid) break;
+                raw = await Editor.Message.request('scene', 'query-node', parentUuid);
+            }
+        } catch { /* ignore */ }
+        return false;
+    }
+
+    /**
+     * Editor-faithful UI wiring for a freshly created node:
+     *  - a cc.Canvas gets a properly configured UI camera + UI_2D layer (setupCanvas);
+     *  - any UI node (UI renderer component, or a node created under a Canvas) is placed
+     *    on the UI_2D layer, without which the UI camera cannot see it.
+     */
+    private async ensureUiSetup(uuid: string, args: any): Promise<void> {
+        try {
+            const requested: string[] = [
+                ...(Array.isArray(args.components) ? args.components : []),
+                ...(args.nodeType && args.nodeType !== 'Node' && args.nodeType !== '2DNode' && args.nodeType !== '3DNode'
+                    ? [args.nodeType] : [])
+            ].filter((c) => typeof c === 'string');
+
+            if (requested.some((c) => c.includes('cc.Canvas'))) {
+                await this.setupCanvas(uuid);
+                return;
+            }
+
+            const isUiRenderer = requested.some((c) => this.isUiComponent(c));
+            const underCanvas = await this.hasCanvasAncestor(uuid);
+            if (isUiRenderer || underCanvas) {
+                await this.setNodeLayer(uuid, NodeTools.LAYER_UI_2D);
+            }
+        } catch (err) {
+            console.warn('[NodeTools] ensureUiSetup failed:', err);
+        }
+    }
+
+    /**
+     * Configure a cc.Canvas node the way the editor's Create > UI > Canvas does: put it on
+     * the UI_2D layer and, unless a camera is already wired, create a child UI camera
+     * (orthographic, DEPTH_ONLY clear, UI_2D|UI_3D visibility, top priority) and wire it to
+     * cc.Canvas.cameraComponent. Without this the UI renders invisibly.
+     */
+    private async setupCanvas(canvasUuid: string): Promise<void> {
+        // 1. Canvas node on the UI_2D layer.
+        await this.setNodeLayer(canvasUuid, NodeTools.LAYER_UI_2D);
+
+        // 2. Skip if a camera is already wired.
+        const canvasInfo = await this.componentTools.execute('get_component_info', {
+            nodeUuid: canvasUuid, componentType: 'cc.Canvas'
+        });
+        const props: any = canvasInfo?.data?.properties || {};
+        const existingCam = props.cameraComponent?.value?.uuid || props._cameraComponent?.value?.uuid;
+        if (existingCam) {
+            return;
+        }
+
+        // 3. Create the UI camera node as a child of the Canvas.
+        const camNode: any = await Editor.Message.request('scene', 'create-node', {
+            name: 'Camera', parent: canvasUuid
+        });
+        const cameraUuid = Array.isArray(camNode) ? camNode[0] : camNode;
+        await new Promise((r) => setTimeout(r, 100));
+        await this.setNodeLayer(cameraUuid, NodeTools.LAYER_UI_2D);
+
+        // 4. Add + configure cc.Camera as an orthographic UI overlay camera.
+        await Editor.Message.request('scene', 'create-component', { uuid: cameraUuid, component: 'cc.Camera' });
+        await new Promise((r) => setTimeout(r, 100));
+        const camIndex = await this.findComponentIndex(cameraUuid, 'cc.Camera');
+        if (camIndex >= 0) {
+            const setCam = (prop: string, value: any) => Editor.Message.request('scene', 'set-property', {
+                uuid: cameraUuid, path: `__comps__.${camIndex}.${prop}`, dump: { value }
+            });
+            await setCam('projection', 0);        // ORTHO
+            await setCam('clearFlags', 6);        // DEPTH_ONLY
+            await setCam('visibility', 41943040); // UI_2D | UI_3D
+            await setCam('priority', 1073741824); // render on top of the 3D camera
+            await setCam('near', 1);
+            await setCam('far', 2000);
+        }
+
+        // Note: Cocos auto-adds a cc.UITransform to any node parented under a Canvas and
+        // refuses to let it be removed (it is required for Canvas descendants). The UI
+        // camera therefore carries a harmless cc.UITransform alongside cc.Camera; this
+        // does not affect rendering, so we leave it as-is.
+
+        // 5. Wire Canvas.cameraComponent -> the camera (component reference; the existing
+        //    'component' propertyType resolves the node UUID to the camera's scene id).
+        await this.componentTools.execute('set_component_property', {
+            nodeUuid: canvasUuid, componentType: 'cc.Canvas',
+            property: 'cameraComponent', propertyType: 'component', value: cameraUuid
         });
     }
 
@@ -864,50 +1011,63 @@ export class NodeTools implements ToolExecutor {
         });
     }
 
+    // UI_2D layer bitmask (cc.Layers.Enum.UI_2D === 1 << 25). A node on this layer
+    // is rendered by the UI camera and is therefore a 2D/UI node.
+    private static readonly LAYER_UI_2D = 33554432;
+
     private is2DNode(nodeInfo: any): boolean {
-        // Check if node has 2D-specific components or is under Canvas
+        // Decide 2D vs 3D from concrete signals only (components + layer). We must NOT
+        // infer "2D" from a z position near 0 — a brand-new 3D node sits at the origin,
+        // and stripping its z/rotation would silently corrupt 3D transforms.
         const components = nodeInfo.components || [];
-        
-        // Check for common 2D components
-        const has2DComponents = components.some((comp: any) => 
+
+        // UI / 2D-only components => definitely a 2D node.
+        const has2DComponents = components.some((comp: any) =>
             comp.type && (
+                comp.type.includes('cc.UITransform') ||
+                comp.type.includes('cc.Canvas') ||
                 comp.type.includes('cc.Sprite') ||
                 comp.type.includes('cc.Label') ||
+                comp.type.includes('cc.RichText') ||
                 comp.type.includes('cc.Button') ||
                 comp.type.includes('cc.Layout') ||
                 comp.type.includes('cc.Widget') ||
                 comp.type.includes('cc.Mask') ||
-                comp.type.includes('cc.Graphics')
+                comp.type.includes('cc.Graphics') ||
+                comp.type.includes('cc.ScrollView') ||
+                comp.type.includes('cc.ProgressBar') ||
+                comp.type.includes('cc.Toggle') ||
+                comp.type.includes('cc.Slider') ||
+                comp.type.includes('cc.EditBox')
             )
         );
-        
+
         if (has2DComponents) {
             return true;
         }
-        
-        // Check for 3D-specific components  
+
+        // Explicit 3D components => definitely a 3D node.
         const has3DComponents = components.some((comp: any) =>
             comp.type && (
                 comp.type.includes('cc.MeshRenderer') ||
+                comp.type.includes('cc.SkinnedMeshRenderer') ||
                 comp.type.includes('cc.Camera') ||
-                comp.type.includes('cc.Light') ||
-                comp.type.includes('cc.DirectionalLight') ||
-                comp.type.includes('cc.PointLight') ||
-                comp.type.includes('cc.SpotLight')
+                comp.type.includes('Light') ||
+                comp.type.includes('cc.ParticleSystem')
             )
         );
-        
+
         if (has3DComponents) {
             return false;
         }
-        
-        // Default heuristic: if z position is 0 and hasn't been changed, likely 2D
-        const position = nodeInfo.position;
-        if (position && Math.abs(position.z) < 0.001) {
+
+        // No decisive component: fall back to the node layer. Only the UI_2D layer
+        // marks a 2D node; everything else (incl. a plain empty node) is treated as 3D
+        // so its full x/y/z transform is preserved.
+        if (nodeInfo.layer === NodeTools.LAYER_UI_2D) {
             return true;
         }
-        
-        // Default to 3D if uncertain
+
         return false;
     }
 
@@ -1019,11 +1179,14 @@ export class NodeTools implements ToolExecutor {
                 // Collect detection reasons
                 const detectionReasons: string[] = [];
                 
-                // Check for 2D components
-                const twoDComponents = components.filter((comp: any) => 
+                // Check for 2D/UI components
+                const twoDComponents = components.filter((comp: any) =>
                     comp.type && (
+                        comp.type.includes('cc.UITransform') ||
+                        comp.type.includes('cc.Canvas') ||
                         comp.type.includes('cc.Sprite') ||
                         comp.type.includes('cc.Label') ||
+                        comp.type.includes('cc.RichText') ||
                         comp.type.includes('cc.Button') ||
                         comp.type.includes('cc.Layout') ||
                         comp.type.includes('cc.Widget') ||
@@ -1031,37 +1194,33 @@ export class NodeTools implements ToolExecutor {
                         comp.type.includes('cc.Graphics')
                     )
                 );
-                
+
                 // Check for 3D components
                 const threeDComponents = components.filter((comp: any) =>
                     comp.type && (
                         comp.type.includes('cc.MeshRenderer') ||
+                        comp.type.includes('cc.SkinnedMeshRenderer') ||
                         comp.type.includes('cc.Camera') ||
-                        comp.type.includes('cc.Light') ||
-                        comp.type.includes('cc.DirectionalLight') ||
-                        comp.type.includes('cc.PointLight') ||
-                        comp.type.includes('cc.SpotLight')
+                        comp.type.includes('Light') ||
+                        comp.type.includes('cc.ParticleSystem')
                     )
                 );
 
                 if (twoDComponents.length > 0) {
-                    detectionReasons.push(`Has 2D components: ${twoDComponents.map((c: any) => c.type).join(', ')}`);
+                    detectionReasons.push(`Has 2D/UI components: ${twoDComponents.map((c: any) => c.type).join(', ')}`);
                 }
-                
+
                 if (threeDComponents.length > 0) {
                     detectionReasons.push(`Has 3D components: ${threeDComponents.map((c: any) => c.type).join(', ')}`);
                 }
-                
-                // Check position for heuristic
-                const position = nodeInfo.position;
-                if (position && Math.abs(position.z) < 0.001) {
-                    detectionReasons.push('Z position is ~0 (likely 2D)');
-                } else if (position && Math.abs(position.z) > 0.001) {
-                    detectionReasons.push(`Z position is ${position.z} (likely 3D)`);
+
+                // Node layer is the tie-breaker (only UI_2D marks a 2D node).
+                if (nodeInfo.layer === NodeTools.LAYER_UI_2D) {
+                    detectionReasons.push('Node is on the UI_2D layer (2D)');
                 }
 
                 if (detectionReasons.length === 0) {
-                    detectionReasons.push('No specific indicators found, defaulting based on heuristics');
+                    detectionReasons.push('No 2D/UI signals found; treated as a 3D node (full x/y/z transform)');
                 }
 
                 resolve({
