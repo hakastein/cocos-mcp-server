@@ -550,7 +550,21 @@ export class ComponentTools implements ToolExecutor {
                     });
                     return;
                 }
-                
+
+                // Fast path: asset-typed property assignment (mesh, material(s), texture,
+                // spriteFrame, prefab, effect, ...). This is metadata-driven — it reads the
+                // component dump to find the exact asset class and array shape — so it works
+                // for ANY asset property and for MeshRenderer's `sharedMaterials` array
+                // (settable getters like `material` are handled here, before analyzeProperty,
+                // which would otherwise reject them because they are absent from the dump).
+                const assetResult = await this.trySetAssetProperty(
+                    nodeUuid, componentType, property, propertyType, value, targetComponent
+                );
+                if (assetResult) {
+                    resolve(assetResult);
+                    return;
+                }
+
                 // Step 3: Auto-detect and convert property value
                 let propertyInfo;
                 try {
@@ -1088,82 +1102,252 @@ export class ComponentTools implements ToolExecutor {
     }
 
 
-    private async attachScript(nodeUuid: string, scriptPath: string): Promise<ToolResponse> {
-        return new Promise(async (resolve) => {
-            // Extract component class name from script path
-            const scriptName = scriptPath.split('/').pop()?.replace('.ts', '').replace('.js', '');
-            if (!scriptName) {
-                resolve({ success: false, error: 'Invalid script path' });
-                return;
-            }
-            // Check if script component already exists on the node
-            const allComponentsInfo = await this.getComponents(nodeUuid);
-            if (allComponentsInfo.success && allComponentsInfo.data?.components) {
-                const existingScript = allComponentsInfo.data.components.find((comp: any) => comp.type === scriptName);
-                if (existingScript) {
-                    resolve({
-                        success: true,
-                        message: `Script '${scriptName}' already exists on node`,
-                        data: {
-                            nodeUuid: nodeUuid,
-                            componentName: scriptName,
-                            existing: true
-                        }
+    /**
+     * Metadata-driven asset assignment. Returns a ToolResponse when it handled the
+     * property, or null when the property is not an asset assignment (so the caller
+     * falls back to the normal typed-value path). Persists via the editor `set-property`
+     * channel — the only route that serializes to disk.
+     */
+    private async trySetAssetProperty(
+        nodeUuid: string,
+        componentType: string,
+        property: string,
+        propertyType: string,
+        value: any,
+        targetComponent: any
+    ): Promise<ToolResponse | null> {
+        const dumpMap: Record<string, any> = (targetComponent && targetComponent.properties) || {};
+
+        // Resolve the effective dump property. Renderers (cc.MeshRenderer, cc.SkinnedMeshRenderer)
+        // expose an editable `sharedMaterials` array but no scalar `material`; the editor
+        // inspector edits `sharedMaterials`, so map material/materials onto it.
+        let effectiveProperty = property;
+        let entry = dumpMap[property];
+        if (!entry && (property === 'material' || property === 'materials') && dumpMap['sharedMaterials']) {
+            effectiveProperty = 'sharedMaterials';
+            entry = dumpMap['sharedMaterials'];
+        }
+        if (!entry) {
+            return null; // Unknown property here; let the normal path report/handle it.
+        }
+
+        // Is this an asset-typed property? Assets extend cc.Asset. Detect from dump metadata
+        // (scalar `extends`, or array element `extends`); the caller's propertyType hint can
+        // also force asset handling. Node/component refs do NOT extend cc.Asset, so they are
+        // correctly left to the normal path.
+        const extendsHasAsset = (e: any): boolean =>
+            Array.isArray(e?.extends) && e.extends.includes('cc.Asset');
+        const isArray = entry.isArray === true || Array.isArray(entry.value);
+        const elementMeta = entry.elementTypeData || (isArray ? undefined : entry);
+        const assetByMeta = extendsHasAsset(entry) || extendsHasAsset(elementMeta);
+        const assetByHint = propertyType === 'asset' || propertyType === 'spriteFrame' || propertyType === 'prefab';
+        if (!assetByMeta && !assetByHint) {
+            return null; // Not an asset assignment — normal path handles nodes/values/etc.
+        }
+
+        // The concrete asset class used as the dump `type` hint (e.g. cc.Material, cc.Mesh).
+        const assetClass: string =
+            (isArray ? (elementMeta?.type || entry.type) : entry.type) ||
+            this.guessAssetTypeByName(effectiveProperty);
+
+        // Normalize the incoming value into an array of uuid strings.
+        const toUuid = (v: any): string | null => {
+            if (typeof v === 'string') return v;
+            if (v && typeof v === 'object' && typeof v.uuid === 'string') return v.uuid;
+            return null;
+        };
+        const uuids: string[] = Array.isArray(value)
+            ? value.map(toUuid).filter((u): u is string => u !== null)
+            : (toUuid(value) !== null ? [toUuid(value) as string] : []);
+        if (uuids.length === 0) {
+            return {
+                success: false,
+                error: `Asset property '${property}' expects an asset uuid string or an array of uuid strings; got ${JSON.stringify(value)}`
+            };
+        }
+
+        // Locate the component index in the raw node dump.
+        const rawNodeData: any = await Editor.Message.request('scene', 'query-node', nodeUuid);
+        if (!rawNodeData || !rawNodeData.__comps__) {
+            return { success: false, error: 'Failed to get raw node data for asset assignment' };
+        }
+        let rawIndex = -1;
+        for (let i = 0; i < rawNodeData.__comps__.length; i++) {
+            const comp = rawNodeData.__comps__[i] as any;
+            const compType = comp.__type__ || comp.cid || comp.type || 'Unknown';
+            if (compType === componentType) { rawIndex = i; break; }
+        }
+        if (rawIndex === -1) {
+            return { success: false, error: `Could not find component '${componentType}' index for asset assignment` };
+        }
+
+        const basePath = `__comps__.${rawIndex}.${effectiveProperty}`;
+        try {
+            if (isArray) {
+                // Assign each provided uuid into its slot (slot 0 for a single material).
+                for (let slot = 0; slot < uuids.length; slot++) {
+                    await Editor.Message.request('scene', 'set-property', {
+                        uuid: nodeUuid,
+                        path: `${basePath}.${slot}`,
+                        dump: { value: { uuid: uuids[slot] }, type: assetClass }
                     });
-                    return;
                 }
-            }
-            // First try using script name directly as component type
-            Editor.Message.request('scene', 'create-component', {
-                uuid: nodeUuid,
-                component: scriptName  // Use script name instead of UUID
-            }).then(async (result: any) => {
-                // Wait for Editor to finish adding the component
-                await new Promise(resolve => setTimeout(resolve, 100));
-                // Re-query node info to verify script was actually added
-                const allComponentsInfo2 = await this.getComponents(nodeUuid);
-                if (allComponentsInfo2.success && allComponentsInfo2.data?.components) {
-                    const addedScript = allComponentsInfo2.data.components.find((comp: any) => comp.type === scriptName);
-                    if (addedScript) {
-                        resolve({
-                            success: true,
-                            message: `Script '${scriptName}' attached successfully`,
-                            data: {
-                                nodeUuid: nodeUuid,
-                                componentName: scriptName,
-                                existing: false
-                            }
-                        });
-                    } else {
-                        resolve({
-                            success: false,
-                            error: `Script '${scriptName}' was not found on node after addition. Available components: ${allComponentsInfo2.data.components.map((c: any) => c.type).join(', ')}`
-                        });
-                    }
-                } else {
-                    resolve({
-                        success: false,
-                        error: `Failed to verify script addition: ${allComponentsInfo2.error || 'Unable to get node components'}`
-                    });
-                }
-            }).catch((err: Error) => {
-                // Fallback: use scene script
-                const options = {
-                    name: 'cocos-mcp-server',
-                    method: 'attachScript',
-                    args: [nodeUuid, scriptPath]
-                };
-                Editor.Message.request('scene', 'execute-scene-script', options).then((result: any) => {
-                    resolve(result);
-                }).catch(() => {
-                    resolve({ 
-                        success: false, 
-                        error: `Failed to attach script '${scriptName}': ${err.message}`,
-                        instruction: 'Please ensure the script is properly compiled and exported as a Component class. You can also manually attach the script through the Properties panel in the editor.'
-                    });
+            } else {
+                await Editor.Message.request('scene', 'set-property', {
+                    uuid: nodeUuid,
+                    path: basePath,
+                    dump: { value: { uuid: uuids[0] }, type: assetClass }
                 });
-            });
-        });
+            }
+        } catch (err: any) {
+            return { success: false, error: `Failed to set asset property '${property}' (${assetClass}): ${err.message}` };
+        }
+
+        // Verify by re-reading the assigned uuid(s) from the dump.
+        await new Promise(r => setTimeout(r, 200));
+        const verifyValue = await this.quickVerifyAsset(nodeUuid, componentType, effectiveProperty);
+        const readUuids: string[] = [];
+        const collect = (v: any) => {
+            if (!v) return;
+            if (Array.isArray(v)) { v.forEach(collect); return; }
+            if (typeof v === 'object') {
+                if (typeof v.uuid === 'string') readUuids.push(v.uuid);
+                else if (v.value) collect(v.value);
+            }
+        };
+        collect(verifyValue);
+        const verified = uuids.every(u => readUuids.includes(u));
+
+        return {
+            success: true,
+            message: `Set ${componentType}.${effectiveProperty} = ${assetClass}[${uuids.join(', ')}]${effectiveProperty !== property ? ` (via '${property}')` : ''}`,
+            data: {
+                nodeUuid,
+                componentType,
+                property: effectiveProperty,
+                requestedProperty: property,
+                assetType: assetClass,
+                assignedUuids: uuids,
+                isArray,
+                changeVerified: verified,
+                actualValue: verifyValue
+            }
+        };
+    }
+
+    /** Fallback asset-class guess from a property name (used only when the dump lacks a type). */
+    private guessAssetTypeByName(property: string): string {
+        const p = property.toLowerCase();
+        if (p.includes('material')) return 'cc.Material';
+        if (p.includes('mesh')) return 'cc.Mesh';
+        if (p.includes('texture')) return 'cc.Texture2D';
+        if (p.includes('spriteframe') || p.includes('sprite')) return 'cc.SpriteFrame';
+        if (p.includes('prefab')) return 'cc.Prefab';
+        if (p.includes('font')) return 'cc.Font';
+        if (p.includes('clip') || p.includes('audio')) return 'cc.AudioClip';
+        if (p.includes('effect')) return 'cc.EffectAsset';
+        return 'cc.Asset';
+    }
+
+    private async attachScript(nodeUuid: string, scriptPath: string): Promise<ToolResponse> {
+        // A script component does NOT appear under its class name in the node dump — it
+        // registers under the script asset's class-id (cid, e.g. "78573A5d...").
+        // The reliable identity is therefore the script ASSET uuid, exposed on each
+        // component's dump as `__scriptAsset.value.uuid`. We key idempotency and
+        // verification on that, never on class-name === component type.
+        const scriptName = scriptPath.split('/').pop()?.replace(/\.(ts|js)$/, '') ?? scriptPath;
+
+        // Resolve the script asset uuid from its db:// path.
+        let scriptAssetUuid: string | null = null;
+        try {
+            scriptAssetUuid = await Editor.Message.request('asset-db', 'query-uuid', scriptPath);
+        } catch { /* fall through to asset-info */ }
+        if (!scriptAssetUuid) {
+            try {
+                const info: any = await Editor.Message.request('asset-db', 'query-asset-info', scriptPath);
+                scriptAssetUuid = info?.uuid ?? null;
+            } catch { /* ignore */ }
+        }
+        if (!scriptAssetUuid) {
+            return {
+                success: false,
+                error: `Could not resolve script asset at '${scriptPath}'. Provide a db:// path to the script, e.g. db://assets/MyScript.ts`
+            };
+        }
+
+        const getComps = async (): Promise<any[]> => {
+            const info = await this.getComponents(nodeUuid);
+            return info.success && info.data?.components ? info.data.components : [];
+        };
+        // Match an attached script component by its script-asset uuid; returns its cid.
+        const matchCid = (comps: any[]): string | null => {
+            for (const comp of comps) {
+                const attachedUuid = comp?.properties?.__scriptAsset?.value?.uuid;
+                if (attachedUuid && attachedUuid === scriptAssetUuid) {
+                    return comp.type; // the cid
+                }
+            }
+            return null;
+        };
+
+        // Idempotency: if the script is already on the node, do not add a duplicate.
+        const before = await getComps();
+        const alreadyCid = matchCid(before);
+        if (alreadyCid) {
+            return {
+                success: true,
+                message: `Script '${scriptName}' is already attached (cid '${alreadyCid}')`,
+                data: { nodeUuid, scriptName, componentType: alreadyCid, scriptUuid: scriptAssetUuid, existing: true }
+            };
+        }
+        const beforeCount = before.length;
+
+        const tryCreate = async (component: string): Promise<void> => {
+            try {
+                await Editor.Message.request('scene', 'create-component', { uuid: nodeUuid, component });
+            } catch { /* ignore; verification below decides success */ }
+        };
+
+        // Attempt 1: add by class name (the common case where filename === @ccclass name).
+        await tryCreate(scriptName);
+        await new Promise(r => setTimeout(r, 200));
+        let after = await getComps();
+        let cid = matchCid(after);
+
+        // Attempt 2: only if attempt 1 neither matched nor changed the component count
+        // (so we never create a duplicate) — retry using the script asset uuid.
+        if (!cid && after.length === beforeCount) {
+            await tryCreate(scriptAssetUuid);
+            await new Promise(r => setTimeout(r, 200));
+            after = await getComps();
+            cid = matchCid(after);
+        }
+
+        // The __scriptAsset field can lag briefly after creation; settle once more.
+        if (!cid && after.length > beforeCount) {
+            await new Promise(r => setTimeout(r, 300));
+            after = await getComps();
+            cid = matchCid(after);
+            // Best effort: if the uuid still hasn't populated, report the new component's cid.
+            if (!cid) {
+                const beforeCids = new Set(before.map((c: any) => c.type));
+                const added = after.find((c: any) => !beforeCids.has(c.type));
+                if (added) cid = added.type;
+            }
+        }
+
+        if (cid) {
+            return {
+                success: true,
+                message: `Script '${scriptName}' attached (registered as cid '${cid}')`,
+                data: { nodeUuid, scriptName, componentType: cid, scriptUuid: scriptAssetUuid, existing: false }
+            };
+        }
+        return {
+            success: false,
+            error: `Failed to attach script '${scriptName}' to node ${nodeUuid}.`,
+            instruction: 'Ensure the script is a compiled cc.Component subclass (@ccclass) and the project has finished importing/compiling, then retry.'
+        };
     }
 
     private async getAvailableComponents(category: string = 'all'): Promise<ToolResponse> {
