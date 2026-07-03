@@ -169,14 +169,47 @@ export class DebugTools implements ToolExecutor {
     }
 
     private getConsoleLogs(limit: number = 100, filter: string = 'all'): ToolResponse {
-        const logs = filter === 'all'
+        const memLogs: any[] = filter === 'all'
             ? this.consoleMessages
             : this.consoleMessages.filter(m => m.type === filter);
-        const recent = logs.slice(-limit);
+
+        // The in-memory buffer misses scene-executor and script compile/import errors,
+        // which the editor only writes to temp/logs/project.log. Surface those too, so
+        // errors like `Module "../Joystick" not found` are visible here (previously they
+        // only showed up via get_project_logs).
+        const fileLogs: any[] = [];
+        try {
+            const p = this.findLogFile();
+            if (p) {
+                const lines = fs.readFileSync(p, 'utf8').split('\n').filter(l => l.trim());
+                for (const line of lines.slice(-Math.max(limit, 300))) {
+                    const type = this.classifyLogLevel(line);
+                    if (filter === 'all' || filter === type) {
+                        fileLogs.push({ type, message: line, source: 'project.log' });
+                    }
+                }
+            }
+        } catch { /* ignore log-read failures */ }
+
+        const combined = [...memLogs, ...fileLogs];
+        const recent = combined.slice(-limit);
         return {
             success: true,
-            data: { total: logs.length, returned: recent.length, logs: recent }
+            data: {
+                total: combined.length,
+                returned: recent.length,
+                source: fileLogs.length ? 'memory+project.log' : 'memory',
+                logs: recent
+            }
         };
+    }
+
+    /** Best-effort log-level classification for a raw project.log line. */
+    private classifyLogLevel(line: string): 'error' | 'warn' | 'info' | 'log' {
+        if (/\[ERROR\]|\berror\b|exception|failed|not found|cannot find/i.test(line)) return 'error';
+        if (/\[WARN\]|\bwarn(ing)?\b/i.test(line)) return 'warn';
+        if (/\[INFO\]|\binfo\b/i.test(line)) return 'info';
+        return 'log';
     }
 
     private clearConsole(): ToolResponse {
