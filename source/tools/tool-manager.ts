@@ -48,6 +48,26 @@ export class ToolManager {
         if (this.settings.configurations.length === 0) {
             this.createConfiguration('Default', 'Auto-created default tool configuration');
         }
+        this.reconcileConfigurations();
+    }
+
+    /**
+     * Ensure every saved configuration includes newly-discovered tools. Without this, a
+     * tool added in a new build would be missing from a persisted configuration and thus
+     * never advertised over MCP (getEnabledTools filters by the saved config's tool list).
+     */
+    private reconcileConfigurations(): void {
+        let changed = false;
+        for (const config of this.settings.configurations) {
+            const present = new Set(config.tools.map(t => `${t.category}_${t.name}`));
+            for (const tool of this.availableTools) {
+                if (!present.has(`${tool.category}_${tool.name}`)) {
+                    config.tools.push({ ...tool }); // availableTools default to enabled: true
+                    changed = true;
+                }
+            }
+        }
+        if (changed) this.saveSettings();
     }
 
     private discoverTools(): ToolConfig[] {
