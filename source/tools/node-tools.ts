@@ -273,6 +273,37 @@ export class NodeTools implements ToolExecutor {
                     },
                     required: ['uuid']
                 }
+            },
+            {
+                name: 'create_primitive',
+                description: 'Create a real primitive node (3D mesh) for editor-first environment authoring: a cc.MeshRenderer with a builtin primitive mesh and an optional colored material. Mesh sub-uuids are resolved dynamically from db://internal/primitives.fbx (never hardcoded).',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        name: { type: 'string', description: 'Node name (defaults to the primitive name)' },
+                        parentUuid: { type: 'string', description: 'Parent node UUID (defaults to scene root)' },
+                        primitive: {
+                            type: 'string',
+                            description: 'Primitive shape',
+                            enum: ['box', 'sphere', 'capsule', 'cylinder', 'cone', 'plane', 'quad', 'torus']
+                        },
+                        color: {
+                            type: 'array',
+                            description: 'Optional RGB color 0-255, e.g. [221,68,68]. Creates/reuses a .mtl material asset.',
+                            items: { type: 'number' }
+                        },
+                        unlit: { type: 'boolean', description: 'Use builtin-unlit effect instead of builtin-standard (default false)' },
+                        position: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } } },
+                        rotation: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } } },
+                        scale: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } } }
+                    },
+                    required: ['primitive']
+                }
+            },
+            {
+                name: 'list_builtin_meshes',
+                description: 'List the builtin primitive meshes with their (dynamically resolved) sub-asset uuids, e.g. {"box":"<uuid>@a804a", ...}. Resolved from db://internal/primitives.fbx so callers use real uuids instead of hardcoded ones.',
+                inputSchema: { type: 'object', properties: {} }
             }
         ];
     }
@@ -281,6 +312,10 @@ export class NodeTools implements ToolExecutor {
         switch (toolName) {
             case 'create_node':
                 return await this.createNode(args);
+            case 'create_primitive':
+                return await this.createPrimitive(args);
+            case 'list_builtin_meshes':
+                return await this.listBuiltinMeshes();
             case 'get_node_info':
                 return await this.getNodeInfo(args.uuid);
             case 'find_nodes':
@@ -504,6 +539,162 @@ export class NodeTools implements ToolExecutor {
         });
     }
 
+    // ----- Primitive authoring ---------------------------------------------------------
+
+    private static readonly PRIMITIVES_FBX = 'db://internal/primitives.fbx';
+
+    /**
+     * Resolve the builtin primitive meshes to their sub-asset uuids DYNAMICALLY from
+     * primitives.fbx's import metadata (subMetas with importer 'gltf-mesh'). Returns a map
+     * like { box: "<uuid>@a804a", sphere: "<uuid>@17020", ... }. The sub-ids are an
+     * artifact of the FBX import and must never be hardcoded.
+     */
+    private async resolveBuiltinMeshes(): Promise<Record<string, string>> {
+        const uuid: string | null = await Editor.Message.request('asset-db', 'query-uuid', NodeTools.PRIMITIVES_FBX).catch(() => null);
+        if (!uuid) throw new Error(`${NodeTools.PRIMITIVES_FBX} not found`);
+        const out: Record<string, string> = {};
+
+        // Primary: the import meta (subMetas: { <subid>: { importer, uuid, name } }).
+        try {
+            const meta: any = await Editor.Message.request('asset-db', 'query-asset-meta', uuid);
+            const subMetas = meta?.subMetas || {};
+            for (const sid of Object.keys(subMetas)) {
+                const sm = subMetas[sid];
+                if (sm && sm.importer === 'gltf-mesh') {
+                    const key = String(sm.name || '').replace(/\.mesh$/i, '').toLowerCase();
+                    if (key) out[key] = sm.uuid || `${uuid}@${sid}`;
+                }
+            }
+        } catch { /* fall through to query-asset-info */ }
+
+        // Fallback: query-asset-info sub-assets.
+        if (Object.keys(out).length === 0) {
+            try {
+                const info: any = await Editor.Message.request('asset-db', 'query-asset-info', uuid);
+                const subs = info?.subAssets || {};
+                for (const sid of Object.keys(subs)) {
+                    const sub = subs[sid];
+                    const kind = sub?.importer || sub?.type;
+                    if (kind === 'gltf-mesh' || kind === 'cc.Mesh') {
+                        const key = String(sub?.name || sid).replace(/\.mesh$/i, '').toLowerCase();
+                        if (key) out[key] = sub?.uuid || `${uuid}@${sid}`;
+                    }
+                }
+            } catch { /* ignore */ }
+        }
+
+        if (Object.keys(out).length === 0) {
+            throw new Error('Could not resolve any primitive meshes from primitives.fbx metadata');
+        }
+        return out;
+    }
+
+    private async listBuiltinMeshes(): Promise<ToolResponse> {
+        try {
+            const meshes = await this.resolveBuiltinMeshes();
+            return { success: true, data: { source: NodeTools.PRIMITIVES_FBX, meshes } };
+        } catch (err: any) {
+            return { success: false, error: err.message };
+        }
+    }
+
+    /**
+     * Create (or reuse) a solid-color material asset (.mtl) under db://assets/materials,
+     * built on builtin-standard (or builtin-unlit) with the given mainColor. The effect
+     * uuid is resolved dynamically. Returns the material asset uuid.
+     */
+    private async ensureColorMaterial(color: number[], unlit: boolean): Promise<string | null> {
+        const clamp = (v: any) => Math.max(0, Math.min(255, Math.round(Number(v) || 0)));
+        const r = clamp(color[0]), g = clamp(color[1]), b = clamp(color[2]);
+        const effectUrl = unlit ? 'db://internal/effects/builtin-unlit.effect' : 'db://internal/effects/builtin-standard.effect';
+        const effectUuid: string | null = await Editor.Message.request('asset-db', 'query-uuid', effectUrl).catch(() => null);
+        if (!effectUuid) throw new Error(`Effect not found: ${effectUrl}`);
+
+        const hex = [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+        const matName = `${unlit ? 'Unlit' : 'Std'}_${hex}`;
+        const folder = 'db://assets/materials';
+        const url = `${folder}/${matName}.mtl`;
+
+        // Reuse an existing material of the same color/effect.
+        const existing: string | null = await Editor.Message.request('asset-db', 'query-uuid', url).catch(() => null);
+        if (existing) return existing;
+
+        // Ensure the materials folder exists — but only create it if MISSING. Calling
+        // create-asset on an existing path pops a blocking "overwrite?" GUI dialog (and
+        // overwriting a folder would destroy its contents), so we must check first.
+        const folderExists: string | null = await Editor.Message.request('asset-db', 'query-uuid', folder).catch(() => null);
+        if (!folderExists) {
+            try { await (Editor.Message.request as any)('asset-db', 'create-asset', folder, null); } catch { /* race */ }
+        }
+
+        const props: any = { mainColor: { __type__: 'cc.Color', r, g, b, a: 255 } };
+        if (!unlit) { props.roughness = 0.9; props.metallic = 0.0; }
+        const mtl = {
+            __type__: 'cc.Material', _name: '', _objFlags: 0, _native: '',
+            _effectAsset: { __uuid__: effectUuid }, _techIdx: 0, _defines: [], _props: [props]
+        };
+        // We already confirmed the file does not exist (reuse-check above), so create it
+        // without overwrite to guarantee no dialog is ever shown.
+        const res: any = await (Editor.Message.request as any)('asset-db', 'create-asset', url, JSON.stringify(mtl, null, 2));
+        return res?.uuid || await Editor.Message.request('asset-db', 'query-uuid', url).catch(() => null);
+    }
+
+    private async createPrimitive(args: any): Promise<ToolResponse> {
+        try {
+            const primitive = String(args.primitive || '').toLowerCase();
+            const meshes = await this.resolveBuiltinMeshes();
+            const meshUuid = meshes[primitive];
+            if (!meshUuid) {
+                return { success: false, error: `Unknown primitive '${args.primitive}'. Available: ${Object.keys(meshes).join(', ')}` };
+            }
+
+            // 1. Create a 3D node with a MeshRenderer.
+            const createRes = await this.createNode({
+                name: args.name || primitive,
+                parentUuid: args.parentUuid,
+                nodeType: '3DNode',
+                components: ['cc.MeshRenderer']
+            });
+            if (!createRes.success || !createRes.data?.uuid) return createRes;
+            const nodeUuid = createRes.data.uuid;
+
+            // 2. Assign the mesh (persistent set-property route).
+            const meshRes = await this.componentTools.execute('set_component_property', {
+                nodeUuid, componentType: 'cc.MeshRenderer', property: 'mesh', propertyType: 'asset', value: meshUuid
+            });
+
+            // 3. Optional colored material -> sharedMaterials[0].
+            let materialUuid: string | null = null;
+            if (Array.isArray(args.color) && args.color.length >= 3) {
+                materialUuid = await this.ensureColorMaterial(args.color, !!args.unlit);
+                if (materialUuid) {
+                    await this.componentTools.execute('set_component_property', {
+                        nodeUuid, componentType: 'cc.MeshRenderer', property: 'sharedMaterials', propertyType: 'asset', value: materialUuid
+                    });
+                }
+            }
+
+            // 4. Transform.
+            if (args.position || args.rotation || args.scale) {
+                await this.setNodeTransform({ uuid: nodeUuid, position: args.position, rotation: args.rotation, scale: args.scale });
+            }
+
+            return {
+                success: true,
+                data: {
+                    nodeUuid,
+                    primitive,
+                    meshUuid,
+                    materialUuid,
+                    meshAssigned: !!meshRes?.success,
+                    message: `Primitive '${primitive}' created as node ${nodeUuid}`
+                }
+            };
+        } catch (err: any) {
+            return { success: false, error: `Failed to create primitive: ${err.message}` };
+        }
+    }
+
     /** True for cc.* UI components that must live on the UI_2D layer to render. */
     private isUiComponent(type: string): boolean {
         return !!type && (
@@ -665,10 +856,19 @@ export class NodeTools implements ToolExecutor {
                     scale: nodeData.scale?.value || { x: 1, y: 1, z: 1 },
                     parent: nodeData.parent?.value?.uuid || null,
                     children: nodeData.children || [],
-                    components: (nodeData.__comps__ || []).map((comp: any) => ({
-                        type: comp.__type__ || 'Unknown',
-                        enabled: comp.enabled !== undefined ? comp.enabled : true
-                    })),
+                    components: (nodeData.__comps__ || []).map((comp: any) => {
+                        // Resolve the readable class name from the dump `name` field
+                        // ("NodeName<ClassName>") so custom scripts don't show as "Unknown"
+                        // (they carry a cid in __type__, not the class name).
+                        const nameVal = comp.value?.name?.value ?? comp.name?.value;
+                        const m = typeof nameVal === 'string' ? nameVal.match(/<([^>]+)>\s*$/) : null;
+                        const className = m ? m[1] : undefined;
+                        return {
+                            type: comp.__type__ || comp.cid || (className ? `cc.${className}` : 'Unknown'),
+                            className,
+                            enabled: comp.enabled !== undefined ? comp.enabled : true
+                        };
+                    }),
                     layer: nodeData.layer?.value || 1073741824,
                     mobility: nodeData.mobility?.value || 0
                 };
