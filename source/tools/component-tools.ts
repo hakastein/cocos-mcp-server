@@ -203,65 +203,83 @@ export class ComponentTools implements ToolExecutor {
         }
     }
 
+    // ----- Component identity resolver -------------------------------------------------
+    // Custom script components appear in the node dump only under their class-id (cid,
+    // e.g. "a1a43ZGW/..."), never under their @ccclass name. These helpers let callers
+    // address a component by cid, @ccclass class name, OR builtin type ("cc.Sprite"),
+    // and let post-verification match by cid so operations are not falsely reported as
+    // failed just because the class NAME does not appear in the dump.
+
+    /**
+     * Extract the class name from a component's dump `name` field, which the editor
+     * formats as "<NodeName><ClassName>", e.g. "NavMeshData<NavMesh>" or
+     * "Player<MeshRenderer>". Works on both raw __comps__ entries (comp.value.name) and
+     * processed component objects (comp.properties.name).
+     */
+    private componentClassName(comp: any): string | null {
+        const nameVal = comp?.properties?.name?.value ?? comp?.value?.name?.value ?? comp?.name?.value;
+        if (typeof nameVal === 'string') {
+            const m = nameVal.match(/<([^>]+)>\s*$/);
+            if (m) return m[1];
+        }
+        return null;
+    }
+
+    /** The class-id (cid) of a component regardless of dump shape. */
+    private componentCid(comp: any): string | undefined {
+        return comp?.type ?? comp?.__type__ ?? comp?.cid;
+    }
+
+    /**
+     * Match a component against a caller-supplied `componentType`, which may be a cid, an
+     * @ccclass class name, or a builtin type name ("cc.Sprite").
+     */
+    private componentMatches(comp: any, componentType: string): boolean {
+        if (!componentType) return false;
+        if (this.componentCid(comp) === componentType) return true;
+        const cn = this.componentClassName(comp);
+        return !!cn && (cn === componentType || `cc.${cn}` === componentType);
+    }
+
     private async addComponent(nodeUuid: string, componentType: string): Promise<ToolResponse> {
         return new Promise(async (resolve) => {
-            // Check if component already exists on the node
-            const allComponentsInfo = await this.getComponents(nodeUuid);
-            if (allComponentsInfo.success && allComponentsInfo.data?.components) {
-                const existingComponent = allComponentsInfo.data.components.find((comp: any) => comp.type === componentType);
-                if (existingComponent) {
-                    resolve({
-                        success: true,
-                        message: `Component '${componentType}' already exists on node`,
-                        data: {
-                            nodeUuid: nodeUuid,
-                            componentType: componentType,
-                            componentVerified: true,
-                            existing: true
-                        }
-                    });
-                    return;
-                }
+            // Idempotency: match by cid OR @ccclass name so custom scripts are recognised.
+            const before = await this.getComponents(nodeUuid);
+            const beforeComps = before.success && before.data?.components ? before.data.components : [];
+            const existing = beforeComps.find((c: any) => this.componentMatches(c, componentType));
+            if (existing) {
+                resolve({
+                    success: true,
+                    message: `Component '${componentType}' already exists on node (cid '${existing.type}')`,
+                    data: { nodeUuid, componentType, resolvedCid: existing.type, className: existing.className, componentVerified: true, existing: true }
+                });
+                return;
             }
+            const beforeCids = new Set(beforeComps.map((c: any) => c.type));
+
             // Attempt to add component via Editor API directly
             Editor.Message.request('scene', 'create-component', {
                 uuid: nodeUuid,
                 component: componentType
-            }).then(async (result: any) => {
-                // Wait for Editor to finish adding the component
-                await new Promise(resolve => setTimeout(resolve, 100));
-                // Re-query node info to verify component was actually added
-                try {
-                    const allComponentsInfo2 = await this.getComponents(nodeUuid);
-                    if (allComponentsInfo2.success && allComponentsInfo2.data?.components) {
-                        const addedComponent = allComponentsInfo2.data.components.find((comp: any) => comp.type === componentType);
-                        if (addedComponent) {
-                            resolve({
-                                success: true,
-                                message: `Component '${componentType}' added successfully`,
-                                data: {
-                                    nodeUuid: nodeUuid,
-                                    componentType: componentType,
-                                    componentVerified: true,
-                                    existing: false
-                                }
-                            });
-                        } else {
-                            resolve({
-                                success: false,
-                                error: `Component '${componentType}' was not found on node after addition. Available components: ${allComponentsInfo2.data.components.map((c: any) => c.type).join(', ')}`
-                            });
-                        }
-                    } else {
-                        resolve({
-                            success: false,
-                            error: `Failed to verify component addition: ${allComponentsInfo2.error || 'Unable to get node components'}`
-                        });
-                    }
-                } catch (verifyError: any) {
+            }).then(async () => {
+                await new Promise(r => setTimeout(r, 150));
+                const after = await this.getComponents(nodeUuid);
+                const afterComps = after.success && after.data?.components ? after.data.components : [];
+                // Prefer a cid/name match; otherwise accept a newly-appeared component — a
+                // custom script registers under a cid, not its class name, so the old
+                // name-only check always false-failed on scripts.
+                let added = afterComps.find((c: any) => this.componentMatches(c, componentType));
+                if (!added) added = afterComps.find((c: any) => !beforeCids.has(c.type));
+                if (added) {
+                    resolve({
+                        success: true,
+                        message: `Component '${componentType}' added successfully (registered as cid '${added.type}')`,
+                        data: { nodeUuid, componentType, resolvedCid: added.type, className: added.className, componentVerified: true, existing: false }
+                    });
+                } else {
                     resolve({
                         success: false,
-                        error: `Failed to verify component addition: ${verifyError.message}`
+                        error: `Component '${componentType}' was not found on node after addition. Available: ${afterComps.map((c: any) => c.className || c.type).join(', ')}`
                     });
                 }
             }).catch((err: Error) => {
@@ -288,32 +306,52 @@ export class ComponentTools implements ToolExecutor {
                 resolve({ success: false, error: `Failed to get components for node '${nodeUuid}': ${allComponentsInfo.error}` });
                 return;
             }
-            // Step 2: Find component whose type field matches componentType (cid)
-            const exists = allComponentsInfo.data.components.some((comp: any) => comp.type === componentType);
-            if (!exists) {
-                resolve({ success: false, error: `Component cid '${componentType}' not found on node '${nodeUuid}'. Use getComponents to get the type field (cid) as componentType.` });
+            // Step 2: Find the component by cid OR @ccclass name / builtin type.
+            const target = allComponentsInfo.data.components.find((comp: any) => this.componentMatches(comp, componentType));
+            if (!target) {
+                resolve({ success: false, error: `Component '${componentType}' not found on node '${nodeUuid}'. Pass a cid, an @ccclass class name, or a builtin type (get_components lists both 'type' and 'className').` });
                 return;
             }
-            // Step 3: Remove via official API
-            try {
-                await Editor.Message.request('scene', 'remove-component', {
-                    uuid: nodeUuid,
-                    component: componentType
-                });
-                // Step 4: Re-query to confirm removal
-                const afterRemoveInfo = await this.getComponents(nodeUuid);
-                const stillExists = afterRemoveInfo.success && afterRemoveInfo.data?.components?.some((comp: any) => comp.type === componentType);
-                if (stillExists) {
-                    resolve({ success: false, error: `Component cid '${componentType}' was not removed from node '${nodeUuid}'.` });
-                } else {
-                    resolve({
-                        success: true,
-                        message: `Component cid '${componentType}' removed successfully from node '${nodeUuid}'`,
-                        data: { nodeUuid, componentType }
-                    });
+            const cid = target.type; // remove-component needs the cid, not the class name
+            // Step 3: Remove via official API. The 3.8 `remove-component` message takes the
+            // COMPONENT's own scene uuid (properties.uuid.value) — the {uuid:node, component:cid}
+            // form does NOT remove custom script components. Try the component-uuid form first,
+            // then fall back to the node+cid form, verifying (with a settle) after each.
+            const compSceneUuid: string | undefined = target?.properties?.uuid?.value || target?.uuid || undefined;
+            const removePayloads: any[] = [];
+            if (compSceneUuid) removePayloads.push({ uuid: compSceneUuid });
+            removePayloads.push({ uuid: nodeUuid, component: cid });
+
+            const stillHasCid = async (): Promise<boolean> => {
+                const after = await this.getComponents(nodeUuid);
+                return !!(after.success && after.data?.components?.some((comp: any) => comp.type === cid));
+            };
+
+            let removed = false;
+            let lastErr = '';
+            for (const payload of removePayloads) {
+                try {
+                    await Editor.Message.request('scene', 'remove-component', payload);
+                } catch (err: any) {
+                    lastErr = err.message;
+                    continue;
                 }
-            } catch (err: any) {
-                resolve({ success: false, error: `Failed to remove component: ${err.message}` });
+                let stillExists = true;
+                for (let attempt = 0; attempt < 3 && stillExists; attempt++) {
+                    await new Promise(r => setTimeout(r, 150));
+                    stillExists = await stillHasCid();
+                }
+                if (!stillExists) { removed = true; break; }
+            }
+
+            if (removed) {
+                resolve({
+                    success: true,
+                    message: `Component '${componentType}' (cid '${cid}') removed successfully from node '${nodeUuid}'`,
+                    data: { nodeUuid, componentType, resolvedCid: cid, componentUuid: compSceneUuid }
+                });
+            } else {
+                resolve({ success: false, error: `Component '${componentType}' (cid '${cid}') was not removed from node '${nodeUuid}'.${lastErr ? ' Last error: ' + lastErr : ''}` });
             }
         });
     }
@@ -325,6 +363,9 @@ export class ComponentTools implements ToolExecutor {
                 if (nodeData && nodeData.__comps__) {
                     const components = nodeData.__comps__.map((comp: any) => ({
                         type: comp.__type__ || comp.cid || comp.type || 'Unknown',
+                        // Readable @ccclass / builtin class name (e.g. "NavMesh") so callers
+                        // don't have to carry the opaque cid around.
+                        className: this.componentClassName(comp) || undefined,
                         uuid: comp.uuid?.value || comp.uuid || null,
                         enabled: comp.enabled !== undefined ? comp.enabled : true,
                         properties: this.extractComponentProperties(comp)
@@ -369,17 +410,16 @@ export class ComponentTools implements ToolExecutor {
             // Prefer Editor API for node info query
             Editor.Message.request('scene', 'query-node', nodeUuid).then((nodeData: any) => {
                 if (nodeData && nodeData.__comps__) {
-                    const component = nodeData.__comps__.find((comp: any) => {
-                        const compType = comp.__type__ || comp.cid || comp.type;
-                        return compType === componentType;
-                    });
-                    
+                    const component = nodeData.__comps__.find((comp: any) => this.componentMatches(comp, componentType));
+
                     if (component) {
                         resolve({
                             success: true,
                             data: {
                                 nodeUuid: nodeUuid,
                                 componentType: componentType,
+                                resolvedCid: this.componentCid(component),
+                                className: this.componentClassName(component) || undefined,
                                 enabled: component.enabled !== undefined ? component.enabled : true,
                                 properties: this.extractComponentProperties(component)
                             }
@@ -400,7 +440,7 @@ export class ComponentTools implements ToolExecutor {
                 
                 Editor.Message.request('scene', 'execute-scene-script', options).then((result: any) => {
                     if (result.success && result.data.components) {
-                        const component = result.data.components.find((comp: any) => comp.type === componentType);
+                        const component = result.data.components.find((comp: any) => this.componentMatches(comp, componentType));
                         if (component) {
                             resolve({
                                 success: true,
@@ -526,16 +566,18 @@ export class ComponentTools implements ToolExecutor {
                 
                 const allComponents = componentsResponse.data.components;
                 
-                // Step 2: Find target component
-                let targetComponent = null;
+                // Step 2: Find target component by cid OR @ccclass name / builtin type.
+                let targetComponent: any = null;
+                let resolvedCid: string = componentType; // the actual cid, used for raw dump matching
                 const availableTypes: string[] = [];
-                
+
                 for (let i = 0; i < allComponents.length; i++) {
                     const comp = allComponents[i];
-                    availableTypes.push(comp.type);
-                    
-                    if (comp.type === componentType) {
+                    availableTypes.push(comp.className ? `${comp.className}(${comp.type})` : comp.type);
+
+                    if (this.componentMatches(comp, componentType)) {
                         targetComponent = comp;
+                        resolvedCid = comp.type;
                         break;
                     }
                 }
@@ -558,7 +600,7 @@ export class ComponentTools implements ToolExecutor {
                 // (settable getters like `material` are handled here, before analyzeProperty,
                 // which would otherwise reject them because they are absent from the dump).
                 const assetResult = await this.trySetAssetProperty(
-                    nodeUuid, componentType, property, propertyType, value, targetComponent
+                    nodeUuid, resolvedCid, property, propertyType, value, targetComponent
                 );
                 if (assetResult) {
                     resolve(assetResult);
@@ -741,12 +783,12 @@ export class ComponentTools implements ToolExecutor {
                     return;
                 }
                 
-                // Find the index of the target component in raw data
+                // Find the index of the target component in raw data (match by resolved cid).
                 let rawComponentIndex = -1;
                 for (let i = 0; i < rawNodeData.__comps__.length; i++) {
                     const comp = rawNodeData.__comps__[i] as any;
                     const compType = comp.__type__ || comp.cid || comp.type || 'Unknown';
-                    if (compType === componentType) {
+                    if (compType === resolvedCid) {
                         rawComponentIndex = i;
                         break;
                     }
@@ -1077,7 +1119,7 @@ export class ComponentTools implements ToolExecutor {
                 // Step 5: Wait for Editor to finish updating, then verify
                 await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms for Editor to finish updating
                 
-                const verification = await this.verifyPropertyChange(nodeUuid, componentType, property, originalValue, actualExpectedValue);
+                const verification = await this.verifyPropertyChange(nodeUuid, resolvedCid, property, originalValue, actualExpectedValue);
                 
                 resolve({
                     success: true,
