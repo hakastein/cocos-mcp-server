@@ -91,10 +91,30 @@ export class SceneTools implements ToolExecutor {
         }
     }
 
+    /** Poll scene readiness briefly to avoid reading a transient/loading scene. */
+    private async waitSceneReady(maxWaitMs = 1500): Promise<boolean> {
+        for (let waited = 0; waited <= maxWaitMs; waited += 150) {
+            try {
+                const r: any = await Editor.Message.request('scene', 'query-is-ready');
+                if (r === true || r?.ready === true) return true;
+            } catch { /* ignore, retry */ }
+            await new Promise(res => setTimeout(res, 150));
+        }
+        return false;
+    }
+
     private async getCurrentScene(): Promise<ToolResponse> {
         try {
+            // Wait until the scene has finished loading, so we never report a transient
+            // untitled/empty scene while the real scene is still opening.
+            const ready = await this.waitSceneReady();
             const tree: any = await Editor.Message.request('scene', 'query-node-tree');
             if (tree?.uuid) {
+                // Resolve the on-disk scene file so callers can tell WHICH scene is open
+                // (and whether it is an unsaved/untitled scene) — key to spotting a stale
+                // or wrong current scene.
+                let url: string | null = null;
+                try { url = await Editor.Message.request('asset-db', 'query-url', tree.uuid); } catch { /* untitled */ }
                 return {
                     success: true,
                     data: {
@@ -102,6 +122,9 @@ export class SceneTools implements ToolExecutor {
                         uuid: tree.uuid,
                         type: tree.type ?? 'cc.Scene',
                         active: tree.active ?? true,
+                        url,
+                        saved: !!url,
+                        ready,
                         nodeCount: tree.children?.length ?? 0
                     }
                 };
@@ -183,6 +206,7 @@ export class SceneTools implements ToolExecutor {
 
     private async getSceneHierarchy(includeComponents: boolean = false): Promise<ToolResponse> {
         try {
+            await this.waitSceneReady();
             const tree: any = await Editor.Message.request('scene', 'query-node-tree');
             if (tree) {
                 return { success: true, data: this.buildHierarchy(tree, includeComponents) };
