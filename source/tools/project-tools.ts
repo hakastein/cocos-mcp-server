@@ -1047,33 +1047,42 @@ export class ProjectTools implements ToolExecutor {
                     subAssets: []
                 };
                 
-                if (includeSubAssets && assetInfo) {
-                    // For image assets, try to get spriteFrame and texture sub-assets
-                    if (assetInfo.type === 'cc.ImageAsset' || assetPath.match(/\.(png|jpg|jpeg|gif|tga|bmp|psd)$/i)) {
-                        // Generate common sub-asset UUIDs
-                        const baseUuid = assetInfo.uuid;
-                        const possibleSubAssets = [
-                            { type: 'spriteFrame', uuid: `${baseUuid}@f9941`, suffix: '@f9941' },
-                            { type: 'texture', uuid: `${baseUuid}@6c48a`, suffix: '@6c48a' },
-                            { type: 'texture2D', uuid: `${baseUuid}@6c48a`, suffix: '@6c48a' }
-                        ];
-                        
-                        for (const subAsset of possibleSubAssets) {
-                            try {
-                                // Try to get URL for the sub-asset to verify it exists
-                                const subAssetUrl = await Editor.Message.request('asset-db', 'query-url', subAsset.uuid);
-                                if (subAssetUrl) {
-                                    detailedInfo.subAssets.push({
-                                        type: subAsset.type,
-                                        uuid: subAsset.uuid,
-                                        url: subAssetUrl,
-                                        suffix: subAsset.suffix
-                                    });
-                                }
-                            } catch {
-                                // Sub-asset doesn't exist, skip it
-                            }
+                if (includeSubAssets && assetInfo?.uuid) {
+                    // Enumerate sub-assets GENERICALLY from the import metadata (subMetas),
+                    // which covers meshes (importer 'gltf-mesh'), gltf-materials, and
+                    // image spriteFrame/texture sub-assets — dynamically, with no hardcoded
+                    // sub-id suffixes. The sub-id is an artifact of the import, so it must
+                    // be read, not guessed.
+                    try {
+                        const meta: any = await Editor.Message.request('asset-db', 'query-asset-meta', assetInfo.uuid);
+                        const subMetas = meta?.subMetas || {};
+                        for (const sid of Object.keys(subMetas)) {
+                            const sm = subMetas[sid];
+                            if (!sm) continue;
+                            detailedInfo.subAssets.push({
+                                id: sid,
+                                name: sm.name || sm.displayName || sid,
+                                importer: sm.importer,
+                                uuid: sm.uuid || `${assetInfo.uuid}@${sid}`
+                            });
                         }
+                    } catch { /* no meta / not a container asset */ }
+
+                    // Fallback: query-asset-info sub-assets if the meta yielded none.
+                    if (detailedInfo.subAssets.length === 0) {
+                        try {
+                            const info: any = await Editor.Message.request('asset-db', 'query-asset-info', assetInfo.uuid);
+                            const subs = info?.subAssets || {};
+                            for (const sid of Object.keys(subs)) {
+                                const sub = subs[sid];
+                                detailedInfo.subAssets.push({
+                                    id: sid,
+                                    name: sub?.name || sid,
+                                    importer: sub?.importer || sub?.type,
+                                    uuid: sub?.uuid || `${assetInfo.uuid}@${sid}`
+                                });
+                            }
+                        } catch { /* ignore */ }
                     }
                 }
                 
