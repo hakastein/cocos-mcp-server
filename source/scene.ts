@@ -1,6 +1,11 @@
 import { join } from 'path';
 module.paths.push(join(Editor.App.path, 'node_modules'));
 
+// `cce` is the editor-side engine facade available in the scene process (it exposes
+// Prefab / PreviewPlay helpers the public `cc` module does not). Declared here so this
+// TS file compiles; it is a real global inside the running scene worker.
+declare const cce: any;
+
 // Helpers shared across scene script methods
 function getScene(): any {
     const { director } = require('cc');
@@ -14,9 +19,20 @@ function requireActiveScene(): any {
 }
 
 function findNodeByUuid(scene: any, nodeUuid: string): any {
-    const node = scene.getChildByUuid(nodeUuid);
-    if (!node) throw new Error(`Node not found: ${nodeUuid}`);
-    return node;
+    // scene.getChildByUuid only checks the scene's DIRECT children, so it misses any
+    // nested node (and children of inactive parents). Walk the whole tree instead, which
+    // also traverses inactive branches — essential for authoring e.g. a ParticleSystem
+    // that lives under an inactive template node.
+    const direct = scene.getChildByUuid ? scene.getChildByUuid(nodeUuid) : null;
+    if (direct) return direct;
+    const stack: any[] = [...(scene.children || [])];
+    while (stack.length) {
+        const n = stack.pop();
+        if (!n) continue;
+        if (n.uuid === nodeUuid) return n;
+        if (n.children && n.children.length) stack.push(...n.children);
+    }
+    throw new Error(`Node not found: ${nodeUuid}`);
 }
 
 function findComponentClass(componentType: string): any {
@@ -318,6 +334,198 @@ export const methods: { [key: string]: (...any: any) => any } = {
             }
 
             return { success: true, message: `Component property '${property}' updated successfully` };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Populate a particle GradientRange's colour/alpha gradient via the ENGINE API.
+     * The editor `set-property` channel cannot write GradientColorKey/GradientAlphaKey
+     * arrays (they always read back empty), so we build real `cc.ColorKey`/`cc.AlphaKey`
+     * instances and call `Gradient.setKeys(...)` on the live component. This mutates the
+     * live scene graph; the editor serialises it faithfully on the next scene save.
+     *
+     * `propertyPath` addresses the GradientRange, dotted for sub-modules, e.g.
+     * 'startColor' or 'colorOverLifetimeModule.color'. `mode` defaults to 1 (Gradient).
+     */
+    setParticleGradient(
+        nodeUuid: string,
+        componentType: string,
+        propertyPath: string,
+        colorKeys: Array<{ color?: { r?: number; g?: number; b?: number; a?: number }; time?: number }>,
+        alphaKeys: Array<{ alpha?: number; time?: number }>,
+        mode?: number,
+        enableModule?: boolean,
+    ) {
+        try {
+            const cc = require('cc');
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const ComponentClass = findComponentClass(componentType);
+            const comp = node.getComponent(ComponentClass);
+            if (!comp) return { success: false, error: `Component ${componentType} not found on node` };
+
+            // Walk the dotted path to the object that OWNS the GradientRange (so we can
+            // optionally enable its containing module) and then to the GradientRange itself.
+            const segs = String(propertyPath).split('.');
+            let owner: any = comp;
+            for (let i = 0; i < segs.length - 1; i++) {
+                owner = owner?.[segs[i]];
+                if (owner == null) return { success: false, error: `Path segment '${segs[i]}' is null on ${componentType}` };
+            }
+            if (enableModule && owner && typeof owner === 'object' && 'enable' in owner) {
+                owner.enable = true;
+            }
+            const gr: any = owner?.[segs[segs.length - 1]];
+            if (!gr) return { success: false, error: `GradientRange '${propertyPath}' not found on ${componentType}` };
+            if (!gr.gradient || typeof gr.gradient.setKeys !== 'function') {
+                return { success: false, error: `Property '${propertyPath}' is not a GradientRange` };
+            }
+
+            const { Color, ColorKey, AlphaKey } = cc;
+            const cks = (colorKeys || []).map((k) => {
+                const ck = new ColorKey();
+                const c = k.color || {};
+                ck.color = new Color(c.r ?? 255, c.g ?? 255, c.b ?? 255, c.a ?? 255);
+                ck.time = Number(k.time) || 0;
+                return ck;
+            });
+            const aks = (alphaKeys || []).map((k) => {
+                const ak = new AlphaKey();
+                ak.alpha = k.alpha != null ? Number(k.alpha) : 255;
+                ak.time = Number(k.time) || 0;
+                return ak;
+            });
+
+            gr.mode = mode != null ? mode : 1; // GradientRange.Mode.Gradient
+            gr.gradient.setKeys(cks, aks);
+
+            return {
+                success: true,
+                data: {
+                    propertyPath,
+                    mode: gr.mode,
+                    colorKeys: gr.gradient.colorKeys.length,
+                    alphaKeys: gr.gradient.alphaKeys.length,
+                    moduleEnabled: !!(enableModule && owner && 'enable' in owner),
+                },
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Populate a particle CurveRange's animation curve via the ENGINE API. Like gradients,
+     * a CurveRange spline (RealCurve) cannot be written through the editor `set-property`
+     * channel, so we set `mode`/`multiplier` and call `spline.assignSorted(...)` on the live
+     * component. Persisted on the next scene save.
+     *
+     * `propertyPath` addresses the CurveRange, dotted for sub-modules, e.g.
+     * 'sizeOvertimeModule.size', 'velocityOvertimeModule.speedModifier', 'rateOverTime'.
+     * `mode` defaults to 1 (Curve). `keyframes` is [{time,value}] with time in 0..1.
+     */
+    setParticleCurve(
+        nodeUuid: string,
+        componentType: string,
+        propertyPath: string,
+        keyframes: Array<{ time?: number; value?: number }>,
+        mode?: number,
+        multiplier?: number,
+        enableModule?: boolean,
+    ) {
+        try {
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const ComponentClass = findComponentClass(componentType);
+            const comp = node.getComponent(ComponentClass);
+            if (!comp) return { success: false, error: `Component ${componentType} not found on node` };
+
+            const segs = String(propertyPath).split('.');
+            let owner: any = comp;
+            for (let i = 0; i < segs.length - 1; i++) {
+                owner = owner?.[segs[i]];
+                if (owner == null) return { success: false, error: `Path segment '${segs[i]}' is null on ${componentType}` };
+            }
+            if (enableModule && owner && typeof owner === 'object' && 'enable' in owner) {
+                owner.enable = true;
+            }
+            const cr: any = owner?.[segs[segs.length - 1]];
+            if (!cr || !cr.spline || typeof cr.spline.assignSorted !== 'function') {
+                return { success: false, error: `Property '${propertyPath}' is not a CurveRange` };
+            }
+
+            const kf = (keyframes || []).slice().sort((a, b) => (Number(a.time) || 0) - (Number(b.time) || 0));
+            const times = kf.map((k) => Number(k.time) || 0);
+            const values = kf.map((k) => Number(k.value) || 0);
+            cr.mode = mode != null ? mode : 1; // CurveRange.Mode.Curve
+            if (multiplier != null) cr.multiplier = multiplier;
+            // assignSorted(times[], values[]) — the RealCurve accepts a parallel value array.
+            cr.spline.assignSorted(times, values);
+
+            return {
+                success: true,
+                data: {
+                    propertyPath,
+                    mode: cr.mode,
+                    multiplier: cr.multiplier,
+                    keyCount: times.length,
+                    eval0: cr.spline.evaluate(0),
+                    eval1: cr.spline.evaluate(1),
+                    moduleEnabled: !!(enableModule && owner && 'enable' in owner),
+                },
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Generate faithful prefab JSON from a scene node using the editor's own serializer
+     * (`cce.Prefab.generatePrefabDataFromNode`). Unlike the hand-rolled serializer this
+     * preserves ALL component refs — MeshRenderer `_mesh`/`_materials`, asset uuids, node
+     * links — because it is the exact path the editor uses when you drag a node to Assets.
+     * Returns the prefab file content; the caller (panel process) writes it via asset-db.
+     */
+    createPrefabFromNode2(nodeUuid: string) {
+        try {
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            if (typeof cce === 'undefined' || !cce?.Prefab?.generatePrefabDataFromNode) {
+                return { success: false, error: 'cce.Prefab.generatePrefabDataFromNode is unavailable in this editor build' };
+            }
+            const gen = cce.Prefab.generatePrefabDataFromNode(node);
+            const prefabData: string = (gen && typeof gen.prefabData === 'string')
+                ? gen.prefabData
+                : (typeof gen === 'string' ? gen : JSON.stringify(gen));
+            if (!prefabData || prefabData.length < 2) {
+                return { success: false, error: 'Generated prefab data was empty' };
+            }
+            return { success: true, data: { prefabData, nodeName: node.name } };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /** Start/stop the in-editor preview (the Play button) via the editor facade. */
+    previewPlay(action: string) {
+        try {
+            if (typeof cce === 'undefined' || !cce?.PreviewPlay) {
+                return { success: false, error: 'cce.PreviewPlay is unavailable in this editor build' };
+            }
+            const pp = cce.PreviewPlay;
+            if (action === 'stop') {
+                if (typeof pp.stop === 'function') pp.stop();
+                return { success: true, message: 'Preview stopped' };
+            }
+            if (typeof pp.start !== 'function') return { success: false, error: 'PreviewPlay.start not available' };
+            const r = pp.start();
+            if (r && typeof r.then === 'function') {
+                // Fire-and-forget: the editor keeps playing; we report the launch.
+                r.catch(() => {});
+            }
+            return { success: true, message: 'In-editor preview started' };
         } catch (error: any) {
             return { success: false, error: error.message };
         }

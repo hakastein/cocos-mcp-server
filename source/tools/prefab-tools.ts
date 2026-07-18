@@ -759,60 +759,83 @@ export class PrefabTools implements ToolExecutor {
     }
 
     private async createPrefab(args: any): Promise<ToolResponse> {
-        return new Promise(async (resolve) => {
-            try {
-                // Supports both prefabPath and savePath parameter names
-                const pathParam = args.prefabPath || args.savePath;
-                if (!pathParam) {
-                    resolve({
-                        success: false,
-                        error: 'Missing prefab path parameter. Please provide prefabPath or savePath.'
-                    });
-                    return;
-                }
-
-                const prefabName = args.prefabName || 'NewPrefab';
-                const fullPath = pathParam.endsWith('.prefab') ?
-                    pathParam : `${pathParam}/${prefabName}.prefab`;
-
-                const includeChildren = args.includeChildren !== false; // default true
-                const includeComponents = args.includeComponents !== false; // default true
-
-                // Prefer the new asset-db method to create the prefab
-                console.log('Creating prefab using new asset-db method...');
-                const assetDbResult = await this.createPrefabWithAssetDB(
-                    args.nodeUuid,
-                    fullPath,
-                    prefabName,
-                    includeChildren,
-                    includeComponents
-                );
-
-                if (assetDbResult.success) {
-                    resolve(assetDbResult);
-                    return;
-                }
-
-                // If the asset-db method fails, try using Cocos Creator's native prefab creation API
-                console.log('asset-db method failed, trying native API...');
-                const nativeResult = await this.createPrefabNative(args.nodeUuid, fullPath);
-                if (nativeResult.success) {
-                    resolve(nativeResult);
-                    return;
-                }
-
-                // If the native API also fails, use the custom implementation
-                console.log('Native API failed, using custom implementation...');
-                const customResult = await this.createPrefabCustom(args.nodeUuid, fullPath, prefabName);
-                resolve(customResult);
-
-            } catch (error) {
-                resolve({
-                    success: false,
-                    error: `Error occurred while creating prefab: ${error}`
-                });
+        // Faithful prefab creation via the editor's OWN serializer
+        // (cce.Prefab.generatePrefabDataFromNode, run in the scene process). The previous
+        // hand-rolled serializer spread the editor *dump* form of components straight into
+        // the prefab JSON, which dropped MeshRenderer `_mesh`/`_materials` (and every other
+        // asset ref) — the produced prefab rendered as an untextured/empty node. The engine
+        // serializer emits the exact `__uuid__`/`__id__` graph the editor writes on drag-to-
+        // Assets, so all refs survive.
+        try {
+            const pathParam = args.savePath || args.prefabPath;
+            if (!args.nodeUuid || !pathParam) {
+                return { success: false, error: 'createPrefab requires nodeUuid and a savePath (or prefabPath).' };
             }
-        });
+            const prefabName = args.prefabName || (pathParam.split('/').pop() || 'NewPrefab').replace(/\.prefab$/i, '');
+            const url = pathParam.endsWith('.prefab') ? pathParam : `${pathParam}/${prefabName}.prefab`;
+
+            // 1. Generate the prefab file content from the live node (scene process / cce).
+            let gen: any;
+            try {
+                gen = await Editor.Message.request('scene', 'execute-scene-script', {
+                    name: 'cocos-mcp-server',
+                    method: 'createPrefabFromNode2',
+                    args: [args.nodeUuid]
+                });
+            } catch (err: any) {
+                return { success: false, error: `Prefab data generation failed: ${err.message}` };
+            }
+            if (!gen || !gen.success || !gen.data?.prefabData) {
+                return { success: false, error: gen?.error || 'Editor returned no prefab data for the node' };
+            }
+
+            // 2. Write the asset (overwrite so re-runs are idempotent), then let it import.
+            const existed = await Editor.Message.request('asset-db', 'query-uuid', url).catch(() => null);
+            let assetInfo: any;
+            try {
+                assetInfo = await (Editor.Message.request as any)('asset-db', 'create-asset', url, gen.data.prefabData, { overwrite: true });
+            } catch (err: any) {
+                return { success: false, error: `Failed to write prefab asset '${url}': ${err.message}` };
+            }
+            const prefabUuid = assetInfo?.uuid || await Editor.Message.request('asset-db', 'query-uuid', url).catch(() => null);
+
+            // 3. Verify the written prefab actually carries its component refs. Count them
+            //    straight from the generated content (there is no asset-db `read-asset`
+            //    message in this editor build, and the on-disk file may not have flushed yet).
+            const refCheck = this.countPrefabRefs(gen.data.prefabData);
+
+            return {
+                success: true,
+                data: {
+                    prefabPath: url,
+                    prefabUuid,
+                    sourceNodeUuid: args.nodeUuid,
+                    overwritten: !!existed,
+                    meshRefs: refCheck.meshRefs,
+                    materialRefs: refCheck.materialRefs,
+                    refsPreserved: refCheck.ok,
+                    message: `Prefab created at ${url} (mesh refs: ${refCheck.meshRefs}, material refs: ${refCheck.materialRefs})`
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: `Error occurred while creating prefab: ${error.message || error}` };
+        }
+    }
+
+    /**
+     * Count preserved mesh/material refs in generated prefab content so a caller can
+     * confirm the serializer did not drop them. Operates on the JSON string directly.
+     */
+    private countPrefabRefs(content: string): { ok: boolean; meshRefs: number; materialRefs: number } {
+        try {
+            const meshRefs = (content.match(/"_mesh"\s*:/g) || []).length;
+            const materialRefs = (content.match(/"_materials"\s*:/g) || []).length;
+            let ok = false;
+            try { ok = Array.isArray(JSON.parse(content)); } catch { ok = false; }
+            return { ok, meshRefs, materialRefs };
+        } catch {
+            return { ok: false, meshRefs: 0, materialRefs: 0 };
+        }
     }
 
     private async createPrefabNative(nodeUuid: string, prefabPath: string): Promise<ToolResponse> {

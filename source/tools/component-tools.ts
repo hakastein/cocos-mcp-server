@@ -93,17 +93,24 @@ export class ComponentTools implements ToolExecutor {
                                 '• cc.Sprite: spriteFrame (sprite frame), color (tint color), sizeMode (size mode)\n' +
                                 '• cc.Button: normalColor (normal color), pressedColor (pressed color), target (target node)\n' +
                                 '• cc.UITransform: contentSize (content size), anchorPoint (anchor point)\n' +
-                                '• Custom Scripts: Based on properties defined in the script'
+                                '• Custom Scripts: Based on properties defined in the script\n' +
+                                '• Nested/sub-module properties: use a DOT PATH, e.g.\n' +
+                                '  "rateOverTime.constant", "startColor.color", "startColor.mode",\n' +
+                                '  "colorOverLifetimeModule.enable", "colorOverLifetimeModule.color".'
                         },
                         propertyType: {
                             type: 'string',
                             description: 'Property type - Must explicitly specify the property data type for correct value conversion and validation',
                             enum: [
                                 'string', 'number', 'boolean', 'integer', 'float',
-                                'color', 'vec2', 'vec3', 'size',
+                                'color', 'vec2', 'vec3', 'size', 'enum', 'gradient', 'curve',
                                 'node', 'component', 'spriteFrame', 'prefab', 'asset',
                                 'nodeArray', 'colorArray', 'numberArray', 'stringArray'
                             ]
+                            // Also accepts a real cc.* class name (e.g. "cc.Node", "cc.Color",
+                            // "cc.Vec3") — the value is typed accordingly. Use "enum" for
+                            // enumerations (pass the numeric value) and "gradient" for a
+                            // particle GradientRange (see the value docs).
                                                 },
 
                         value: {
@@ -140,7 +147,18 @@ export class ComponentTools implements ToolExecutor {
                                 '• nodeArray: ["uuid1","uuid2"] (array of node UUIDs)\n' +
                                 '• colorArray: [{"r":255,"g":0,"b":0,"a":255}] (array of colors)\n' +
                                 '• numberArray: [1,2,3,4,5] (array of numbers)\n' +
-                                '• stringArray: ["item1","item2"] (array of strings)'
+                                '• stringArray: ["item1","item2"] (array of strings)\n\n' +
+                                '🌈 Gradient (propertyType "gradient", for a particle GradientRange like\n' +
+                                '   startColor or colorOverLifetimeModule.color):\n' +
+                                '   {"mode":1, "enable":true,\n' +
+                                '    "colorKeys":[{"color":{"r":255,"g":150,"b":40,"a":255},"time":0}, ...],\n' +
+                                '    "alphaKeys":[{"alpha":255,"time":0}, {"alpha":0,"time":1}]}\n' +
+                                '   (time is 0..1; mode 1 = Gradient; enable turns on the sub-module)\n\n' +
+                                '📈 Curve (propertyType "curve", for a particle CurveRange like\n' +
+                                '   sizeOvertimeModule.size, rateOverTime, startSizeX):\n' +
+                                '   {"mode":1, "multiplier":1, "enable":true,\n' +
+                                '    "keyframes":[{"time":0,"value":1.0},{"time":1,"value":2.4}]}\n' +
+                                '   (time 0..1; mode 1 = Curve; final = spline(t) * multiplier)'
                         }
                     },
                     required: ['nodeUuid', 'componentType', 'property', 'propertyType', 'value']
@@ -604,6 +622,21 @@ export class ComponentTools implements ToolExecutor {
                 );
                 if (assetResult) {
                     resolve(assetResult);
+                    return;
+                }
+
+                // Advanced typed / nested / gradient set. Handles what the legacy keyword
+                // switch could not: real cc.* type names (cc.Node/cc.Color/cc.Vec3),
+                // dotted sub-property paths (e.g. `colorOverLifetimeModule.color`,
+                // `rateOverTime.constant`), Enum leaves, and particle GradientRanges. It
+                // routes through the editor Inspector `set-property` channel with a properly
+                // typed dump (or the engine API for gradient keys). Returns null to fall
+                // through to the legacy single-level keyword path below.
+                const advResult = await this.trySetAdvancedProperty(
+                    nodeUuid, resolvedCid, componentType, property, propertyType, value, targetComponent
+                );
+                if (advResult) {
+                    resolve(advResult);
                     return;
                 }
 
@@ -1143,6 +1176,233 @@ export class ComponentTools implements ToolExecutor {
         });
     }
 
+
+    /**
+     * Advanced typed / nested / gradient property set. Returns a ToolResponse when it
+     * handled the property, or null to defer to the legacy keyword switch.
+     *
+     * Triggers (leaving simple single-level keyword sets — 'color','vec3','node',… — to
+     * the legacy path so nothing that already worked regresses) when ANY of:
+     *   - `property` is a dotted path (a nested sub-property / sub-module),
+     *   - `propertyType` is 'gradient' or 'enum',
+     *   - `propertyType` is a real cc.* class name (cc.Node / cc.Color / cc.Vec3 / …).
+     *
+     * For gradients it calls the engine-API scene script (the only route that can write
+     * GradientColorKey arrays). For everything else it builds a correctly typed dump —
+     * discovering the target's type from the live component dump when the caller did not
+     * name it — and applies it via the editor `set-property` channel, supporting nested
+     * paths (`__comps__.<i>.<a>.<b>…`), then reads the value back to verify.
+     */
+    private async trySetAdvancedProperty(
+        nodeUuid: string,
+        resolvedCid: string,
+        componentType: string,
+        property: string,
+        propertyType: string,
+        value: any,
+        targetComponent: any
+    ): Promise<ToolResponse | null> {
+        const pt = (propertyType || '').toString();
+        const isNested = property.includes('.');
+        const isGradient = pt === 'gradient';
+        const isCurve = pt === 'curve';
+        const isTypedCc = pt.startsWith('cc.') || pt === 'enum';
+        if (!isNested && !isGradient && !isCurve && !isTypedCc) {
+            return null; // simple keyword set — let the legacy switch handle it unchanged
+        }
+
+        // Resolve the component's index in the raw node dump.
+        const rawNodeData: any = await Editor.Message.request('scene', 'query-node', nodeUuid);
+        if (!rawNodeData || !rawNodeData.__comps__) {
+            return { success: false, error: 'Failed to get raw node data for advanced property set' };
+        }
+        let idx = -1;
+        for (let i = 0; i < rawNodeData.__comps__.length; i++) {
+            const c = rawNodeData.__comps__[i] as any;
+            const t = c.__type__ || c.cid || c.type || 'Unknown';
+            if (t === resolvedCid) { idx = i; break; }
+        }
+        if (idx === -1) {
+            return { success: false, error: `Could not find component '${componentType}' index for advanced set` };
+        }
+
+        // --- Gradient: engine-API scene script (set-property cannot write gradient keys) ---
+        if (isGradient) {
+            const colorKeys = Array.isArray(value?.colorKeys) ? value.colorKeys : [];
+            const alphaKeys = Array.isArray(value?.alphaKeys) ? value.alphaKeys : [];
+            const mode = value?.mode;
+            const enableModule = value?.enable === true || /module/i.test(property);
+            let res: any;
+            try {
+                res = await Editor.Message.request('scene', 'execute-scene-script', {
+                    name: 'cocos-mcp-server',
+                    method: 'setParticleGradient',
+                    args: [nodeUuid, componentType, property, colorKeys, alphaKeys, mode, enableModule]
+                });
+            } catch (err: any) {
+                return { success: false, error: `Gradient scene script failed: ${err.message}` };
+            }
+            if (res && res.success) {
+                const applied = Number(res.data?.colorKeys || 0);
+                return {
+                    success: true,
+                    message: `Set gradient ${componentType}.${property} (${res.data?.colorKeys} colour / ${res.data?.alphaKeys} alpha keys)`,
+                    data: { nodeUuid, componentType, property, ...res.data, changeVerified: applied > 0 }
+                };
+            }
+            return { success: false, error: res?.error || 'Gradient set failed' };
+        }
+
+        // --- CurveRange animation curve: engine-API scene script ---
+        if (isCurve) {
+            const keyframes = Array.isArray(value?.keyframes) ? value.keyframes
+                : (Array.isArray(value) ? value : []);
+            const mode = value?.mode;
+            const multiplier = value?.multiplier;
+            const enableModule = value?.enable === true || /module/i.test(property);
+            let res: any;
+            try {
+                res = await Editor.Message.request('scene', 'execute-scene-script', {
+                    name: 'cocos-mcp-server',
+                    method: 'setParticleCurve',
+                    args: [nodeUuid, componentType, property, keyframes, mode, multiplier, enableModule]
+                });
+            } catch (err: any) {
+                return { success: false, error: `Curve scene script failed: ${err.message}` };
+            }
+            if (res && res.success) {
+                return {
+                    success: true,
+                    message: `Set curve ${componentType}.${property} (${res.data?.keyCount} keys, eval 0→1: ${res.data?.eval0}→${res.data?.eval1})`,
+                    data: { nodeUuid, componentType, property, ...res.data, changeVerified: Number(res.data?.keyCount || 0) > 0 }
+                };
+            }
+            return { success: false, error: res?.error || 'Curve set failed' };
+        }
+
+        // --- Typed / nested leaf via the editor set-property channel ---
+        const discovered = this.discoverDumpType(targetComponent, property);
+        const dump = this.buildTypedDump(pt, value, discovered);
+        if (!dump) {
+            return {
+                success: false,
+                error: `Could not build a typed dump for '${property}' (propertyType='${propertyType}', discovered='${discovered || 'unknown'}', value=${JSON.stringify(value)})`
+            };
+        }
+        const path = `__comps__.${idx}.${property}`;
+        try {
+            await Editor.Message.request('scene', 'set-property', { uuid: nodeUuid, path, dump });
+        } catch (err: any) {
+            return { success: false, error: `set-property failed for '${path}': ${err.message}` };
+        }
+
+        await new Promise(r => setTimeout(r, 150));
+        const actual = await this.readDumpValueAtPath(nodeUuid, resolvedCid, property);
+        return {
+            success: true,
+            message: `Set ${componentType}.${property}`,
+            data: {
+                nodeUuid,
+                componentType,
+                property,
+                dumpType: dump.type || discovered || 'inferred',
+                actualValue: actual,
+                changeVerified: actual !== undefined && actual !== null
+            }
+        };
+    }
+
+    /**
+     * Walk a (possibly dotted) property path through a processed component dump
+     * (`targetComponent.properties` === the editor `comp.value`) and return the editor
+     * `type` string of the addressed leaf, e.g. 'cc.Color', 'cc.Node', 'cc.Vec3',
+     * 'Number', 'Boolean', 'Enum'. Undefined when the path does not resolve.
+     */
+    private discoverDumpType(targetComponent: any, property: string): string | undefined {
+        const props = targetComponent?.properties || {};
+        const segs = property.split('.');
+        let cur: any = props[segs[0]];
+        for (let i = 1; i < segs.length && cur != null; i++) {
+            cur = cur.value ? cur.value[segs[i]] : undefined;
+        }
+        return cur?.type;
+    }
+
+    /**
+     * Build a correctly typed editor `dump` ({type,value}) from the caller's propertyType
+     * hint and/or the discovered dump type. Returns null when the value cannot be coerced.
+     */
+    private buildTypedDump(propertyType: string, value: any, discovered?: string): any | null {
+        const clamp = (v: any) => Math.min(255, Math.max(0, Number(v) || 0));
+        const pt = propertyType || '';
+        const dt = discovered || '';
+        const wants = (kw: string, cc: string) => pt === kw || pt === cc || dt === cc;
+
+        if (wants('color', 'cc.Color')) {
+            const v = (typeof value === 'string')
+                ? this.parseColorString(value)
+                : {
+                    r: clamp(value?.r), g: clamp(value?.g), b: clamp(value?.b),
+                    a: value?.a !== undefined ? clamp(value.a) : 255
+                };
+            return { type: 'cc.Color', value: v };
+        }
+        if (wants('vec3', 'cc.Vec3')) {
+            return { type: 'cc.Vec3', value: { x: Number(value?.x) || 0, y: Number(value?.y) || 0, z: Number(value?.z) || 0 } };
+        }
+        if (wants('vec2', 'cc.Vec2')) {
+            return { type: 'cc.Vec2', value: { x: Number(value?.x) || 0, y: Number(value?.y) || 0 } };
+        }
+        if (wants('size', 'cc.Size')) {
+            return { type: 'cc.Size', value: { width: Number(value?.width) || 0, height: Number(value?.height) || 0 } };
+        }
+        if (wants('node', 'cc.Node')) {
+            const uuid = typeof value === 'string' ? value : value?.uuid;
+            if (!uuid) return null;
+            return { type: 'cc.Node', value: { uuid } };
+        }
+        if (pt === 'enum' || dt === 'Enum') {
+            return { value: Number(value) };
+        }
+        if (pt === 'boolean' || pt === 'cc.Boolean' || dt === 'Boolean') {
+            return { value: Boolean(value) };
+        }
+        if (pt === 'string' || pt === 'cc.String' || dt === 'String') {
+            return { value: String(value) };
+        }
+        if (pt === 'number' || pt === 'integer' || pt === 'float' || dt === 'Number') {
+            return { value: Number(value) };
+        }
+        // A cc.* asset/type given as a uuid string (mesh/material/effect/etc.).
+        if (dt.startsWith('cc.') && typeof value === 'string') {
+            return { type: dt, value: { uuid: value } };
+        }
+        if ((pt.startsWith('cc.') || dt.startsWith('cc.')) && value && typeof value === 'object' && 'uuid' in value) {
+            return { type: pt.startsWith('cc.') ? pt : dt, value: { uuid: value.uuid } };
+        }
+        // Last resort: pass a plain object/primitive through with whatever type we know.
+        if (value !== undefined && value !== null) {
+            const type = pt.startsWith('cc.') ? pt : (dt || undefined);
+            return type ? { type, value } : { value };
+        }
+        return null;
+    }
+
+    /** Read back the dump `value` at a (possibly dotted) property path for verification. */
+    private async readDumpValueAtPath(nodeUuid: string, componentType: string, property: string): Promise<any> {
+        try {
+            const info = await this.getComponentInfo(nodeUuid, componentType);
+            const props = info?.data?.properties || {};
+            const segs = property.split('.');
+            let cur: any = props[segs[0]];
+            for (let i = 1; i < segs.length && cur != null; i++) {
+                cur = cur.value ? cur.value[segs[i]] : undefined;
+            }
+            return cur?.value;
+        } catch {
+            return undefined;
+        }
+    }
 
     /**
      * Metadata-driven asset assignment. Returns a ToolResponse when it handled the

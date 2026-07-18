@@ -1329,21 +1329,43 @@ export class NodeTools implements ToolExecutor {
     }
 
     private async moveNode(nodeUuid: string, newParentUuid: string, siblingIndex: number = -1): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            // Use correct set-parent API instead of move-node
-            Editor.Message.request('scene', 'set-parent', {
+        // Reparent via the correct editor API, then VERIFY the child actually moved — the
+        // old implementation reported success unconditionally, so a silently-ignored
+        // set-parent (a known failure mode) looked like it worked while the node stayed put.
+        try {
+            await Editor.Message.request('scene', 'set-parent', {
                 parent: newParentUuid,
                 uuids: [nodeUuid],
                 keepWorldTransform: false
-            }).then(() => {
-                resolve({
-                    success: true,
-                    message: 'Node moved successfully'
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
             });
-        });
+        } catch (err: any) {
+            return { success: false, error: `set-parent failed: ${err.message}` };
+        }
+
+        // Poll the node's actual parent until it reflects the move (the editor applies the
+        // reparent asynchronously). Report the real parent so a no-op is never masked.
+        let actualParent: string | undefined;
+        for (let attempt = 0; attempt < 4; attempt++) {
+            await new Promise(r => setTimeout(r, 150));
+            try {
+                const raw: any = await Editor.Message.request('scene', 'query-node', nodeUuid);
+                actualParent = raw?.parent?.value?.uuid;
+                if (actualParent === newParentUuid) break;
+            } catch { /* transient; retry */ }
+        }
+
+        if (actualParent === newParentUuid) {
+            return {
+                success: true,
+                message: 'Node reparented successfully',
+                data: { nodeUuid, newParentUuid, verifiedParent: actualParent }
+            };
+        }
+        return {
+            success: false,
+            error: `Reparent not applied: node's parent is '${actualParent ?? 'unknown'}', expected '${newParentUuid}'`,
+            data: { nodeUuid, newParentUuid, actualParent }
+        };
     }
 
     private async duplicateNode(uuid: string, includeChildren: boolean = true): Promise<ToolResponse> {

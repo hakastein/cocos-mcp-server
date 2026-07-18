@@ -447,23 +447,32 @@ export class ProjectTools implements ToolExecutor {
     }
 
     private async runProject(platform: string = 'browser'): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            const previewConfig = {
-                platform: platform,
-                scenes: [] // Will use current scene
-            };
-
-            // Note: Preview module is not documented in official API
-            // Using fallback approach - open build panel as alternative
-            (Editor.Message.request as any)('builder', 'open').then(() => {
-                resolve({
-                    success: true,
-                    message: `Build panel opened. Preview functionality requires manual setup.`
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
+        // Prefer launching the in-editor preview (the Play button) via the editor facade
+        // (cce.PreviewPlay) run in the scene process — this actually starts the game so an
+        // agent/human can validate behaviour, instead of merely opening the build panel.
+        try {
+            const res: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'previewPlay',
+                args: ['start']
             });
-        });
+            if (res && res.success) {
+                return {
+                    success: true,
+                    message: 'In-editor preview started (Play). Use stop_preview_server or the editor Stop button to end it.',
+                    data: { mode: 'in-editor-preview' }
+                };
+            }
+            // Fall through to the build panel if the preview facade is unavailable.
+            await (Editor.Message.request as any)('builder', 'open');
+            return {
+                success: true,
+                message: `Preview facade unavailable (${res?.error || 'unknown'}); opened the build panel instead.`,
+                data: { mode: 'build-panel' }
+            };
+        } catch (err: any) {
+            return { success: false, error: err.message };
+        }
     }
 
     private async buildProject(args: any): Promise<ToolResponse> {
