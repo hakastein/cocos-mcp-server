@@ -179,6 +179,19 @@ export class MCPServer {
         try {
             if (pathname === '/mcp' && req.method === 'POST') {
                 await this.handleMCPRequest(req, res);
+            } else if (pathname === '/mcp') {
+                // Any non-POST to /mcp (GET stream, DELETE session): we offer no
+                // server-initiated SSE stream and are sessionless, so there is
+                // nothing here. Spec-compliant MCP clients treat 405 as "stream
+                // not offered" and continue cleanly; a 404 does NOT get that
+                // special-case and can surface as a transport error mid-handshake.
+                res.setHeader('Allow', 'POST');
+                res.writeHead(405);
+                res.end(JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: null,
+                    error: { code: -32000, message: 'Method Not Allowed' }
+                }));
             } else if (pathname === '/health' && req.method === 'GET') {
                 res.writeHead(200);
                 res.end(JSON.stringify({ status: 'ok', tools: this.toolsList.length }));
@@ -210,6 +223,17 @@ export class MCPServer {
                 id: null,
                 error: { code: -32700, message: `Parse error: ${parseError.message}` }
             }));
+            return;
+        }
+
+        // JSON-RPC notifications carry no `id` and expect no response. Per MCP
+        // Streamable HTTP the server returns 202 Accepted with an empty body —
+        // NOT a JSON-RPC error. The client sends `notifications/initialized`
+        // right after `initialize`; answering it with an error body (our old
+        // `default`-case behavior) breaks the handshake on spec-strict clients.
+        if (message && message.method !== undefined && message.id === undefined) {
+            res.writeHead(202);
+            res.end();
             return;
         }
 
