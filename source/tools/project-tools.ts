@@ -371,21 +371,26 @@ export class ProjectTools implements ToolExecutor {
             },
             {
                 name: 'get_asset_details',
-                description: 'Get detailed asset information including spriteFrame sub-assets',
+                description: 'Get detailed asset information including sub-assets. For an FBX/glTF model the sub-assets ' +
+                    'are grouped into meshes / materials / animationClips / skeletons / textures / modelPrefab so a ' +
+                    'MeshRenderer can be built from a mesh or a clip resolved without guessing. Accepts a db:// url ' +
+                    'or a uuid under any of: assetPath, url, path, uuid.',
                 inputSchema: {
                     type: 'object',
                     properties: {
                         assetPath: {
                             type: 'string',
-                            description: 'Asset path (db://assets/...)'
+                            description: 'Asset db:// url (db://assets/...) or a uuid. Aliases: url, path, uuid.'
                         },
+                        url: { type: 'string', description: 'Alias for assetPath (db:// url).' },
+                        path: { type: 'string', description: 'Alias for assetPath (db:// url).' },
+                        uuid: { type: 'string', description: 'Asset uuid (alternative to a db:// url).' },
                         includeSubAssets: {
                             type: 'boolean',
-                            description: 'Include sub-assets like spriteFrame, texture',
+                            description: 'Include sub-assets like meshes, materials, clips, spriteFrame, texture',
                             default: true
                         }
-                    },
-                    required: ['assetPath']
+                    }
                 }
             }
         ];
@@ -439,8 +444,12 @@ export class ProjectTools implements ToolExecutor {
                 return await this.queryAssetUrl(args.uuid);
             case 'find_asset_by_name':
                 return await this.findAssetByName(args);
-            case 'get_asset_details':
-                return await this.getAssetDetails(args.assetPath, args.includeSubAssets);
+            case 'get_asset_details': {
+                // Accept assetPath / url / path / uuid — passing e.g. { url } used to reach
+                // query-asset-info as `undefined` and fail with a bare "parameter error".
+                const ref = args.assetPath ?? args.url ?? args.path ?? args.uuid;
+                return await this.getAssetDetails(ref, args.includeSubAssets);
+            }
             default:
                 throw new Error(`Unknown tool: ${toolName}`);
         }
@@ -1043,7 +1052,11 @@ export class ProjectTools implements ToolExecutor {
     private async getAssetDetails(assetPath: string, includeSubAssets: boolean = true): Promise<ToolResponse> {
         return new Promise(async (resolve) => {
             try {
-                // Get basic asset info
+                if (!assetPath) {
+                    resolve({ success: false, error: 'Provide the asset as assetPath / url / path (db:// url) or uuid.' });
+                    return;
+                }
+                // Get basic asset info (query-asset-info accepts either a db:// url or a uuid).
                 const assetInfoResponse = await this.getAssetInfo(assetPath);
                 if (!assetInfoResponse.success) {
                     resolve(assetInfoResponse);
@@ -1095,6 +1108,25 @@ export class ProjectTools implements ToolExecutor {
                     }
                 }
                 
+                // Group sub-assets by importer so a caller can pick a mesh / material / clip / the
+                // model prefab directly instead of guessing sub-id suffixes. FBX/glTF importers:
+                // gltf-mesh, gltf-material, gltf-animation, gltf-skeleton, gltf-scene (embedded prefab).
+                const byImporter: Record<string, any[]> = {};
+                for (const sa of detailedInfo.subAssets) {
+                    const imp = sa.importer || 'unknown';
+                    (byImporter[imp] = byImporter[imp] || []).push(sa);
+                }
+                detailedInfo.grouped = {
+                    meshes: byImporter['gltf-mesh'] || [],
+                    materials: byImporter['gltf-material'] || [],
+                    animationClips: byImporter['gltf-animation'] || [],
+                    skeletons: byImporter['gltf-skeleton'] || [],
+                    textures: [...(byImporter['texture'] || []), ...(byImporter['image'] || [])],
+                    spriteFrames: byImporter['sprite-frame'] || [],
+                    // The embedded model prefab — instantiate THIS (not the .fbx main asset) to drop the model in a scene.
+                    modelPrefab: (byImporter['gltf-scene'] || [])[0] || null
+                };
+
                 resolve({
                     success: true,
                     data: {

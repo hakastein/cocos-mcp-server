@@ -529,5 +529,135 @@ export const methods: { [key: string]: (...any: any) => any } = {
         } catch (error: any) {
             return { success: false, error: error.message };
         }
+    },
+
+    /**
+     * Attach a SkeletalAnimation socket to a bone via the ENGINE (`SkeletalAnimation.createSocket`),
+     * the exact path the editor's socket `+` button uses. The editor `set-property` channel cannot
+     * write `sockets` (a Socket[] whose elements hold a Node reference) nor create the tracked target
+     * node the socket needs, so this is done on the live component. `createSocket`:
+     *   - creates a child Node under the SkeletalAnimation node named "<lastBone> Socket",
+     *   - pushes `new Socket(bonePath, target)` and calls `rebuildSocketAnimations()` so the target
+     *     tracks the bone even with `useBakedAnimation = true`.
+     * The editor sees both the new node (query-node) and the updated sockets array (query-component),
+     * so it serialises them on the next scene/prefab save. Parent a weapon model under the returned
+     * target uuid to hang it off the bone. Idempotent: an existing socket for `bonePath` is reused.
+     */
+    addSkeletalSocket(nodeUuid: string, bonePath: string) {
+        try {
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const sk = node.getComponent('cc.SkeletalAnimation');
+            if (!sk) return { success: false, error: 'Node has no cc.SkeletalAnimation component' };
+            if (typeof sk.createSocket !== 'function') {
+                return { success: false, error: 'SkeletalAnimation.createSocket is unavailable in this engine build' };
+            }
+            if (!bonePath || typeof bonePath !== 'string') {
+                return { success: false, error: 'bonePath must be a non-empty bone path string (e.g. "mixamorig_Hips/.../mixamorig_RightHand")' };
+            }
+            // Reuse an existing socket for the same bone rather than stacking duplicates.
+            const existing = (sk.sockets || []).find((s: any) => s && s.path === bonePath);
+            if (existing && existing.target) {
+                return { success: true, data: { targetUuid: existing.target.uuid, targetName: existing.target.name, bonePath, created: false, socketCount: sk.sockets.length } };
+            }
+            // Fail loudly if the bone path does not resolve to a joint under this node — otherwise
+            // createSocket would silently make a dead target stuck at the node origin.
+            const joint = typeof node.getChildByPath === 'function' ? node.getChildByPath(bonePath) : undefined;
+            if (joint === null || joint === undefined) {
+                return { success: false, error: `Bone path '${bonePath}' does not resolve to a child joint of node '${node.name}'. Pass the full path from the SkeletalAnimation node, e.g. "mixamorig_Hips/mixamorig_Spine/.../mixamorig_RightHand".` };
+            }
+            const target = sk.createSocket(bonePath);
+            if (!target) return { success: false, error: `createSocket returned null for bone path '${bonePath}'` };
+            return { success: true, data: { targetUuid: target.uuid, targetName: target.name, bonePath, created: true, socketCount: sk.sockets.length } };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /** List the sockets on a node's SkeletalAnimation: bone path + tracked target node uuid/name. */
+    listSkeletalSockets(nodeUuid: string) {
+        try {
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const sk = node.getComponent('cc.SkeletalAnimation');
+            if (!sk) return { success: false, error: 'Node has no cc.SkeletalAnimation component' };
+            const sockets = (sk.sockets || []).map((s: any) => ({
+                path: s.path,
+                targetUuid: s.target && s.target.uuid,
+                targetName: s.target && s.target.name,
+                targetChildren: s.target ? s.target.children.map((c: any) => c.name) : []
+            }));
+            return { success: true, data: { nodeUuid, useBakedAnimation: sk.useBakedAnimation, sockets } };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Remove a SkeletalAnimation socket by bone path: drop the sockets[] entry, destroy its tracked
+     * target node (and anything parented under it), and rebuild. Mirrors the socket `-` button.
+     */
+    removeSkeletalSocket(nodeUuid: string, bonePath: string) {
+        try {
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const sk = node.getComponent('cc.SkeletalAnimation');
+            if (!sk) return { success: false, error: 'Node has no cc.SkeletalAnimation component' };
+            const match = (sk.sockets || []).find((s: any) => s && s.path === bonePath);
+            if (!match) return { success: false, error: `No socket with bone path '${bonePath}' on this node` };
+            const target = match.target;
+            sk.sockets = (sk.sockets || []).filter((s: any) => s !== match);
+            if (target && target.isValid) target.destroy();
+            if (typeof sk.rebuildSocketAnimations === 'function') sk.rebuildSocketAnimations();
+            return { success: true, data: { bonePath, removedTargetUuid: target && target.uuid, socketCount: sk.sockets.length } };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Set a MeshRenderer / SkinnedMeshRenderer's material slots from an array of Material asset uuids,
+     * via the ENGINE (`renderer.setMaterial(mat, i)`). The editor `set-property` channel cannot write
+     * the `materials` array from asset refs — the array-of-assets dump throws and NULLs the slot — so
+     * materials must be assigned on the live component. Assets are pulled from the engine asset cache
+     * when already loaded, otherwise loaded by uuid. Sub-asset uuids ("<uuid>@<sub>") are accepted.
+     * The editor serialises the assigned materials on the next scene/prefab save.
+     */
+    async setMeshRendererMaterials(nodeUuid: string, materialUuids: string[], componentType?: string) {
+        try {
+            const cc = require('cc');
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const renderer = componentType
+                ? node.getComponent(componentType)
+                : (node.getComponent('cc.SkinnedMeshRenderer') || node.getComponent('cc.MeshRenderer'));
+            if (!renderer) return { success: false, error: 'Node has no MeshRenderer / SkinnedMeshRenderer component' };
+            if (typeof renderer.setMaterial !== 'function') {
+                return { success: false, error: `Component '${componentType || renderer.constructor.name}' has no setMaterial()` };
+            }
+            if (!Array.isArray(materialUuids) || materialUuids.length === 0) {
+                return { success: false, error: 'materialUuids must be a non-empty array of Material asset uuids' };
+            }
+            const load = (uuid: string) => new Promise<any>((res) => {
+                if (!uuid) return res(null);
+                const cached = cc.assetManager.assets.get(uuid);
+                if (cached) return res(cached);
+                cc.assetManager.loadAny({ uuid }, (err: any, asset: any) => res(err ? null : asset));
+            });
+            const mats = await Promise.all(materialUuids.map(load));
+            const missing = materialUuids.filter((_u, i) => !mats[i]);
+            if (missing.length) return { success: false, error: `Could not load Material asset(s): ${missing.join(', ')}` };
+            mats.forEach((m, i) => renderer.setMaterial(m, i));
+            return {
+                success: true,
+                data: {
+                    componentType: renderer.constructor.name,
+                    count: mats.length,
+                    materials: renderer.sharedMaterials.map((m: any) => m && m._uuid)
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
     }
 };

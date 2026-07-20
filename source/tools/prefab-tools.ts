@@ -259,57 +259,79 @@ export class PrefabTools implements ToolExecutor {
     private async instantiatePrefab(args: any): Promise<ToolResponse> {
         return new Promise(async (resolve) => {
             try {
-                // Get prefab asset info
+                // Resolve the asset. For a plain .prefab this is the instantiable asset directly.
+                // For an FBX / glTF model the MAIN asset is a cc.Asset that create-node CANNOT
+                // instantiate (it returns null and no node appears — the silent no-op). The thing
+                // you actually drop into the scene is the model's embedded prefab, exposed as a
+                // 'gltf-scene' SUB-asset. Resolve to that so instantiating an .fbx works.
                 const assetInfo = await Editor.Message.request('asset-db', 'query-asset-info', args.prefabPath);
                 if (!assetInfo) {
-                    throw new Error('Prefab not found');
+                    throw new Error('Asset not found');
                 }
 
-                // Use the correct create-node API to instantiate from prefab asset
-                const createNodeOptions: any = {
-                    assetUuid: assetInfo.uuid
-                };
+                let assetUuid: string = assetInfo.uuid;
+                let usedModelPrefab = false;
+                let modelSubId: string | null = null;
+                try {
+                    const meta: any = await Editor.Message.request('asset-db', 'query-asset-meta', assetInfo.uuid);
+                    const subMetas = (meta && meta.subMetas) ? meta.subMetas : {};
+                    for (const sid of Object.keys(subMetas)) {
+                        const sm = subMetas[sid];
+                        // 'gltf-scene' is the model's embedded prefab (what dragging the FBX creates).
+                        if (sm && sm.importer === 'gltf-scene') {
+                            assetUuid = sm.uuid || `${assetInfo.uuid}@${sid}`;
+                            modelSubId = sid;
+                            usedModelPrefab = true;
+                            break;
+                        }
+                    }
+                } catch { /* no meta / not a model container — instantiate the main asset */ }
 
-                // Set parent node
+                const createNodeOptions: any = { assetUuid };
                 if (args.parentUuid) {
                     createNodeOptions.parent = args.parentUuid;
                 }
-
-                // Set node name
+                // For a model prefab let create-node use the model's own name (e.g. "Weapon_Crusher_Hammer"),
+                // not the ".fbx" file name. For a plain prefab keep the previous naming behaviour.
                 if (args.name) {
                     createNodeOptions.name = args.name;
-                } else if (assetInfo.name) {
+                } else if (!usedModelPrefab && assetInfo.name) {
                     createNodeOptions.name = assetInfo.name;
                 }
-
-                // Set initial properties (e.g. position)
                 if (args.position) {
-                    createNodeOptions.dump = {
-                        position: {
-                            value: args.position
-                        }
-                    };
+                    createNodeOptions.dump = { position: { value: args.position } };
                 }
 
-                // Create the node
                 const nodeUuid = await Editor.Message.request('scene', 'create-node', createNodeOptions);
                 const uuid = Array.isArray(nodeUuid) ? nodeUuid[0] : nodeUuid;
 
-                // Note: create-node API should automatically establish prefab linkage when created from a prefab asset
-                console.log('Prefab node created successfully:', {
-                    nodeUuid: uuid,
-                    prefabUuid: assetInfo.uuid,
-                    prefabPath: args.prefabPath
-                });
+                // Verify a node was actually created. create-node returns null for a non-instantiable
+                // asset — report that as a failure instead of a misleading success with no nodeUuid.
+                if (!uuid) {
+                    resolve({
+                        success: false,
+                        error: `create-node produced no node for '${args.prefabPath}' (asset uuid ${assetUuid}). ` +
+                            (usedModelPrefab
+                                ? 'The resolved gltf-scene sub-asset was not instantiable.'
+                                : 'If this is an FBX/glTF model, its main asset is not directly instantiable and no gltf-scene sub-asset was found to instantiate.'),
+                        data: { prefabPath: args.prefabPath, assetUuidTried: assetUuid }
+                    });
+                    return;
+                }
 
                 resolve({
                     success: true,
                     data: {
                         nodeUuid: uuid,
                         prefabPath: args.prefabPath,
+                        assetUuid,
+                        modelPrefab: usedModelPrefab,
+                        modelSubId,
                         parentUuid: args.parentUuid,
                         position: args.position,
-                        message: 'Prefab instantiated successfully and prefab linkage established'
+                        message: usedModelPrefab
+                            ? `Model prefab instantiated from FBX/glTF sub-asset (${assetUuid})`
+                            : 'Prefab instantiated successfully and prefab linkage established'
                     }
                 });
             } catch (err: any) {

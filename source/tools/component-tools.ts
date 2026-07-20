@@ -196,6 +196,51 @@ export class ComponentTools implements ToolExecutor {
                         }
                     }
                 }
+            },
+            {
+                name: 'set_materials',
+                description: 'Set the material slots of a MeshRenderer / SkinnedMeshRenderer from an array of Material ' +
+                    'asset uuids (slot i <- materialUuids[i]). Use this instead of set_component_property for the ' +
+                    'materials array: the editor set-property channel cannot write an asset array and corrupts the ' +
+                    'slot. Assets may be plain or sub-asset uuids ("<uuid>@<sub>").',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        nodeUuid: {
+                            type: 'string',
+                            description: 'UUID of the node holding the renderer'
+                        },
+                        materialUuids: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Material asset uuids, one per slot in order'
+                        },
+                        componentType: {
+                            type: 'string',
+                            description: 'Optional explicit renderer type (e.g. cc.MeshRenderer, cc.SkinnedMeshRenderer). ' +
+                                'Defaults to the node\'s SkinnedMeshRenderer or MeshRenderer.'
+                        }
+                    },
+                    required: ['nodeUuid', 'materialUuids']
+                }
+            },
+            {
+                name: 'get_materials',
+                description: 'List the material asset uuids currently bound to each slot of a node\'s MeshRenderer / SkinnedMeshRenderer.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        nodeUuid: {
+                            type: 'string',
+                            description: 'UUID of the node holding the renderer'
+                        },
+                        componentType: {
+                            type: 'string',
+                            description: 'Optional explicit renderer type; defaults to SkinnedMeshRenderer or MeshRenderer.'
+                        }
+                    },
+                    required: ['nodeUuid']
+                }
             }
         ];
     }
@@ -216,8 +261,65 @@ export class ComponentTools implements ToolExecutor {
                 return await this.attachScript(args.nodeUuid, args.scriptPath);
             case 'get_available_components':
                 return await this.getAvailableComponents(args.category);
+            case 'set_materials':
+                return await this.setMaterials(args.nodeUuid, args.materialUuids, args.componentType);
+            case 'get_materials':
+                return await this.getMaterials(args.nodeUuid, args.componentType);
             default:
                 throw new Error(`Unknown tool: ${toolName}`);
+        }
+    }
+
+    /**
+     * Set a renderer's material slots from Material asset uuids. Routes to the scene script
+     * (`setMeshRendererMaterials`) which assigns via the engine `renderer.setMaterial(mat, i)` —
+     * the editor `set-property` channel cannot write the materials array (it throws and nulls the
+     * slot), which is why this needs a dedicated tool. The editor serialises the result on save.
+     */
+    private async setMaterials(nodeUuid: string, materialUuids: string[], componentType?: string): Promise<ToolResponse> {
+        try {
+            const result = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'setMeshRendererMaterials',
+                args: [nodeUuid, materialUuids, componentType]
+            });
+            if (result && typeof result === 'object' && 'success' in result) {
+                return result as ToolResponse;
+            }
+            return { success: true, data: result };
+        } catch (err: any) {
+            return { success: false, error: err.message || String(err) };
+        }
+    }
+
+    /**
+     * Read back a renderer's current per-slot material uuids. Uses a small inline scene eval so it
+     * mirrors exactly what set_materials wrote, without adding another scene method.
+     */
+    private async getMaterials(nodeUuid: string, componentType?: string): Promise<ToolResponse> {
+        try {
+            const pick = componentType
+                ? `node.getComponent(${JSON.stringify(componentType)})`
+                : `(node.getComponent('cc.SkinnedMeshRenderer')||node.getComponent('cc.MeshRenderer'))`;
+            const script =
+                `(() => { const cc = require('cc'); const scene = cc.director.getScene();` +
+                ` let node=null; const f=(n)=>{ if(n.uuid===${JSON.stringify(nodeUuid)}) node=n; n.children.forEach(f); }; scene.children.forEach(f);` +
+                ` if(!node) return {success:false,error:'Node not found'};` +
+                ` const mr = ${pick};` +
+                ` if(!mr) return {success:false,error:'No MeshRenderer/SkinnedMeshRenderer'};` +
+                ` return {success:true,data:{componentType:mr.constructor.name, materials: mr.sharedMaterials.map(m=>m&&m._uuid)}}; })()`;
+            const result: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'evalInScene',
+                args: [script]
+            });
+            // evalInScene wraps the eval value as { success, data: { result } }.
+            if (result && result.success && result.data && result.data.result) {
+                return result.data.result as ToolResponse;
+            }
+            return (result as ToolResponse) || { success: false, error: 'No result from scene eval' };
+        } catch (err: any) {
+            return { success: false, error: err.message || String(err) };
         }
     }
 
