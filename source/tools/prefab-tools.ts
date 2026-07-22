@@ -256,6 +256,33 @@ export class PrefabTools implements ToolExecutor {
         });
     }
 
+    /**
+     * Verify whether a live scene node actually carries prefab linkage (a PrefabInfo on
+     * `node._prefab`). Runs in the scene process via evalInScene because linkage lives on the
+     * runtime node, not in the tool process. Returns {linked:false} on any error so callers
+     * degrade to an honest "not linked" rather than a false positive.
+     */
+    private async verifyPrefabLinkage(nodeUuid: string): Promise<{ linked: boolean; asset: string | null; fileId: string | null }> {
+        try {
+            const code = `(function(){` +
+                `function find(n,u){ if(n.uuid===u) return n; for(var i=0;i<n.children.length;i++){ var r=find(n.children[i],u); if(r) return r; } return null; }` +
+                `var node = find(cc.director.getScene(), ${JSON.stringify(nodeUuid)});` +
+                `var pi = node && node._prefab;` +
+                `return { linked: !!pi, asset: (pi && pi.asset) ? pi.asset._uuid : null, fileId: pi ? (pi.fileId || null) : null };` +
+                `})()`;
+            const res: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'evalInScene',
+                args: [code]
+            });
+            const r = res && res.data ? res.data.result : null;
+            if (r && typeof r === 'object') {
+                return { linked: !!r.linked, asset: r.asset || null, fileId: r.fileId || null };
+            }
+        } catch { /* fall through to unlinked */ }
+        return { linked: false, asset: null, fileId: null };
+    }
+
     private async instantiatePrefab(args: any): Promise<ToolResponse> {
         return new Promise(async (resolve) => {
             try {
@@ -319,6 +346,13 @@ export class PrefabTools implements ToolExecutor {
                     return;
                 }
 
+                // HONEST linkage reporting. The editor establishes real prefab linkage
+                // (a PrefabInfo on the node, persisted as a `_prefab` block) for MODEL
+                // (gltf-scene) prefabs, but NOT for plain .prefab assets instantiated this
+                // way — those come out as an unlinked copy. Rather than claim "linkage
+                // established" unconditionally (the old lie), verify the live node and report
+                // what actually happened.
+                const linkage = await this.verifyPrefabLinkage(uuid);
                 resolve({
                     success: true,
                     data: {
@@ -329,9 +363,13 @@ export class PrefabTools implements ToolExecutor {
                         modelSubId,
                         parentUuid: args.parentUuid,
                         position: args.position,
-                        message: usedModelPrefab
-                            ? `Model prefab instantiated from FBX/glTF sub-asset (${assetUuid})`
-                            : 'Prefab instantiated successfully and prefab linkage established'
+                        prefabLinked: linkage.linked,
+                        message: linkage.linked
+                            ? (usedModelPrefab
+                                ? `Model prefab instantiated from FBX/glTF sub-asset (${assetUuid}); prefab linkage established.`
+                                : 'Prefab instantiated successfully and prefab linkage established.')
+                            : 'Prefab instantiated as an UNLINKED copy: the editor did not establish prefab linkage for this asset, so the node has no PrefabInfo, the saved scene will contain no `_prefab` block, and edits to the prefab asset will NOT propagate to this node. (Plain .prefab assets instantiated via this tool are not auto-linked — drive truly-prefab objects from a Prefab reference in code instead.)',
+                        ...(linkage.linked ? {} : { warning: 'prefab-linkage-not-established' })
                     }
                 });
             } catch (err: any) {
@@ -826,6 +864,11 @@ export class PrefabTools implements ToolExecutor {
             //    message in this editor build, and the on-disk file may not have flushed yet).
             const refCheck = this.countPrefabRefs(gen.data.prefabData);
 
+            // HONEST linkage reporting: this writes the .prefab asset but does NOT convert the
+            // source node into a linked prefab instance (unlike dragging a node to the assets
+            // panel in the editor). Verify and surface that, so callers are not misled into
+            // thinking the source node now tracks the asset.
+            const srcLinkage = await this.verifyPrefabLinkage(args.nodeUuid);
             return {
                 success: true,
                 data: {
@@ -836,7 +879,11 @@ export class PrefabTools implements ToolExecutor {
                     meshRefs: refCheck.meshRefs,
                     materialRefs: refCheck.materialRefs,
                     refsPreserved: refCheck.ok,
-                    message: `Prefab created at ${url} (mesh refs: ${refCheck.meshRefs}, material refs: ${refCheck.materialRefs})`
+                    sourceNodeLinked: srcLinkage.linked,
+                    message: `Prefab created at ${url} (mesh refs: ${refCheck.meshRefs}, material refs: ${refCheck.materialRefs}).` +
+                        (srcLinkage.linked
+                            ? ' Source node is linked to the prefab.'
+                            : ' NOTE: the source node is NOT converted into a linked prefab instance — it stays a plain node with no `_prefab` block, so it will not track the new asset.')
                 }
             };
         } catch (error: any) {

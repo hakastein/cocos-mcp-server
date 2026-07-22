@@ -659,12 +659,47 @@ export class ComponentTools implements ToolExecutor {
         }
     }
 
+    /**
+     * The MCP transport delivers every tool-argument `value` as a STRING: a boolean arrives
+     * as "false", a vec2/size/color/asset object as its JSON text (e.g. '{"x":0,"y":1}' or
+     * '{"uuid":"…"}'), an array as '[…]'. The typed switch and the asset/advanced paths below
+     * all assume native JS types, so `Boolean("false")` became true, `typeof value === 'object'`
+     * was false for vec2/color, and '{"uuid":…}' got wrapped whole into another {uuid}. Coerce
+     * the string back to its intended shape up-front, based on propertyType. A genuine `string`
+     * payload is never reinterpreted, and bare uuid strings (node/asset refs that are not JSON)
+     * are left as-is for the downstream {uuid} wrapping.
+     */
+    private coerceIncomingValue(value: any, propertyType: string): any {
+        if (typeof value !== 'string') {
+            return value; // already a native value (e.g. from the mcp.mjs runner)
+        }
+        const pt = (propertyType || '').toString();
+        if (pt === 'string') {
+            return value; // never reinterpret a real string payload
+        }
+        const s = value.trim();
+        const structured = ['vec2', 'vec3', 'size', 'color', 'asset', 'spriteFrame', 'prefab',
+            'node', 'component', 'gradient', 'curve', 'nodeArray', 'colorArray', 'numberArray',
+            'stringArray', 'enum'];
+        if (structured.includes(pt) && (s.startsWith('{') || s.startsWith('['))) {
+            try { return JSON.parse(s); } catch { return value; } // not valid JSON — leave raw
+        }
+        if (pt === 'boolean') {
+            if (s === 'true' || s === '1') return true;
+            if (s === 'false' || s === '0' || s === '') return false;
+            return value; // unusual string — Boolean() downstream keeps prior behaviour
+        }
+        // number/integer/float: Number(value) downstream already parses "42" correctly.
+        return value;
+    }
+
     private async setComponentProperty(args: any): Promise<ToolResponse> {
-                        const { nodeUuid, componentType, property, propertyType, value } = args;
-        
+        const { nodeUuid, componentType, property, propertyType } = args;
+        const value = this.coerceIncomingValue(args.value, propertyType);
+
         return new Promise(async (resolve) => {
             try {
-                console.log(`[ComponentTools] Setting ${componentType}.${property} (type: ${propertyType}) = ${JSON.stringify(value)} on node ${nodeUuid}`);
+                console.log(`[ComponentTools] Setting ${componentType}.${property} (type: ${propertyType}) = ${JSON.stringify(value)} (raw: ${JSON.stringify(args.value)}) on node ${nodeUuid}`);
                 
                 // Step 0: Detect node-level properties and redirect to the appropriate node method
                 const nodeRedirectResult = await this.checkAndRedirectNodeProperties(args);
@@ -831,8 +866,10 @@ export class ComponentTools implements ToolExecutor {
                     case 'node':
                         if (typeof value === 'string') {
                             processedValue = { uuid: value };
+                        } else if (value && typeof value === 'object' && typeof value.uuid === 'string') {
+                            processedValue = { uuid: value.uuid };
                         } else {
-                            throw new Error('Node reference value must be a string UUID');
+                            throw new Error('Node reference value must be a uuid string or a { uuid } object');
                         }
                         break;
                     case 'component':
@@ -848,8 +885,10 @@ export class ComponentTools implements ToolExecutor {
                     case 'asset':
                         if (typeof value === 'string') {
                             processedValue = { uuid: value };
+                        } else if (value && typeof value === 'object' && typeof value.uuid === 'string') {
+                            processedValue = { uuid: value.uuid };
                         } else {
-                            throw new Error(`${propertyType} value must be a string UUID`);
+                            throw new Error(`${propertyType} value must be a uuid string or a { uuid } object`);
                         }
                         break;
                     case 'nodeArray':
@@ -974,9 +1013,12 @@ export class ComponentTools implements ToolExecutor {
                         }
                     });
                 } else if (componentType === 'cc.UITransform' && (property === '_contentSize' || property === 'contentSize')) {
-                    // Special handling for UITransform contentSize - set width and height separately
-                    const width = Number(value.width) || 100;
-                    const height = Number(value.height) || 100;
+                    // Special handling for UITransform contentSize - set width and height separately.
+                    // Use Number.isFinite (not `|| 100`) so a legitimate 0 is not clobbered to the default.
+                    const parsedW = Number(value.width);
+                    const parsedH = Number(value.height);
+                    const width = Number.isFinite(parsedW) ? parsedW : 100;
+                    const height = Number.isFinite(parsedH) ? parsedH : 100;
                     
                     // Set width first
                     await Editor.Message.request('scene', 'set-property', {
@@ -992,9 +1034,12 @@ export class ComponentTools implements ToolExecutor {
                         dump: { value: height }
                     });
                 } else if (componentType === 'cc.UITransform' && (property === '_anchorPoint' || property === 'anchorPoint')) {
-                    // Special handling for UITransform anchorPoint - set anchorX and anchorY separately
-                    const anchorX = Number(value.x) || 0.5;
-                    const anchorY = Number(value.y) || 0.5;
+                    // Special handling for UITransform anchorPoint - set anchorX and anchorY separately.
+                    // Use Number.isFinite (not `|| 0.5`) so a legitimate 0 is not clobbered to the default.
+                    const parsedX = Number(value.x);
+                    const parsedY = Number(value.y);
+                    const anchorX = Number.isFinite(parsedX) ? parsedX : 0.5;
+                    const anchorY = Number.isFinite(parsedY) ? parsedY : 0.5;
                     
                     // Set anchorX first
                     await Editor.Message.request('scene', 'set-property', {
@@ -1255,10 +1300,24 @@ export class ComponentTools implements ToolExecutor {
                 await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms for Editor to finish updating
                 
                 const verification = await this.verifyPropertyChange(nodeUuid, resolvedCid, property, originalValue, actualExpectedValue);
-                
+
+                // Honest success: for primitive and node-reference types the read-back
+                // comparison in verifyPropertyChange is reliable, so a failed verification means
+                // the editor silently did NOT apply the value (e.g. Boolean("false") no-op, or a
+                // node ref the target rejected). Report that as success:false instead of the old
+                // unconditional success:true. Object-shaped types (vec/color/arrays) keep
+                // success:true but still expose the honest changeVerified flag, because their
+                // JSON-equality check can false-negative on editor-side normalisation.
+                const strictVerifyTypes = ['boolean', 'number', 'integer', 'float', 'string', 'node'];
+                const strict = strictVerifyTypes.includes((propertyType || '').toString());
+                const applied = !strict || verification.verified;
+
                 resolve({
-                    success: true,
-                    message: `Successfully set ${componentType}.${property}`,
+                    success: applied,
+                    message: applied
+                        ? `Successfully set ${componentType}.${property}`
+                        : `Editor did not apply ${componentType}.${property}: requested ${JSON.stringify(actualExpectedValue)} but read back ${JSON.stringify(verification.actualValue)}`,
+                    ...(applied ? {} : { error: `Property '${property}' was not applied by the editor (changeVerified=false). The value read back does not match the requested value.` }),
                     data: {
                         nodeUuid,
                         componentType,

@@ -3,6 +3,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export class ProjectTools implements ToolExecutor {
+    // Serialises asset moves. Parallel move-asset requests into the same destination folder
+    // race inside the editor asset-db: with rename-on-conflict enabled, two concurrent moves
+    // each compute the same free name before either finishes, producing duplicates / corruption.
+    // Chaining every move through this promise makes them run strictly one-at-a-time in-server.
+    private moveChain: Promise<any> = Promise.resolve();
+
     getTools(): ToolDefinition[] {
         return [
             {
@@ -821,6 +827,15 @@ export class ProjectTools implements ToolExecutor {
     }
 
     private async moveAsset(source: string, target: string, overwrite: boolean = false): Promise<ToolResponse> {
+        // Enqueue on the serialisation chain so concurrent moves never run against the asset-db
+        // at the same time. Errors are swallowed for the *chain* (so one failed move does not
+        // wedge the queue) but still returned to *this* caller via the awaited run promise.
+        const run = this.moveChain.then(() => this.doMoveAsset(source, target, overwrite));
+        this.moveChain = run.then(() => undefined, () => undefined);
+        return run;
+    }
+
+    private async doMoveAsset(source: string, target: string, overwrite: boolean = false): Promise<ToolResponse> {
         return new Promise((resolve) => {
             const options = {
                 overwrite: overwrite,
