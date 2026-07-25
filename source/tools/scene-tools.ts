@@ -140,6 +140,11 @@ export class SceneTools implements ToolExecutor {
         const nodes = (dump.data && dump.data.nodes) || [];
         const signature = signatureOf(nodes);
         const data: any = { hash: hashSignature(signature), nodeCount: nodes.length, signature };
+        const keyCount = Object.keys(signature).length;
+        if (keyCount !== nodes.length) {
+            data.pathCollisions = nodes.length - keyCount;
+            data.warning = `${data.pathCollisions} node(s) share a path and were merged in the signature — the diff is blind to those.`;
+        }
         if (args.baseline && typeof args.baseline === 'object') {
             const diff = diffSignatures(args.baseline, signature);
             data.diff = diff;

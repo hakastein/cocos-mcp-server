@@ -727,22 +727,37 @@ export const methods: { [key: string]: (...any: any) => any } = {
                 return { success: false, error: `Component '${componentType}' has no property '${property}'` };
             }
 
+            const fieldValue = owner[property];
+            const fieldIsArray = Array.isArray(fieldValue);
+
             if (args.clear === true) {
-                const wasArray = Array.isArray(owner[property]);
-                owner[property] = wasArray ? [] : null;
+                owner[property] = fieldIsArray ? [] : null;
+                const cleared = owner[property];
+                const clearVerified = fieldIsArray ? Array.isArray(cleared) && cleared.length === 0 : !cleared;
+                if (!clearVerified) return { success: false, error: `Clearing '${property}' did not stick` };
                 return { success: true, data: { property, assigned: [], assignedKind: 'null', verified: true } };
             }
 
-            const uuids: string[] = Array.isArray(args.targetUuids)
-                ? args.targetUuids
-                : (args.targetUuid ? [args.targetUuid] : []);
+            const callerGaveArray = Array.isArray(args.targetUuids);
+            const uuids: string[] = callerGaveArray ? args.targetUuids : (args.targetUuid ? [args.targetUuid] : []);
             if (!uuids.length) {
                 return { success: false, error: 'Pass targetUuid, targetUuids, or clear:true' };
             }
+            // CCClass metadata reports the ELEMENT type for array fields, so the field's own value is
+            // the only reliable signal of its shape.
+            if (fieldIsArray && !callerGaveArray) {
+                return { success: false, error: `'${property}' is an array field (currently ${fieldValue.length} entries) — pass targetUuids: [...]; a single targetUuid would replace the whole array` };
+            }
+            if (!fieldIsArray && fieldValue !== null && fieldValue !== undefined && callerGaveArray) {
+                return { success: false, error: `'${property}' is a single-reference field — pass targetUuid, not targetUuids` };
+            }
 
             const declaredCtor = declaredPropertyCtor(owner, property);
-            const wantsNode = ctorIsA(declaredCtor, cc.Node);
-            const wantsComponent = ctorIsA(declaredCtor, cc.Component);
+            const sampleExisting = fieldIsArray ? fieldValue.find((v: any) => v) : fieldValue;
+            const inferredCtor = (!declaredCtor && sampleExisting && sampleExisting.constructor) || null;
+            const effectiveCtor = declaredCtor || inferredCtor;
+            const wantsNode = ctorIsA(effectiveCtor, cc.Node);
+            const wantsComponent = ctorIsA(effectiveCtor, cc.Component);
 
             const resolved: any[] = [];
             for (const uuid of uuids) {
@@ -752,9 +767,9 @@ export const methods: { [key: string]: (...any: any) => any } = {
                         const comp = targetNode.getComponent(args.targetComponentType);
                         if (!comp) return { success: false, error: `Target node '${targetNode.name}' has no '${args.targetComponentType}' component` };
                         resolved.push(comp);
-                    } else if (wantsComponent && declaredCtor) {
-                        const comp = targetNode.getComponent(declaredCtor);
-                        if (!comp) return { success: false, error: `Target node '${targetNode.name}' has no '${cc.js.getClassName(declaredCtor)}' component (the field '${property}' declares that type)` };
+                    } else if (wantsComponent && effectiveCtor) {
+                        const comp = targetNode.getComponent(effectiveCtor);
+                        if (!comp) return { success: false, error: `Target node '${targetNode.name}' has no '${cc.js.getClassName(effectiveCtor)}' component (the field '${property}' ${declaredCtor ? 'declares' : 'currently holds'} that type)` };
                         resolved.push(comp);
                     } else {
                         resolved.push(targetNode);
@@ -773,14 +788,16 @@ export const methods: { [key: string]: (...any: any) => any } = {
                 }
             }
 
+            const assignArray = fieldIsArray || callerGaveArray;
             const expected = resolved.map((v) => v.uuid);
-            owner[property] = Array.isArray(args.targetUuids) ? resolved : resolved[0];
+            owner[property] = assignArray ? resolved : resolved[0];
 
             const current = owner[property];
+            const shapeOk = Array.isArray(current) === assignArray;
             const actual = Array.isArray(current) ? current.map((v: any) => v && v.uuid) : [current && current.uuid];
-            const verified = actual.length === expected.length && expected.every((u, i) => u === actual[i]);
+            const verified = shapeOk && actual.length === expected.length && expected.every((u, i) => u === actual[i]);
             if (!verified) {
-                return { success: false, error: `Assignment did not stick: expected [${expected.join(', ')}], read back [${actual.join(', ')}]` };
+                return { success: false, error: `Assignment did not stick: expected ${assignArray ? 'array' : 'single'} [${expected.join(', ')}], read back [${actual.join(', ')}]` };
             }
             return {
                 success: true,
@@ -790,6 +807,10 @@ export const methods: { [key: string]: (...any: any) => any } = {
                     assignedKind: resolved[0] instanceof cc.Node ? 'node' : 'component',
                     assignedTypes: resolved.map((v) => v.constructor && v.constructor.name),
                     declaredType: declaredCtor ? cc.js.getClassName(declaredCtor) : null,
+                    inferredType: !declaredCtor && inferredCtor ? cc.js.getClassName(inferredCtor) : null,
+                    warning: !effectiveCtor && resolved[0] instanceof cc.Node
+                        ? `No type metadata for '${property}' and it was empty — assigned the NODE. If a component was meant, pass targetComponentType.`
+                        : undefined,
                     verified
                 }
             };
@@ -810,8 +831,14 @@ export const methods: { [key: string]: (...any: any) => any } = {
             const root = options.rootUuid ? findNodeByUuid(scene, options.rootUuid) : scene;
             const nodes: any[] = [];
             const walk = (parent: any, prefix: string) => {
+                // Same-named siblings are common (crowds, bone rigs); without a suffix their paths
+                // collide and a path-keyed diff goes blind to one of them.
+                const seen = new Map<string, number>();
                 for (const child of parent.children || []) {
-                    const path = prefix ? `${prefix}/${child.name}` : child.name;
+                    const nth = (seen.get(child.name) || 0) + 1;
+                    seen.set(child.name, nth);
+                    const label = nth === 1 ? child.name : `${child.name}#${nth}`;
+                    const path = prefix ? `${prefix}/${label}` : label;
                     const entry: any = {
                         uuid: child.uuid,
                         name: child.name,

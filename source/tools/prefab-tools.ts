@@ -366,6 +366,9 @@ export class PrefabTools implements ToolExecutor {
 
     private async setComponentPropertyOnAsset(args: any): Promise<ToolResponse> {
         try {
+            if (!('value' in args)) {
+                return { success: false, error: 'value is required — omitting it would delete the property from the prefab' };
+            }
             const data = await this.readPrefabArray(args.prefabPath);
             const cid = await this.resolveComponentCid(args.componentType, args.scriptPath);
             const result = setComponentPropertyInPrefabData(

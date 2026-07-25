@@ -112,6 +112,28 @@ test('removeComponentFromPrefabData throws when the node has no such component',
     assert.throws(() => removeComponentFromPrefabData(fixture(), { nodePath: 'Root/Child' }, 'cc.MeshRenderer'), /no 'cc.MeshRenderer'/);
 });
 
+test('removing a component nulls positional ref arrays but splices _components', () => {
+    const data = fixture();
+    data[5]._components = [{ __id__: 7 }];
+    data.push({ __type__: 'Holder', node: { __id__: 5 }, __prefab: { __id__: 8 }, _slots: [{ __id__: 2 }, { __id__: 6 }] });
+    data.push({ __type__: 'cc.CompPrefabInfo', fileId: 'eeeeeeeeeeeeeeeeeeeeee' });
+
+    const out = removeComponentFromPrefabData(data, { nodePath: 'Root' }, 'cc.MeshRenderer').data;
+
+    const holder = out.find((e) => e.__type__ === 'Holder');
+    assert.equal(holder._slots.length, 2, 'positional array must keep its length');
+    assert.equal(holder._slots[0], null, 'the removed ref becomes null, not a hole');
+    assert.equal(out[holder._slots[1].__id__].__type__, 'cc.PrefabInfo');
+    assert.deepEqual(out[1]._components, [], '_components is spliced, not nulled');
+});
+
+test('addComponentToPrefabData never lets properties clobber the structural wiring', () => {
+    const res = addComponentToPrefabData(fixture(), { nodePath: 'Root' }, CID, { node: { __id__: 999 }, __prefab: { __id__: 999 }, _id: 'x' });
+    const comp = res.data[res.componentId];
+    assert.equal(comp.node.__id__, 1);
+    assert.equal(comp.__prefab.__id__, res.componentId + 1);
+});
+
 test('setComponentPropertyInPrefabData writes scalars and asset refs, returning the previous value', () => {
     const first = setComponentPropertyInPrefabData(fixture(), { nodePath: 'Root' }, 'cc.MeshRenderer', '_shadowCastingMode', 0);
     assert.equal(first.previous, 1);

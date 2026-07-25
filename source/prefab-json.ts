@@ -102,11 +102,11 @@ export function addComponentToPrefabData(
         _name: '',
         _objFlags: 0,
         __editorExtras__: {},
-        node: { __id__: id },
-        _enabled: true,
-        __prefab: { __id__: infoId },
+        _id: '',
         ...props,
-        _id: ''
+        node: { __id__: id },
+        _enabled: props._enabled !== undefined ? props._enabled : true,
+        __prefab: { __id__: infoId }
     });
     out.push({ __type__: 'cc.CompPrefabInfo', fileId: actualFileId });
 
@@ -119,9 +119,14 @@ const DROPPED = Symbol('dropped-ref');
 
 /** Splicing entries shifts every index, so each surviving `__id__` has to be rewritten. */
 export function remapIds(data: any[], remap: Map<number, number>): any[] {
-    const rewrite = (value: any): any => {
+    // A dropped ref is spliced out of `_components` (a set) but nulled anywhere else, since every
+    // other ref array is positional and shrinking it would shift the remaining indices.
+    const rewrite = (value: any, key?: string): any => {
         if (Array.isArray(value)) {
-            return value.map(rewrite).filter((v) => v !== DROPPED);
+            const mapped = value.map((v) => rewrite(v));
+            return key === '_components'
+                ? mapped.filter((v) => v !== DROPPED)
+                : mapped.map((v) => (v === DROPPED ? null : v));
         }
         if (value && typeof value === 'object') {
             if (typeof value.__id__ === 'number' && Object.keys(value).length === 1) {
@@ -129,9 +134,9 @@ export function remapIds(data: any[], remap: Map<number, number>): any[] {
                 return next === undefined ? DROPPED : { __id__: next };
             }
             const out: any = {};
-            for (const key of Object.keys(value)) {
-                const rewritten = rewrite(value[key]);
-                out[key] = rewritten === DROPPED ? null : rewritten;
+            for (const k of Object.keys(value)) {
+                const rewritten = rewrite(value[k], k);
+                out[k] = rewritten === DROPPED ? null : rewritten;
             }
             return out;
         }
