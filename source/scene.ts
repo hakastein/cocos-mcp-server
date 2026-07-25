@@ -294,15 +294,46 @@ export const methods: { [key: string]: (...any: any) => any } = {
     // dependency on the editor-internal `console` scene package (whose `eval` method
     // is not present in every 3.8.x build — the source of the
     // "Scenario scripts do not exist: console" error).
-    evalInScene(code: string) {
+    async evalInScene(code: string, timeoutMs = 20000) {
+        const cc = require('cc');
+        const { director } = cc;
+        const scene = director.getScene();
+        // `cc`, `director` and `scene` are in scope for the evaluated code.
+        void scene;
+        let asyncWrapper = false;
+        let awaited = false;
         try {
-            const cc = require('cc');
-            const { director } = cc;
-            const scene = director.getScene();
-            // `cc`, `director` and `scene` are in scope for the evaluated code.
-            void scene;
-            // eslint-disable-next-line no-eval
-            const result = eval(code);
+            let result: any;
+            try {
+                // eslint-disable-next-line no-eval
+                result = eval(code);
+            } catch (err: any) {
+                // Plain eval is not an async context. Rather than fail outright, re-run the script
+                // inside an async IIFE so top-level await works — there the script must `return`.
+                if (err instanceof SyntaxError && /await is only valid/i.test(err.message || '')) {
+                    asyncWrapper = true;
+                    // eslint-disable-next-line no-eval
+                    result = eval(`(async () => {\n${code}\n})()`);
+                } else {
+                    throw err;
+                }
+            }
+
+            if (result && typeof result.then === 'function') {
+                awaited = true;
+                let timer: any;
+                try {
+                    result = await Promise.race([
+                        result,
+                        new Promise((_resolve, reject) => {
+                            timer = setTimeout(() => reject(new Error(`script promise did not settle within ${timeoutMs}ms`)), timeoutMs);
+                        })
+                    ]);
+                } finally {
+                    clearTimeout(timer);
+                }
+            }
+
             // Only return JSON-serialisable results across the IPC boundary.
             let data: any;
             try {
@@ -311,9 +342,16 @@ export const methods: { [key: string]: (...any: any) => any } = {
             } catch {
                 data = result === undefined ? undefined : String(result);
             }
-            return { success: true, data: { result: data } };
+            const payload: any = { result: data };
+            if (awaited) payload.awaited = true;
+            if (asyncWrapper) payload.asyncWrapper = true;
+            return { success: true, data: payload };
         } catch (error: any) {
-            return { success: false, error: error.message, stack: error.stack };
+            return {
+                success: false,
+                error: asyncWrapper ? `${error.message} (script was re-run inside an async wrapper, where it must \`return\` its value)` : error.message,
+                stack: error.stack
+            };
         }
     },
 

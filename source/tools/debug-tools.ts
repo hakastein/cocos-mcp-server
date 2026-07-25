@@ -243,22 +243,35 @@ export class DebugTools implements ToolExecutor {
     }
 
     private async getNodeTree(rootUuid?: string, maxDepth: number = 10): Promise<ToolResponse> {
+        // query-node returns an Inspector DUMP: every scalar is wrapped as {value,type,...},
+        // components live under `__comps__` (not `components`), and each child is a dump whose
+        // uuid sits at `.value.uuid`.
+        const plain = (field: any): any => (field && typeof field === 'object' && 'value' in field ? field.value : field);
+        const childUuid = (child: any): string => {
+            const v = plain(child);
+            return typeof v === 'string' ? v : (v && plain(v.uuid));
+        };
+
         const buildTree = async (nodeUuid: string, depth: number = 0): Promise<any> => {
             if (depth >= maxDepth) return { truncated: true };
             try {
-                const nodeData = await Editor.Message.request('scene', 'query-node', nodeUuid);
+                const nodeData: any = await Editor.Message.request('scene', 'query-node', nodeUuid);
+                const comps = nodeData.__comps__ ?? [];
+                const children = nodeData.children ?? [];
                 const tree: any = {
-                    uuid: nodeData.uuid,
-                    name: nodeData.name,
-                    active: nodeData.active,
-                    components: (nodeData as any).components?.map((c: any) => c.__type__) ?? [],
-                    childCount: nodeData.children?.length ?? 0,
+                    uuid: plain(nodeData.uuid),
+                    name: plain(nodeData.name),
+                    active: plain(nodeData.active),
+                    components: comps.map((c: any) => ({
+                        type: c.type ?? c.__type__,
+                        uuid: plain(plain(c)?.uuid)
+                    })),
+                    childCount: children.length,
                     children: []
                 };
-                if (nodeData.children?.length) {
-                    for (const childId of nodeData.children) {
-                        tree.children.push(await buildTree(childId, depth + 1));
-                    }
+                for (const child of children) {
+                    const uuid = childUuid(child);
+                    if (uuid) tree.children.push(await buildTree(uuid, depth + 1));
                 }
                 return tree;
             } catch (err: any) {
@@ -271,7 +284,8 @@ export class DebugTools implements ToolExecutor {
                 return { success: true, data: await buildTree(rootUuid) };
             }
             const hierarchy: any = await Editor.Message.request('scene', 'query-hierarchy');
-            const trees = await Promise.all(hierarchy.children.map((n: any) => buildTree(n.uuid)));
+            const roots = (hierarchy?.children ?? []).map((n: any) => n?.uuid ?? childUuid(n)).filter(Boolean);
+            const trees = await Promise.all(roots.map((uuid: string) => buildTree(uuid)));
             return { success: true, data: trees };
         } catch (err: any) {
             return { success: false, error: err.message };
