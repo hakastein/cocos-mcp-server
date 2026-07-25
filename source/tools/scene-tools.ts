@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, SceneInfo } from '../types';
+import { signatureOf, hashSignature, diffSignatures } from '../scene-signature';
 
 export class SceneTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -73,6 +74,38 @@ export class SceneTools implements ToolExecutor {
                         }
                     }
                 }
+            },
+            {
+                name: 'dump',
+                description: 'One call returning EVERY node in the scene as a flat list: uuid, name, full slash path, ' +
+                    'parentUuid, active, activeInHierarchy, childCount and (by default) each component\'s class name, ' +
+                    'uuid and enabled flag. Use this instead of walking the tree node-by-node or parsing the .scene ' +
+                    'file from disk — it is engine-side, so class names are real and activeInHierarchy is accurate.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        includeComponents: { type: 'boolean', description: 'Include each node\'s components', default: true },
+                        includeTransform: { type: 'boolean', description: 'Include position/rotation(euler)/scale', default: false },
+                        rootUuid: { type: 'string', description: 'Dump only this node\'s subtree (default: whole scene)' }
+                    }
+                }
+            },
+            {
+                name: 'checksum',
+                description: 'Scene-state signature for regression checks: per-node-path active/activeInHierarchy plus ' +
+                    'its sorted component class names, and a sha1 over all of it. Capture it BEFORE scene surgery, ' +
+                    'then call again afterwards passing the previous signature as `baseline` to get added/removed/changed ' +
+                    'nodes in one call — this is how you catch an accidentally deactivated node (e.g. the camera).',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        baseline: {
+                            type: 'object',
+                            description: 'A `signature` object returned by an earlier checksum call. When given, the ' +
+                                'response adds `diff` and `matches`.'
+                        }
+                    }
+                }
             }
         ];
     }
@@ -87,7 +120,48 @@ export class SceneTools implements ToolExecutor {
             case 'save_scene_as':       return this.saveSceneAs(args.path);
             case 'close_scene':         return this.closeScene();
             case 'get_scene_hierarchy': return this.getSceneHierarchy(args.includeComponents);
+            case 'dump':                return this.dumpScene(args || {});
+            case 'checksum':            return this.checksum(args || {});
             default: throw new Error(`Unknown tool: ${toolName}`);
+        }
+    }
+
+    private async dumpScene(args: any): Promise<ToolResponse> {
+        return this.runSceneMethod('dumpSceneNodes', [{
+            includeComponents: args.includeComponents,
+            includeTransform: args.includeTransform,
+            rootUuid: args.rootUuid
+        }]);
+    }
+
+    private async checksum(args: any): Promise<ToolResponse> {
+        const dump = await this.runSceneMethod('dumpSceneNodes', [{ includeComponents: true }]);
+        if (!dump.success) return dump;
+        const nodes = (dump.data && dump.data.nodes) || [];
+        const signature = signatureOf(nodes);
+        const data: any = { hash: hashSignature(signature), nodeCount: nodes.length, signature };
+        if (args.baseline && typeof args.baseline === 'object') {
+            const diff = diffSignatures(args.baseline, signature);
+            data.diff = diff;
+            data.matches = !diff.added.length && !diff.removed.length && !diff.changed.length;
+        }
+        return { success: true, data };
+    }
+
+    /** Route to a scene.ts method (engine context) and pass its ToolResponse straight through. */
+    private async runSceneMethod(method: string, args: any[]): Promise<ToolResponse> {
+        try {
+            const result = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method,
+                args
+            });
+            if (result && typeof result === 'object' && 'success' in result) {
+                return result as ToolResponse;
+            }
+            return { success: true, data: result };
+        } catch (err: any) {
+            return { success: false, error: err.message || String(err) };
         }
     }
 

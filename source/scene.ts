@@ -42,6 +42,42 @@ function findComponentClass(componentType: string): any {
     return cls;
 }
 
+function findNodeByUuidOrNull(scene: any, nodeUuid: string): any {
+    try {
+        return findNodeByUuid(scene, nodeUuid);
+    } catch {
+        return null;
+    }
+}
+
+function findComponentByUuid(scene: any, uuid: string): any {
+    const stack: any[] = [...(scene.children || [])];
+    while (stack.length) {
+        const n = stack.pop();
+        if (!n) continue;
+        for (const c of n.components || []) if (c && c.uuid === uuid) return c;
+        if (n.children && n.children.length) stack.push(...n.children);
+    }
+    return null;
+}
+
+/** CCClass attribute metadata is absent for plenty of custom-script fields — absence is not an error here. */
+function declaredPropertyCtor(owner: any, property: string): any {
+    const cc = require('cc');
+    const attrOf = (cc.CCClass && cc.CCClass.attr) || (cc.Class && cc.Class.attr);
+    if (typeof attrOf !== 'function') return null;
+    try {
+        const attr = attrOf(owner.constructor, property);
+        return (attr && attr.ctor) || null;
+    } catch {
+        return null;
+    }
+}
+
+function ctorIsA(ctor: any, base: any): boolean {
+    return !!ctor && !!base && (ctor === base || (ctor.prototype instanceof base));
+}
+
 export const methods: { [key: string]: (...any: any) => any } = {
     createNewScene() {
         try {
@@ -656,6 +692,153 @@ export const methods: { [key: string]: (...any: any) => any } = {
                     materials: renderer.sharedMaterials.map((m: any) => m && m._uuid)
                 }
             };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Assign a cc.Node / Component reference (or an array of them) on the LIVE component.
+     * The editor `set-property` channel needs the owning node's uuid plus Inspector metadata to guess
+     * the field's component class, and hard-errors when a custom script has none; assigning on the
+     * engine object needs neither, accepts a component uuid directly, and can address a specific
+     * component on a node. The editor serialises the field on the next scene/prefab save.
+     */
+    setComponentReference(args: any = {}) {
+        try {
+            const cc = require('cc');
+            const { nodeUuid, componentType, property } = args;
+            if (!nodeUuid || !componentType || !property) {
+                return { success: false, error: 'nodeUuid, componentType and property are required' };
+            }
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+
+            let owner: any;
+            if (args.componentIndex !== undefined && args.componentIndex !== null) {
+                const sameType = (node.components || []).filter((c: any) => c && c.constructor && (c.constructor.name === componentType || cc.js.getClassName(c.constructor) === componentType));
+                owner = sameType[args.componentIndex];
+                if (!owner) return { success: false, error: `Node '${node.name}' has no '${componentType}' at componentIndex ${args.componentIndex} (found ${sameType.length})` };
+            } else {
+                owner = node.getComponent(componentType);
+                if (!owner) return { success: false, error: `Node '${node.name}' has no '${componentType}' component` };
+            }
+            if (!(property in owner)) {
+                return { success: false, error: `Component '${componentType}' has no property '${property}'` };
+            }
+
+            if (args.clear === true) {
+                const wasArray = Array.isArray(owner[property]);
+                owner[property] = wasArray ? [] : null;
+                return { success: true, data: { property, assigned: [], assignedKind: 'null', verified: true } };
+            }
+
+            const uuids: string[] = Array.isArray(args.targetUuids)
+                ? args.targetUuids
+                : (args.targetUuid ? [args.targetUuid] : []);
+            if (!uuids.length) {
+                return { success: false, error: 'Pass targetUuid, targetUuids, or clear:true' };
+            }
+
+            const declaredCtor = declaredPropertyCtor(owner, property);
+            const wantsNode = ctorIsA(declaredCtor, cc.Node);
+            const wantsComponent = ctorIsA(declaredCtor, cc.Component);
+
+            const resolved: any[] = [];
+            for (const uuid of uuids) {
+                const targetNode = findNodeByUuidOrNull(scene, uuid);
+                if (targetNode) {
+                    if (args.targetComponentType) {
+                        const comp = targetNode.getComponent(args.targetComponentType);
+                        if (!comp) return { success: false, error: `Target node '${targetNode.name}' has no '${args.targetComponentType}' component` };
+                        resolved.push(comp);
+                    } else if (wantsComponent && declaredCtor) {
+                        const comp = targetNode.getComponent(declaredCtor);
+                        if (!comp) return { success: false, error: `Target node '${targetNode.name}' has no '${cc.js.getClassName(declaredCtor)}' component (the field '${property}' declares that type)` };
+                        resolved.push(comp);
+                    } else {
+                        resolved.push(targetNode);
+                    }
+                    continue;
+                }
+                const targetComp = findComponentByUuid(scene, uuid);
+                if (!targetComp) return { success: false, error: `Target uuid '${uuid}' matched no node and no component in the scene` };
+                resolved.push(wantsNode ? targetComp.node : targetComp);
+            }
+
+            if (declaredCtor) {
+                const bad = resolved.find((v) => !(v instanceof declaredCtor));
+                if (bad) {
+                    return { success: false, error: `'${property}' declares ${cc.js.getClassName(declaredCtor)} but the resolved target is ${bad.constructor && bad.constructor.name}` };
+                }
+            }
+
+            const expected = resolved.map((v) => v.uuid);
+            owner[property] = Array.isArray(args.targetUuids) ? resolved : resolved[0];
+
+            const current = owner[property];
+            const actual = Array.isArray(current) ? current.map((v: any) => v && v.uuid) : [current && current.uuid];
+            const verified = actual.length === expected.length && expected.every((u, i) => u === actual[i]);
+            if (!verified) {
+                return { success: false, error: `Assignment did not stick: expected [${expected.join(', ')}], read back [${actual.join(', ')}]` };
+            }
+            return {
+                success: true,
+                data: {
+                    property,
+                    assigned: expected,
+                    assignedKind: resolved[0] instanceof cc.Node ? 'node' : 'component',
+                    assignedTypes: resolved.map((v) => v.constructor && v.constructor.name),
+                    declaredType: declaredCtor ? cc.js.getClassName(declaredCtor) : null,
+                    verified
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Flat inventory of every node in the scene. Engine-side because `activeInHierarchy` and real
+     * component class names exist only on the live objects, not in the editor's node dump.
+     */
+    dumpSceneNodes(options: any = {}) {
+        try {
+            const scene = requireActiveScene();
+            const withComps = options.includeComponents !== false;
+            const withXform = options.includeTransform === true;
+            const root = options.rootUuid ? findNodeByUuid(scene, options.rootUuid) : scene;
+            const nodes: any[] = [];
+            const walk = (parent: any, prefix: string) => {
+                for (const child of parent.children || []) {
+                    const path = prefix ? `${prefix}/${child.name}` : child.name;
+                    const entry: any = {
+                        uuid: child.uuid,
+                        name: child.name,
+                        path,
+                        parentUuid: child.parent ? child.parent.uuid : null,
+                        active: child.active,
+                        activeInHierarchy: child.activeInHierarchy,
+                        childCount: (child.children || []).length
+                    };
+                    if (withComps) {
+                        entry.components = (child.components || []).map((c: any) => ({
+                            type: c && c.constructor ? c.constructor.name : 'Unknown',
+                            uuid: c && c.uuid,
+                            enabled: c ? c.enabled !== false : false
+                        }));
+                    }
+                    if (withXform) {
+                        entry.position = { x: child.position.x, y: child.position.y, z: child.position.z };
+                        entry.rotation = { x: child.eulerAngles.x, y: child.eulerAngles.y, z: child.eulerAngles.z };
+                        entry.scale = { x: child.scale.x, y: child.scale.y, z: child.scale.z };
+                    }
+                    nodes.push(entry);
+                    walk(child, path);
+                }
+            };
+            walk(root, options.rootUuid ? root.name : '');
+            return { success: true, data: { sceneName: scene.name, nodeCount: nodes.length, nodes } };
         } catch (error: any) {
             return { success: false, error: error.message };
         }

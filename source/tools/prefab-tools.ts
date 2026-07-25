@@ -1,4 +1,11 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, PrefabInfo } from '../types';
+import { readAssetJson, writeAssetJson } from '../asset-json';
+import {
+    compressUuid,
+    addComponentToPrefabData,
+    removeComponentFromPrefabData,
+    setComponentPropertyInPrefabData
+} from '../prefab-json';
 
 export class PrefabTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -179,6 +186,65 @@ export class PrefabTools implements ToolExecutor {
                     },
                     required: ['nodeUuid', 'assetUuid']
                 }
+            },
+            {
+                name: 'add_component',
+                description: 'Add a component to a node inside a .prefab ASSET on disk (not a scene node). Rewrites the ' +
+                    'prefab JSON directly, so every existing fileId is preserved and instances keep their overrides. ' +
+                    'componentType is either a builtin ("cc.MeshRenderer") or a script class name, whose script asset ' +
+                    'is resolved by name (pass scriptPath when the name is ambiguous). Do not have the prefab open in ' +
+                    'prefab-edit mode while calling this.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        prefabPath: { type: 'string', description: 'db:// path of the .prefab asset' },
+                        componentType: { type: 'string', description: 'Builtin type (cc.X) or script class name' },
+                        scriptPath: { type: 'string', description: 'db:// path of the .ts for a script component (disambiguates)' },
+                        nodePath: { type: 'string', description: 'Slash path inside the prefab, e.g. "Root/Muzzle" (default: root node)' },
+                        nodeName: { type: 'string', description: 'Node name inside the prefab; must be unique' },
+                        properties: { type: 'object', description: 'Serialized property values to write on the new component' }
+                    },
+                    required: ['prefabPath', 'componentType']
+                }
+            },
+            {
+                name: 'remove_component',
+                description: 'Remove a component from a node inside a .prefab ASSET on disk. Splices the component and its ' +
+                    'CompPrefabInfo out of the prefab JSON and rewrites every other __id__ so all remaining references ' +
+                    'stay valid. Returns the removed fileId — scenes holding instances of this prefab may still carry ' +
+                    'overrides keyed to it.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        prefabPath: { type: 'string', description: 'db:// path of the .prefab asset' },
+                        componentType: { type: 'string', description: 'Builtin type (cc.X) or script class name' },
+                        scriptPath: { type: 'string', description: 'db:// path of the .ts for a script component (disambiguates)' },
+                        nodePath: { type: 'string', description: 'Slash path inside the prefab (default: root node)' },
+                        nodeName: { type: 'string', description: 'Node name inside the prefab; must be unique' },
+                        occurrence: { type: 'number', description: 'Which one to remove when the node has several of the class (default 0)' }
+                    },
+                    required: ['prefabPath', 'componentType']
+                }
+            },
+            {
+                name: 'set_component_property',
+                description: 'Write one serialized property on a component inside a .prefab ASSET on disk. Values go in ' +
+                    'raw serialized form: scalars as-is, asset refs as {"__uuid__":"<uuid>"}, in-prefab node refs as ' +
+                    '{"__id__":<entry index>}. Returns the previous value.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        prefabPath: { type: 'string', description: 'db:// path of the .prefab asset' },
+                        componentType: { type: 'string', description: 'Builtin type (cc.X) or script class name' },
+                        scriptPath: { type: 'string', description: 'db:// path of the .ts for a script component (disambiguates)' },
+                        nodePath: { type: 'string', description: 'Slash path inside the prefab (default: root node)' },
+                        nodeName: { type: 'string', description: 'Node name inside the prefab; must be unique' },
+                        property: { type: 'string', description: 'Serialized property name (e.g. _shadowCastingMode, damage)' },
+                        value: { description: 'Serialized value to write' },
+                        occurrence: { type: 'number', description: 'Which component when the node has several of the class (default 0)' }
+                    },
+                    required: ['prefabPath', 'componentType', 'property']
+                }
             }
         ];
     }
@@ -205,8 +271,121 @@ export class PrefabTools implements ToolExecutor {
                 return await this.duplicatePrefab(args);
             case 'restore_prefab_node':
                 return await this.restorePrefabNode(args.nodeUuid, args.assetUuid);
+            case 'add_component':
+                return await this.addComponentToAsset(args);
+            case 'remove_component':
+                return await this.removeComponentFromAsset(args);
+            case 'set_component_property':
+                return await this.setComponentPropertyOnAsset(args);
             default:
                 throw new Error(`Unknown tool: ${toolName}`);
+        }
+    }
+
+    /** `__type__` is the plain name for builtins and the compressed script-asset uuid for user scripts. */
+    private async resolveComponentCid(componentType: string, scriptPath?: string): Promise<string> {
+        if (componentType.startsWith('cc.')) return componentType;
+        let info: any = null;
+        if (scriptPath) {
+            info = await Editor.Message.request('asset-db', 'query-asset-info', scriptPath);
+            if (!info) throw new Error(`Script not found: ${scriptPath}`);
+        } else {
+            const matches: any[] = await Editor.Message.request('asset-db', 'query-assets', {
+                pattern: `db://assets/**/${componentType}.ts`
+            });
+            if (!matches || !matches.length) {
+                throw new Error(`No script named '${componentType}.ts' under db://assets — pass scriptPath`);
+            }
+            if (matches.length > 1) {
+                throw new Error(`${matches.length} scripts named '${componentType}.ts' (${matches.map((m: any) => m.url).join(', ')}) — pass scriptPath`);
+            }
+            info = matches[0];
+        }
+        if (!info.uuid) throw new Error(`Script asset has no uuid: ${scriptPath || componentType}`);
+        return compressUuid(info.uuid);
+    }
+
+    private selectorOf(args: any): any {
+        return { nodePath: args.nodePath, nodeName: args.nodeName, nodeId: args.nodeId };
+    }
+
+    private async readPrefabArray(prefabPath: string): Promise<any[]> {
+        const data = await readAssetJson(prefabPath);
+        if (!Array.isArray(data)) throw new Error(`${prefabPath} is not a prefab array`);
+        return data;
+    }
+
+    private async addComponentToAsset(args: any): Promise<ToolResponse> {
+        try {
+            const data = await this.readPrefabArray(args.prefabPath);
+            const cid = await this.resolveComponentCid(args.componentType, args.scriptPath);
+            const result = addComponentToPrefabData(data, this.selectorOf(args), cid, args.properties || {});
+            await writeAssetJson(args.prefabPath, result.data);
+            await Editor.Message.request('asset-db', 'refresh-asset', args.prefabPath);
+            return {
+                success: true,
+                data: {
+                    prefabPath: args.prefabPath,
+                    componentType: args.componentType,
+                    cid,
+                    componentId: result.componentId,
+                    fileId: result.fileId,
+                    entryCount: result.data.length
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message || String(error) };
+        }
+    }
+
+    private async removeComponentFromAsset(args: any): Promise<ToolResponse> {
+        try {
+            const data = await this.readPrefabArray(args.prefabPath);
+            const cid = await this.resolveComponentCid(args.componentType, args.scriptPath);
+            const result = removeComponentFromPrefabData(data, this.selectorOf(args), cid, args.occurrence || 0);
+            await writeAssetJson(args.prefabPath, result.data);
+            await Editor.Message.request('asset-db', 'refresh-asset', args.prefabPath);
+            return {
+                success: true,
+                data: {
+                    prefabPath: args.prefabPath,
+                    componentType: args.componentType,
+                    cid,
+                    removedFileId: result.removedFileId,
+                    removedIds: result.removedIds,
+                    entryCount: result.data.length,
+                    warning: result.removedFileId
+                        ? `Scenes instancing this prefab may still hold overrides keyed to fileId ${result.removedFileId} — grep the scenes for it.`
+                        : undefined
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message || String(error) };
+        }
+    }
+
+    private async setComponentPropertyOnAsset(args: any): Promise<ToolResponse> {
+        try {
+            const data = await this.readPrefabArray(args.prefabPath);
+            const cid = await this.resolveComponentCid(args.componentType, args.scriptPath);
+            const result = setComponentPropertyInPrefabData(
+                data, this.selectorOf(args), cid, args.property, args.value, args.occurrence || 0
+            );
+            await writeAssetJson(args.prefabPath, result.data);
+            await Editor.Message.request('asset-db', 'refresh-asset', args.prefabPath);
+            return {
+                success: true,
+                data: {
+                    prefabPath: args.prefabPath,
+                    componentType: args.componentType,
+                    property: args.property,
+                    previous: result.previous,
+                    value: args.value,
+                    componentId: result.componentId
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message || String(error) };
         }
     }
 
@@ -1494,59 +1673,31 @@ export class PrefabTools implements ToolExecutor {
     }
 
     private async validatePrefab(prefabPath: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            try {
-                // Read the prefab file content
-                Editor.Message.request('asset-db', 'query-asset-info', prefabPath).then((assetInfo: any) => {
-                    if (!assetInfo) {
-                        resolve({
-                            success: false,
-                            error: 'Prefab file does not exist'
-                        });
-                        return;
-                    }
-
-                    // Validate the prefab format
-                    Editor.Message.request('asset-db', 'read-asset', prefabPath).then((content: string) => {
-                        try {
-                            const prefabData = JSON.parse(content);
-                            const validationResult = this.validatePrefabFormat(prefabData);
-
-                            resolve({
-                                success: true,
-                                data: {
-                                    isValid: validationResult.isValid,
-                                    issues: validationResult.issues,
-                                    nodeCount: validationResult.nodeCount,
-                                    componentCount: validationResult.componentCount,
-                                    message: validationResult.isValid ? 'Prefab format is valid' : 'Prefab format has issues'
-                                }
-                            });
-                        } catch (parseError) {
-                            resolve({
-                                success: false,
-                                error: 'Prefab file format error, unable to parse JSON'
-                            });
-                        }
-                    }).catch((error: any) => {
-                        resolve({
-                            success: false,
-                            error: `Failed to read prefab file: ${error.message}`
-                        });
-                    });
-                }).catch((error: any) => {
-                    resolve({
-                        success: false,
-                        error: `Failed to query prefab info: ${error.message}`
-                    });
-                });
-            } catch (error) {
-                resolve({
-                    success: false,
-                    error: `Error occurred while validating prefab: ${error}`
-                });
+        let prefabData: any;
+        try {
+            prefabData = await readAssetJson(prefabPath);
+        } catch (error: any) {
+            const message = error && error.message ? error.message : String(error);
+            if (message.startsWith('Asset not found')) {
+                return { success: false, error: 'Prefab file does not exist' };
             }
-        });
+            if (error instanceof SyntaxError) {
+                return { success: false, error: 'Prefab file format error, unable to parse JSON' };
+            }
+            return { success: false, error: `Failed to read prefab file: ${message}` };
+        }
+
+        const validationResult = this.validatePrefabFormat(prefabData);
+        return {
+            success: true,
+            data: {
+                isValid: validationResult.isValid,
+                issues: validationResult.issues,
+                nodeCount: validationResult.nodeCount,
+                componentCount: validationResult.componentCount,
+                message: validationResult.isValid ? 'Prefab format is valid' : 'Prefab format has issues'
+            }
+        };
     }
 
     private validatePrefabFormat(prefabData: any): { isValid: boolean; issues: string[]; nodeCount: number; componentCount: number } {
@@ -1644,18 +1795,12 @@ export class PrefabTools implements ToolExecutor {
     }
 
     private async readPrefabContent(prefabPath: string): Promise<{ success: boolean; data?: any; error?: string }> {
-        return new Promise((resolve) => {
-            Editor.Message.request('asset-db', 'read-asset', prefabPath).then((content: string) => {
-                try {
-                    const prefabData = JSON.parse(content);
-                    resolve({ success: true, data: prefabData });
-                } catch (parseError) {
-                    resolve({ success: false, error: 'Prefab file format error' });
-                }
-            }).catch((error: any) => {
-                resolve({ success: false, error: error.message || 'Failed to read prefab file' });
-            });
-        });
+        try {
+            return { success: true, data: await readAssetJson(prefabPath) };
+        } catch (error: any) {
+            if (error instanceof SyntaxError) return { success: false, error: 'Prefab file format error' };
+            return { success: false, error: error.message || 'Failed to read prefab file' };
+        }
     }
 
     private modifyPrefabForDuplication(prefabData: any[], newName: string, newUuid: string): any[] {

@@ -241,6 +241,30 @@ export class ComponentTools implements ToolExecutor {
                     },
                     required: ['nodeUuid']
                 }
+            },
+            {
+                name: 'set_component_ref',
+                description: 'Write a cc.Node or Component REFERENCE field (single or array) on a component. Use this — ' +
+                    'NOT set_component_property — for any field whose type is a node or a component. targetUuid accepts ' +
+                    'either a NODE uuid or a COMPONENT uuid (from scene_dump / get_components); the field\'s declared ' +
+                    'type decides what gets assigned, and targetComponentType picks a specific component on a target ' +
+                    'node. Assigns on the live engine object, so it works for custom scripts with no Inspector ' +
+                    'metadata and for a second component of the same class (componentIndex). Fails loudly if the ' +
+                    'value does not read back.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        nodeUuid: { type: 'string', description: 'UUID of the node holding the component that OWNS the field' },
+                        componentType: { type: 'string', description: 'Class name of the owning component (e.g. StickAim, cc.Camera)' },
+                        componentIndex: { type: 'number', description: 'Index among same-class components on that node (default 0)' },
+                        property: { type: 'string', description: 'Name of the reference field to write' },
+                        targetUuid: { type: 'string', description: 'Node uuid or component uuid to assign' },
+                        targetUuids: { type: 'array', items: { type: 'string' }, description: 'Use instead of targetUuid to write an ARRAY field' },
+                        targetComponentType: { type: 'string', description: 'Assign this component of the target node rather than the node itself' },
+                        clear: { type: 'boolean', description: 'Set the field to null (or [] if it is an array) instead of assigning' }
+                    },
+                    required: ['nodeUuid', 'componentType', 'property']
+                }
             }
         ];
     }
@@ -265,8 +289,31 @@ export class ComponentTools implements ToolExecutor {
                 return await this.setMaterials(args.nodeUuid, args.materialUuids, args.componentType);
             case 'get_materials':
                 return await this.getMaterials(args.nodeUuid, args.componentType);
+            case 'set_component_ref':
+                return await this.setComponentRef(args);
             default:
                 throw new Error(`Unknown tool: ${toolName}`);
+        }
+    }
+
+    /**
+     * Write a node/component reference on the live component via the scene script. The editor
+     * set-property channel needs Inspector metadata to infer the field's component class and
+     * hard-errors without it, and it can only address a component by its owning node.
+     */
+    private async setComponentRef(args: any): Promise<ToolResponse> {
+        try {
+            const result = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'setComponentReference',
+                args: [args]
+            });
+            if (result && typeof result === 'object' && 'success' in result) {
+                return result as ToolResponse;
+            }
+            return { success: true, data: result };
+        } catch (err: any) {
+            return { success: false, error: err.message || String(err) };
         }
     }
 

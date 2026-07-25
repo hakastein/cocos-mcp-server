@@ -1,0 +1,197 @@
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+export interface NodeSelector {
+    nodeName?: string;
+    nodePath?: string;
+    nodeId?: number;
+}
+
+/** Component `__type__` for a user script is its script-asset uuid packed to 23 chars (5 hex + 9 hex-triples). */
+export function compressUuid(uuid: string): string {
+    const hex = uuid.replace(/-/g, '');
+    if (hex.length !== 32) throw new Error(`Not a 32-hex uuid: ${uuid}`);
+    let out = hex.slice(0, 5);
+    for (let i = 5; i < 32; i += 3) {
+        const h0 = parseInt(hex[i], 16);
+        const h1 = parseInt(hex[i + 1], 16);
+        const h2 = parseInt(hex[i + 2], 16);
+        out += BASE64[(h0 << 2) | (h1 >> 2)] + BASE64[((h1 & 3) << 4) | h2];
+    }
+    return out;
+}
+
+export function generateFileId(rand: () => number = Math.random): string {
+    let id = '';
+    for (let i = 0; i < 22; i++) id += BASE64[Math.floor(rand() * BASE64.length) % BASE64.length];
+    return id;
+}
+
+function isNode(entry: any): boolean {
+    return !!entry && entry.__type__ === 'cc.Node';
+}
+
+function rootNodeId(data: any[]): number {
+    if (data[0] && data[0].__type__ === 'cc.Prefab' && data[0].data && typeof data[0].data.__id__ === 'number') {
+        return data[0].data.__id__;
+    }
+    const idx = data.findIndex(isNode);
+    if (idx < 0) throw new Error('No cc.Node entry in this prefab');
+    return idx;
+}
+
+function pathsOf(data: any[]): Map<string, number> {
+    const paths = new Map<string, number>();
+    const walk = (id: number, prefix: string) => {
+        const node = data[id];
+        if (!isNode(node)) return;
+        const path = prefix ? `${prefix}/${node._name}` : node._name;
+        if (!paths.has(path)) paths.set(path, id);
+        for (const ref of node._children || []) {
+            if (ref && typeof ref.__id__ === 'number') walk(ref.__id__, path);
+        }
+    };
+    walk(rootNodeId(data), '');
+    return paths;
+}
+
+export function findNodeEntry(data: any[], selector: NodeSelector): { id: number; node: any } {
+    if (typeof selector.nodeId === 'number') {
+        if (!isNode(data[selector.nodeId])) throw new Error(`Entry ${selector.nodeId} is not a cc.Node`);
+        return { id: selector.nodeId, node: data[selector.nodeId] };
+    }
+    if (selector.nodePath) {
+        const paths = pathsOf(data);
+        const id = paths.get(selector.nodePath);
+        if (id === undefined) {
+            throw new Error(`No node at path '${selector.nodePath}'. Known paths: ${[...paths.keys()].join(', ')}`);
+        }
+        return { id, node: data[id] };
+    }
+    if (selector.nodeName) {
+        const matches: number[] = [];
+        data.forEach((entry, i) => { if (isNode(entry) && entry._name === selector.nodeName) matches.push(i); });
+        if (!matches.length) throw new Error(`No node named '${selector.nodeName}' in this prefab`);
+        if (matches.length > 1) throw new Error(`${matches.length} nodes named '${selector.nodeName}' — pass nodePath instead`);
+        return { id: matches[0], node: data[matches[0]] };
+    }
+    const id = rootNodeId(data);
+    return { id, node: data[id] };
+}
+
+function componentIdsOnNode(data: any[], node: any, cid: string): number[] {
+    return (node._components || [])
+        .map((ref: any) => (ref && typeof ref.__id__ === 'number' ? ref.__id__ : -1))
+        .filter((id: number) => id >= 0 && data[id] && data[id].__type__ === cid);
+}
+
+export function addComponentToPrefabData(
+    data: any[],
+    selector: NodeSelector,
+    cid: string,
+    props: Record<string, any> = {},
+    fileId?: string
+): { data: any[]; componentId: number; fileId: string } {
+    const out = data.slice();
+    const { id, node } = findNodeEntry(out, selector);
+    const componentId = out.length;
+    const infoId = componentId + 1;
+    const actualFileId = fileId || generateFileId();
+
+    out.push({
+        __type__: cid,
+        _name: '',
+        _objFlags: 0,
+        __editorExtras__: {},
+        node: { __id__: id },
+        _enabled: true,
+        __prefab: { __id__: infoId },
+        ...props,
+        _id: ''
+    });
+    out.push({ __type__: 'cc.CompPrefabInfo', fileId: actualFileId });
+
+    const patched = { ...node, _components: [...(node._components || []), { __id__: componentId }] };
+    out[id] = patched;
+    return { data: out, componentId, fileId: actualFileId };
+}
+
+const DROPPED = Symbol('dropped-ref');
+
+/** Splicing entries shifts every index, so each surviving `__id__` has to be rewritten. */
+export function remapIds(data: any[], remap: Map<number, number>): any[] {
+    const rewrite = (value: any): any => {
+        if (Array.isArray(value)) {
+            return value.map(rewrite).filter((v) => v !== DROPPED);
+        }
+        if (value && typeof value === 'object') {
+            if (typeof value.__id__ === 'number' && Object.keys(value).length === 1) {
+                const next = remap.get(value.__id__);
+                return next === undefined ? DROPPED : { __id__: next };
+            }
+            const out: any = {};
+            for (const key of Object.keys(value)) {
+                const rewritten = rewrite(value[key]);
+                out[key] = rewritten === DROPPED ? null : rewritten;
+            }
+            return out;
+        }
+        return value;
+    };
+    return data.map((entry) => rewrite(entry));
+}
+
+export function removeComponentFromPrefabData(
+    data: any[],
+    selector: NodeSelector,
+    cid: string,
+    occurrence = 0
+): { data: any[]; removedFileId: string | null; removedIds: number[] } {
+    const { node } = findNodeEntry(data, selector);
+    const matches = componentIdsOnNode(data, node, cid);
+    if (!matches.length) throw new Error(`Node '${node._name}' has no '${cid}' component`);
+    const componentId = matches[occurrence];
+    if (componentId === undefined) {
+        throw new Error(`Node '${node._name}' has ${matches.length} '${cid}' component(s); occurrence ${occurrence} is out of range`);
+    }
+
+    const component = data[componentId];
+    const infoId = component.__prefab && typeof component.__prefab.__id__ === 'number' ? component.__prefab.__id__ : -1;
+    const info = infoId >= 0 ? data[infoId] : null;
+    const removed = new Set<number>([componentId]);
+    if (info && info.__type__ === 'cc.CompPrefabInfo') removed.add(infoId);
+
+    const remap = new Map<number, number>();
+    let next = 0;
+    data.forEach((_entry, i) => {
+        if (removed.has(i)) return;
+        remap.set(i, next++);
+    });
+
+    const survivors = data.filter((_entry, i) => !removed.has(i));
+    return {
+        data: remapIds(survivors, remap),
+        removedFileId: info && info.fileId ? info.fileId : null,
+        removedIds: [...removed].sort((a, b) => a - b)
+    };
+}
+
+export function setComponentPropertyInPrefabData(
+    data: any[],
+    selector: NodeSelector,
+    cid: string,
+    property: string,
+    value: any,
+    occurrence = 0
+): { data: any[]; previous: any; componentId: number } {
+    const out = data.slice();
+    const { node } = findNodeEntry(out, selector);
+    const matches = componentIdsOnNode(out, node, cid);
+    if (!matches.length) throw new Error(`Node '${node._name}' has no '${cid}' component`);
+    const componentId = matches[occurrence];
+    if (componentId === undefined) {
+        throw new Error(`Node '${node._name}' has ${matches.length} '${cid}' component(s); occurrence ${occurrence} is out of range`);
+    }
+    const previous = out[componentId][property];
+    out[componentId] = { ...out[componentId], [property]: value };
+    return { data: out, previous, componentId };
+}
