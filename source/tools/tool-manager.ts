@@ -15,9 +15,11 @@ import { SceneViewTools } from './scene-view-tools';
 import { ReferenceImageTools } from './reference-image-tools';
 import { AssetAdvancedTools } from './asset-advanced-tools';
 import { ValidationTools } from './validation-tools';
+import { SkeletalAnimationTools } from './skeletal-animation-tools';
+import { BatchTools } from './batch-tools';
 
-// All tool category instances are shared with MCPServer to avoid double instantiation.
-// The same instances are reused here for tool discovery.
+// Every category MCPServer registers must be listed here too: discoverTools() only sees these,
+// and a tool missing from a saved configuration is never advertised over MCP.
 function createToolInstances(): Record<string, any> {
     return {
         scene: new SceneTools(),
@@ -33,7 +35,9 @@ function createToolInstances(): Record<string, any> {
         sceneView: new SceneViewTools(),
         referenceImage: new ReferenceImageTools(),
         assetAdvanced: new AssetAdvancedTools(),
-        validation: new ValidationTools()
+        validation: new ValidationTools(),
+        skeletalAnimation: new SkeletalAnimationTools(),
+        batch: new BatchTools()
     };
 }
 
