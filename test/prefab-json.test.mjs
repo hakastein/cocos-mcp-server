@@ -4,6 +4,8 @@ import pj from '../dist/prefab-json.js';
 
 const {
     compressUuid,
+    decompressUuid,
+    dumpPrefabTree,
     generateFileId,
     findNodeEntry,
     addComponentToPrefabData,
@@ -52,6 +54,30 @@ test('compressUuid matches real script-uuid -> __type__ pairs from a shipped sce
     assert.equal(compressUuid('80308d3b-9c6d-4158-8395-a4e01dfbea3c'), '8030807nG1BWIOVpOAd++o8');
     assert.equal(compressUuid('fc8653ee-6dda-41e9-adfc-9b86afcdc334'), 'fc865PubdpB6a38m4avzcM0');
     assert.equal(compressUuid('bae7849c-3e15-4017-a207-382b3e21e7c5'), 'bae78ScPhVAF6IHOCs+IefF');
+});
+
+test('decompressUuid inverts compressUuid on real pairs', () => {
+    assert.equal(decompressUuid('322d5IOKZ1EM4K3zUQeplxM'), '322d520e-299d-4433-82b7-cd441ea65c4c');
+    for (const uuid of ['80308d3b-9c6d-4158-8395-a4e01dfbea3c', 'fc8653ee-6dda-41e9-adfc-9b86afcdc334', 'bae7849c-3e15-4017-a207-382b3e21e7c5']) {
+        assert.equal(decompressUuid(compressUuid(uuid)), uuid);
+    }
+    assert.equal(decompressUuid('not-a-cid'), 'not-a-cid');
+});
+
+test('dumpPrefabTree returns node paths with their components', () => {
+    const tree = dumpPrefabTree(fixture());
+    assert.deepEqual(tree.map((n) => n.path), ['Root', 'Root/Child']);
+    assert.equal(tree[0].components.length, 1);
+    assert.equal(tree[0].components[0].type, 'cc.MeshRenderer');
+    assert.equal(tree[0].components[0].scriptUuid, null);
+    assert.equal(tree[0].components[0].fileId, 'aaaaaaaaaaaaaaaaaaaaaa');
+    assert.deepEqual(tree[1].components, []);
+});
+
+test('dumpPrefabTree decodes a script component id to its asset uuid', () => {
+    const data = addComponentToPrefabData(fixture(), { nodePath: 'Root/Child' }, compressUuid('80308d3b-9c6d-4158-8395-a4e01dfbea3c')).data;
+    const child = dumpPrefabTree(data).find((n) => n.path === 'Root/Child');
+    assert.equal(child.components[0].scriptUuid, '80308d3b-9c6d-4158-8395-a4e01dfbea3c');
 });
 
 test('generateFileId returns 22 base64-alphabet chars', () => {

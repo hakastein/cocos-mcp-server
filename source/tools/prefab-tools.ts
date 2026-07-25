@@ -2,6 +2,7 @@ import { ToolDefinition, ToolResponse, ToolExecutor, PrefabInfo } from '../types
 import { readAssetJson, writeAssetJson } from '../asset-json';
 import {
     compressUuid,
+    dumpPrefabTree,
     addComponentToPrefabData,
     removeComponentFromPrefabData,
     setComponentPropertyInPrefabData
@@ -188,6 +189,20 @@ export class PrefabTools implements ToolExecutor {
                 }
             },
             {
+                name: 'dump',
+                description: 'The node tree of a .prefab ASSET: every node\'s path, name and active flag, plus each ' +
+                    'component with its resolved CLASS NAME. Use this to answer "what components are on this prefab" — ' +
+                    'reading the .prefab file cannot answer it, because script components are stored as compressed ' +
+                    'uuids, never as class names, so searching the file for a class name is always a false negative.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        prefabPath: { type: 'string', description: 'db:// path of the .prefab asset' }
+                    },
+                    required: ['prefabPath']
+                }
+            },
+            {
                 name: 'add_component',
                 description: 'Add a component to a node inside a .prefab ASSET on disk (not a scene node). Rewrites the ' +
                     'prefab JSON directly, so every existing fileId is preserved and instances keep their overrides. ' +
@@ -271,6 +286,8 @@ export class PrefabTools implements ToolExecutor {
                 return await this.duplicatePrefab(args);
             case 'restore_prefab_node':
                 return await this.restorePrefabNode(args.nodeUuid, args.assetUuid);
+            case 'dump':
+                return await this.dumpPrefabAsset(args.prefabPath);
             case 'add_component':
                 return await this.addComponentToAsset(args);
             case 'remove_component':
@@ -313,6 +330,49 @@ export class PrefabTools implements ToolExecutor {
         const data = await readAssetJson(prefabPath);
         if (!Array.isArray(data)) throw new Error(`${prefabPath} is not a prefab array`);
         return data;
+    }
+
+    /** Script components carry only a compressed uuid; turn it back into the .ts file's class name. */
+    private async resolveScriptClassNames(tree: any[]): Promise<void> {
+        const cache = new Map<string, string>();
+        for (const node of tree) {
+            for (const comp of node.components) {
+                if (!comp.scriptUuid) {
+                    comp.className = comp.type;
+                    continue;
+                }
+                if (!cache.has(comp.scriptUuid)) {
+                    let name: string = comp.type;
+                    try {
+                        const url: string | null = await Editor.Message.request('asset-db', 'query-url', comp.scriptUuid);
+                        if (url) name = url.split('/').pop()!.replace(/\.ts$/, '');
+                    } catch {
+                        // unresolvable script asset: fall back to the raw id
+                    }
+                    cache.set(comp.scriptUuid, name);
+                }
+                comp.className = cache.get(comp.scriptUuid);
+            }
+        }
+    }
+
+    private async dumpPrefabAsset(prefabPath: string): Promise<ToolResponse> {
+        try {
+            const data = await this.readPrefabArray(prefabPath);
+            const tree = dumpPrefabTree(data);
+            await this.resolveScriptClassNames(tree);
+            return {
+                success: true,
+                data: {
+                    prefabPath,
+                    nodeCount: tree.length,
+                    componentCount: tree.reduce((n, node) => n + node.components.length, 0),
+                    nodes: tree
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message || String(error) };
+        }
     }
 
     private async addComponentToAsset(args: any): Promise<ToolResponse> {

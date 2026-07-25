@@ -20,6 +20,62 @@ export function compressUuid(uuid: string): string {
     return out;
 }
 
+const BASE64_VALUES: Record<string, number> = {};
+for (let i = 0; i < BASE64.length; i++) BASE64_VALUES[BASE64[i]] = i;
+
+/** Inverse of compressUuid: 23-char class id back to a dashed uuid. */
+export function decompressUuid(cid: string): string {
+    if (cid.length !== 23) return cid;
+    let hex = cid.slice(0, 5);
+    for (let i = 5; i < 23; i += 2) {
+        const lhs = BASE64_VALUES[cid[i]];
+        const rhs = BASE64_VALUES[cid[i + 1]];
+        if (lhs === undefined || rhs === undefined) return cid;
+        hex += (lhs >> 2).toString(16) + ((((lhs & 3) << 2) | (rhs >> 4)) & 15).toString(16) + (rhs & 15).toString(16);
+    }
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export interface PrefabDumpNode {
+    path: string;
+    name: string;
+    active: boolean;
+    id: number;
+    components: { type: string; scriptUuid: string | null; fileId: string | null; id: number }[];
+}
+
+/** The node/component tree of a .prefab asset, so callers never hand-walk the entry array. */
+export function dumpPrefabTree(data: any[]): PrefabDumpNode[] {
+    const out: PrefabDumpNode[] = [];
+    const walk = (id: number, prefix: string) => {
+        const node = data[id];
+        if (!isNode(node)) return;
+        const path = prefix ? `${prefix}/${node._name}` : node._name;
+        out.push({
+            path,
+            name: node._name,
+            active: node._active !== false,
+            id,
+            components: (node._components || []).map((ref: any) => {
+                const comp = data[ref && ref.__id__];
+                const type = comp ? comp.__type__ : 'missing';
+                const info = comp && comp.__prefab && data[comp.__prefab.__id__];
+                return {
+                    type,
+                    scriptUuid: typeof type === 'string' && !type.startsWith('cc.') ? decompressUuid(type) : null,
+                    fileId: info && info.fileId ? info.fileId : null,
+                    id: ref && ref.__id__
+                };
+            })
+        });
+        for (const ref of node._children || []) {
+            if (ref && typeof ref.__id__ === 'number') walk(ref.__id__, path);
+        }
+    };
+    walk(rootNodeId(data), '');
+    return out;
+}
+
 export function generateFileId(rand: () => number = Math.random): string {
     let id = '';
     for (let i = 0; i < 22; i++) id += BASE64[Math.floor(rand() * BASE64.length) % BASE64.length];
