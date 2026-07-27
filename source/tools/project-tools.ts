@@ -12,6 +12,27 @@ import { ALIAS_KEY } from '../tool-args';
  */
 const ASSET_URL_ALIASES = ['assetPath', 'path', 'assetUrl'];
 
+/**
+ * What `builder.add-task` resolves with. Declared in the editor's own
+ * builtin/builder/@types/protected/options.d.ts, which ships outside the public typings — so
+ * 36 reads like a failure to anyone who assumes 0 means success. It means BUILD_SUCCESS.
+ */
+const enum BuildExitCode {
+    PARAM_ERROR = 32,
+    BUILD_FAILED = 34,
+    BUILD_SUCCESS = 36,
+    BUILD_BUSY = 37,
+    UNKNOWN_ERROR = 50,
+}
+
+const BUILD_EXIT_CODES: Record<number, string> = {
+    32: 'PARAM_ERROR',
+    34: 'BUILD_FAILED',
+    36: 'BUILD_SUCCESS',
+    37: 'BUILD_BUSY',
+    50: 'UNKNOWN_ERROR',
+};
+
 export class ProjectTools implements ToolExecutor {
     // Serialises asset moves. Parallel move-asset requests into the same destination folder
     // race inside the editor asset-db: with rename-on-conflict enabled, two concurrent moves
@@ -620,31 +641,44 @@ export class ProjectTools implements ToolExecutor {
             return { success: false, error: err.message, data: { platform, elapsedMs: Date.now() - startedAt } };
         }
 
-        // The number `add-task` returns is NOT an exit status: a build that the builder itself
-        // logged as "build success in 9 s!" came back as 36. It is undocumented in the public
-        // typings, so the task's own state is the only verdict worth reporting.
+        // `add-task` answers with a BuildExitCode — 36 is SUCCESS, not a failure. The value is
+        // absent from the public typings, so it is decoded here and cross-checked against the
+        // task's own state; a disagreement is reported rather than silently resolved.
+        const exitCode = typeof result === 'number' ? result : undefined;
+        const exitName = exitCode === undefined ? undefined : (BUILD_EXIT_CODES[exitCode] || `UNDOCUMENTED_${exitCode}`);
         const task = await this.findFinishedTask(before);
         const state = task?.state ?? 'unknown';
-        const succeeded = state === 'success';
+
+        const codeSaysOk = exitCode === undefined ? undefined : exitCode === BuildExitCode.BUILD_SUCCESS;
+        const stateSaysOk = state === 'unknown' ? undefined : state === 'success';
+        const succeeded = codeSaysOk === undefined ? stateSaysOk === true
+            : stateSaysOk === undefined ? codeSaysOk
+            : codeSaysOk && stateSaysOk;
+        const disagreement = codeSaysOk !== undefined && stateSaysOk !== undefined && codeSaysOk !== stateSaysOk
+            ? `The builder returned ${exitName} but its task state is "${state}" — treat this build as suspect.`
+            : undefined;
 
         return {
-            success: succeeded,
-            error: succeeded ? undefined : state === 'unknown'
-                ? `Build finished but its task could not be found, so the result is unknown. `
-                    + `add-task returned ${JSON.stringify(result)}. Check the Build panel.`
-                : `Build ${state}: ${task?.message || task?.detailMessage || 'no message from the builder'}`,
-            message: succeeded ? `${task?.message || `Build finished for ${platform}`}` : undefined,
+            success: !!succeeded,
+            error: succeeded ? undefined
+                : disagreement
+                || (state !== 'unknown'
+                    ? `Build ${state} (${exitName || 'no exit code'}): ${task?.message || task?.detailMessage || 'no message from the builder'}`
+                    : `Build finished with ${exitName} and no task could be found. Check the Build panel.`),
+            message: succeeded ? (task?.message || `Build finished for ${platform}`) : undefined,
             data: {
                 platform,
                 state,
+                exitCode,
+                exitName,
                 taskId: task?.id,
-                addTaskResult: result,
                 elapsedMs: Date.now() - startedAt,
                 buildPath: completed.buildPath,
                 outputName: completed.outputName,
                 debug: completed.debug,
                 builderMessage: task?.message,
-                builderDetail: task?.detailMessage
+                builderDetail: task?.detailMessage,
+                disagreement
             }
         } as ToolResponse;
     }
