@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, ComponentInfo } from '../types';
+import { ANY_VALUE_TYPE, coerceJsonArg } from '../json-arg';
 
 export class ComponentTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -114,6 +115,7 @@ export class ComponentTools implements ToolExecutor {
                                                 },
 
                         value: {
+                            type: ANY_VALUE_TYPE,
                             description: 'Property value - Use the corresponding data format based on propertyType:\n\n' +
                                 '📝 Basic Data Types:\n' +
                                 '• string: "Hello World" (text string)\n' +
@@ -398,12 +400,23 @@ export class ComponentTools implements ToolExecutor {
     }
 
     /**
+     * Every id spelling a component can carry. A raw editor dump of a SCRIPT component
+     * holds both `cid` (the compressed script uuid) and `type` (the class name), and they
+     * differ — so a single-field reader silently disagrees with `getComponents`, whose
+     * normalised `type` is `__type__ || cid || type`. Comparing against all of them keeps
+     * the setter, the verifier and get_components addressing the same component.
+     */
+    private componentIds(comp: any): string[] {
+        return [comp?.type, comp?.__type__, comp?.cid].filter((v: any): v is string => typeof v === 'string');
+    }
+
+    /**
      * Match a component against a caller-supplied `componentType`, which may be a cid, an
      * @ccclass class name, or a builtin type name ("cc.Sprite").
      */
     private componentMatches(comp: any, componentType: string): boolean {
         if (!componentType) return false;
-        if (this.componentCid(comp) === componentType) return true;
+        if (this.componentIds(comp).includes(componentType)) return true;
         const cn = this.componentClassName(comp);
         return !!cn && (cn === componentType || `cc.${cn}` === componentType);
     }
@@ -724,13 +737,12 @@ export class ComponentTools implements ToolExecutor {
         if (pt === 'string') {
             return value; // never reinterpret a real string payload
         }
+        // Any JSON object/array text, whatever the propertyType is called — a keyword
+        // ('vec3', 'colorArray') or a real class name ('cc.Vec3', 'cc.Color'), which the
+        // advanced path accepts and the old keyword whitelist did not cover.
+        const json = coerceJsonArg(value);
+        if (json.coerced) return json.value;
         const s = value.trim();
-        const structured = ['vec2', 'vec3', 'size', 'color', 'asset', 'spriteFrame', 'prefab',
-            'node', 'component', 'gradient', 'curve', 'nodeArray', 'colorArray', 'numberArray',
-            'stringArray', 'enum'];
-        if (structured.includes(pt) && (s.startsWith('{') || s.startsWith('['))) {
-            try { return JSON.parse(s); } catch { return value; } // not valid JSON — leave raw
-        }
         if (pt === 'boolean') {
             if (s === 'true' || s === '1') return true;
             if (s === 'false' || s === '0' || s === '') return false;
@@ -1355,16 +1367,21 @@ export class ComponentTools implements ToolExecutor {
                 // unconditional success:true. Object-shaped types (vec/color/arrays) keep
                 // success:true but still expose the honest changeVerified flag, because their
                 // JSON-equality check can false-negative on editor-side normalisation.
+                // A property the dump does not expose at all yields no evidence either way, so
+                // it is reported applied-but-unverified — a failure there would abort a batch
+                // over a value that did land.
                 const strictVerifyTypes = ['boolean', 'number', 'integer', 'float', 'string', 'node'];
                 const strict = strictVerifyTypes.includes((propertyType || '').toString());
-                const applied = !strict || verification.verified;
+                const contradicted = strict && verification.readable && !verification.verified;
+                const applied = !contradicted;
 
                 resolve({
                     success: applied,
                     message: applied
                         ? `Successfully set ${componentType}.${property}`
                         : `Editor did not apply ${componentType}.${property}: requested ${JSON.stringify(actualExpectedValue)} but read back ${JSON.stringify(verification.actualValue)}`,
-                    ...(applied ? {} : { error: `Property '${property}' was not applied by the editor (changeVerified=false). The value read back does not match the requested value.` }),
+                    ...(contradicted ? { error: `Property '${property}' was not applied by the editor (changeVerified=false). The value read back does not match the requested value.` } : {}),
+                    ...(applied && !verification.readable ? { warning: `Set ${componentType}.${property} but could not read it back for verification — '${property}' is not exposed in the component dump. The write itself did not error.` } : {}),
                     data: {
                         nodeUuid,
                         componentType,
@@ -1598,17 +1615,34 @@ export class ComponentTools implements ToolExecutor {
 
     /** Read back the dump `value` at a (possibly dotted) property path for verification. */
     private async readDumpValueAtPath(nodeUuid: string, componentType: string, property: string): Promise<any> {
+        return (await this.readDumpProperty(nodeUuid, componentType, property)).value;
+    }
+
+    /**
+     * Read one property's dump entry through the exact call `get_components` serves, so a
+     * read-back can never disagree with what the reporting tool shows. `found` separates
+     * "the dump says something else" (a real failure) from "the dump does not expose this
+     * property" (no evidence either way) — the two used to collapse into a false negative.
+     */
+    private async readDumpProperty(
+        nodeUuid: string, componentType: string, property: string
+    ): Promise<{ found: boolean; value: any; entry: any }> {
+        const miss = { found: false, value: undefined, entry: undefined };
         try {
-            const info = await this.getComponentInfo(nodeUuid, componentType);
-            const props = info?.data?.properties || {};
+            const all = await this.getComponents(nodeUuid);
+            const comps: any[] = (all.success && all.data?.components) || [];
+            const comp = comps.find((c: any) => this.componentMatches(c, componentType));
+            if (!comp) return miss;
             const segs = property.split('.');
-            let cur: any = props[segs[0]];
+            let cur: any = (comp.properties || {})[segs[0]];
             for (let i = 1; i < segs.length && cur != null; i++) {
                 cur = cur.value ? cur.value[segs[i]] : undefined;
             }
-            return cur?.value;
+            if (cur === undefined || cur === null) return miss;
+            const value = (typeof cur === 'object' && 'value' in cur) ? cur.value : cur;
+            return { found: true, value, entry: cur };
         } catch {
-            return undefined;
+            return miss;
         }
     }
 
@@ -2224,41 +2258,24 @@ export class ComponentTools implements ToolExecutor {
         throw new Error(`Invalid color format: "${colorStr}". Only hexadecimal format is supported (e.g., "#FF0000" or "#FF0000FF")`);
     }
 
-    private async verifyPropertyChange(nodeUuid: string, componentType: string, property: string, originalValue: any, expectedValue: any): Promise<{ verified: boolean; actualValue: any; fullData: any }> {
+    private async verifyPropertyChange(nodeUuid: string, componentType: string, property: string, originalValue: any, expectedValue: any): Promise<{ verified: boolean; readable: boolean; actualValue: any; fullData: any }> {
         console.log(`[verifyPropertyChange] Starting verification for ${componentType}.${property}`);
         console.log(`[verifyPropertyChange] Expected value:`, JSON.stringify(expectedValue));
         console.log(`[verifyPropertyChange] Original value:`, JSON.stringify(originalValue));
-        
+
         try {
-            // Re-fetch component info for verification
-            console.log(`[verifyPropertyChange] Calling getComponentInfo...`);
-            const componentInfo = await this.getComponentInfo(nodeUuid, componentType);
-            console.log(`[verifyPropertyChange] getComponentInfo success:`, componentInfo.success);
-            
-            const allComponents = await this.getComponents(nodeUuid);
-            console.log(`[verifyPropertyChange] getComponents success:`, allComponents.success);
-            
-            if (componentInfo.success && componentInfo.data) {
-                console.log(`[verifyPropertyChange] Component data available, extracting property '${property}'`);
-                const allPropertyNames = Object.keys(componentInfo.data.properties || {});
-                console.log(`[verifyPropertyChange] Available properties:`, allPropertyNames);
-                const propertyData = componentInfo.data.properties?.[property];
-                console.log(`[verifyPropertyChange] Raw property data for '${property}':`, JSON.stringify(propertyData));
-                
-                // Extract actual value from property data
-                let actualValue = propertyData;
-                console.log(`[verifyPropertyChange] Initial actualValue:`, JSON.stringify(actualValue));
-                
-                if (propertyData && typeof propertyData === 'object' && 'value' in propertyData) {
-                    actualValue = propertyData.value;
-                    console.log(`[verifyPropertyChange] Extracted actualValue from .value:`, JSON.stringify(actualValue));
-                } else {
-                    console.log(`[verifyPropertyChange] No .value property found, using raw data`);
-                }
-                
+            // Same read the get_components tool performs — see readDumpProperty.
+            const read = await this.readDumpProperty(nodeUuid, componentType, property);
+            console.log(`[verifyPropertyChange] readDumpProperty found:`, read.found);
+
+            if (read.found) {
+                const propertyData = read.entry;
+                const actualValue = read.value;
+                console.log(`[verifyPropertyChange] actualValue:`, JSON.stringify(actualValue));
+
                 // Check whether actual value matches expected value
                 let verified = false;
-                
+
                 if (typeof expectedValue === 'object' && expectedValue !== null && 'uuid' in expectedValue) {
                     // For reference types (node/component/asset), compare UUID
                     const actualUuid = actualValue && typeof actualValue === 'object' && 'uuid' in actualValue ? actualValue.uuid : '';
@@ -2303,6 +2320,7 @@ export class ComponentTools implements ToolExecutor {
                 
                 const result = {
                     verified,
+                    readable: true,
                     actualValue,
                     fullData: {
                         // Return only modified property info, not full component data
@@ -2314,28 +2332,24 @@ export class ComponentTools implements ToolExecutor {
                             verified,
                             propertyMetadata: propertyData // Only includes metadata for this property
                         },
-                        // Simplified component summary
-                        componentSummary: {
-                            nodeUuid,
-                            componentType,
-                            totalProperties: Object.keys(componentInfo.data?.properties || {}).length
-                        }
+                        componentSummary: { nodeUuid, componentType }
                     }
                 };
-                
+
                 console.log(`[verifyPropertyChange] Returning result:`, JSON.stringify(result, null, 2));
                 return result;
             } else {
-                console.log(`[verifyPropertyChange] ComponentInfo failed or no data:`, componentInfo);
+                console.log(`[verifyPropertyChange] '${property}' is not exposed in the dump — cannot verify`);
             }
         } catch (error) {
             console.error('[verifyPropertyChange] Verification failed with error:', error);
             console.error('[verifyPropertyChange] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
         }
-        
-        console.log(`[verifyPropertyChange] Returning fallback result`);
+
+        // Nothing was read back, so this is "no evidence", not "the editor refused".
         return {
             verified: false,
+            readable: false,
             actualValue: undefined,
             fullData: null
         };

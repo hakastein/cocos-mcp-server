@@ -1,6 +1,16 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, ProjectInfo, AssetInfo } from '../types';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ALIAS_KEY } from '../tool-args';
+
+/**
+ * A db:// asset location is spelled `url` here but `assetPath` on get_asset_details and
+ * `prefabPath` in prefab-tools, so callers reasonably guess the wrong one. Accepting the
+ * alternates costs nothing and removes a whole class of "parameter error" dead ends —
+ * `reimport_asset` given `assetPath` used to reach the editor as `undefined` and come back
+ * as "Cannot read properties of undefined (reading 'startsWith')".
+ */
+const ASSET_URL_ALIASES = ['assetPath', 'path', 'assetUrl'];
 
 export class ProjectTools implements ToolExecutor {
     // Serialises asset moves. Parallel move-asset requests into the same destination folder
@@ -28,19 +38,35 @@ export class ProjectTools implements ToolExecutor {
             },
             {
                 name: 'build_project',
-                description: 'Build the project',
+                description: 'Run a real build and wait for it to finish. Returns the build state (success/failure), '
+                    + 'the output directory and the builder\'s own message — so a build can actually gate a task. '
+                    + 'Options not supplied are taken from the platform\'s saved build profile, i.e. whatever the Build '
+                    + 'panel is currently configured with. Builds take minutes; raise timeoutMs for a cold build.',
                 inputSchema: {
                     type: 'object',
                     properties: {
                         platform: {
                             type: 'string',
                             description: 'Build platform',
-                            enum: ['web-mobile', 'web-desktop', 'ios', 'android', 'windows', 'mac']
+                            enum: ['web-mobile', 'web-desktop', 'ios', 'android', 'windows', 'mac', 'huawei-quick-game',
+                                'alipay-mini-game', 'bytedance-mini-game', 'wechatgame', 'oppo-mini-game', 'vivo-mini-game',
+                                'xiaomi-quick-game', 'link-sure', 'cocos-play', 'baidu-mini-game', 'taobao-creative-app']
                         },
                         debug: {
                             type: 'boolean',
-                            description: 'Debug build',
-                            default: true
+                            description: 'Debug build (default: whatever the saved profile says)'
+                        },
+                        options: {
+                            type: 'object',
+                            description: 'Extra IBuildTaskOption fields merged over the saved profile, e.g. '
+                                + '{"sourceMaps":false,"buildPath":"project://build"}'
+                        },
+                        timeoutMs: {
+                            type: 'number',
+                            description: 'How long to wait for the build to finish before giving up on WAITING (the build '
+                                + 'itself keeps running in the editor)',
+                            default: 900000,
+                            minimum: 10000
                         }
                     },
                     required: ['platform']
@@ -152,7 +178,9 @@ export class ProjectTools implements ToolExecutor {
             },
             {
                 name: 'check_builder_status',
-                description: 'Check if builder worker is ready',
+                description: 'Builder worker readiness plus any build tasks currently queued or running. "ready" means '
+                    + 'the worker process is up — it says nothing about whether a build succeeded; that is what '
+                    + 'build_project returns.',
                 inputSchema: {
                     type: 'object',
                     properties: {}
@@ -188,6 +216,7 @@ export class ProjectTools implements ToolExecutor {
                     properties: {
                         url: {
                             type: 'string',
+                            [ALIAS_KEY]: ASSET_URL_ALIASES,
                             description: 'Asset URL (e.g., db://assets/newfile.json)'
                         },
                         content: {
@@ -258,7 +287,8 @@ export class ProjectTools implements ToolExecutor {
                     properties: {
                         url: {
                             type: 'string',
-                            description: 'Asset URL to delete'
+                            [ALIAS_KEY]: ASSET_URL_ALIASES,
+                            description: 'Asset URL to delete (db://assets/...)'
                         }
                     },
                     required: ['url']
@@ -272,7 +302,8 @@ export class ProjectTools implements ToolExecutor {
                     properties: {
                         url: {
                             type: 'string',
-                            description: 'Asset URL'
+                            [ALIAS_KEY]: ASSET_URL_ALIASES,
+                            description: 'Asset URL (db://assets/...)'
                         },
                         content: {
                             type: 'string',
@@ -290,7 +321,8 @@ export class ProjectTools implements ToolExecutor {
                     properties: {
                         url: {
                             type: 'string',
-                            description: 'Asset URL to reimport'
+                            [ALIAS_KEY]: ASSET_URL_ALIASES,
+                            description: 'Asset URL to reimport (db://assets/...)'
                         }
                     },
                     required: ['url']
@@ -304,7 +336,8 @@ export class ProjectTools implements ToolExecutor {
                     properties: {
                         url: {
                             type: 'string',
-                            description: 'Asset URL'
+                            [ALIAS_KEY]: ASSET_URL_ALIASES,
+                            description: 'Asset URL (db://assets/...)'
                         }
                     },
                     required: ['url']
@@ -318,7 +351,8 @@ export class ProjectTools implements ToolExecutor {
                     properties: {
                         url: {
                             type: 'string',
-                            description: 'Asset URL'
+                            [ALIAS_KEY]: ASSET_URL_ALIASES,
+                            description: 'Asset URL (db://assets/...)'
                         }
                     },
                     required: ['url']
@@ -490,30 +524,163 @@ export class ProjectTools implements ToolExecutor {
         }
     }
 
-    private async buildProject(args: any): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            const buildOptions = {
-                platform: args.platform,
-                debug: args.debug !== false,
-                sourceMaps: args.debug !== false,
-                buildPath: `build/${args.platform}`
-            };
+    /**
+     * Options the Build panel would use for this platform, from the project profile
+     * (`profiles/v2/packages/<platform>.json` → `builder.taskOptionsMap`). Building from the
+     * bridge with hand-written options would silently ignore everything the project has
+     * configured — bundle compression, included modules, the start scene — and produce a
+     * package unlike the one the panel makes.
+     */
+    private async savedBuildOptions(platform: string): Promise<any> {
+        let common: any = {};
+        try {
+            // `builder.common` is the platform's IBuildTaskOption: buildPath, outputName,
+            // startScene, scenes, buildMode, module overrides — everything that decides what
+            // the package contains.
+            const saved = await Editor.Profile.getProject(platform, 'builder.common');
+            if (saved && typeof saved === 'object') common = { ...saved };
+        } catch {
+            // never built for this platform: the builder fills defaults below
+        }
 
-            // Note: Builder module only supports 'open' and 'query-worker-ready'
-            // Building requires manual interaction through the build panel
-            (Editor.Message.request as any)('builder', 'open').then(() => {
-                resolve({
-                    success: true,
-                    message: `Build panel opened for ${args.platform}. Please configure and start build manually.`,
-                    data: { 
-                        platform: args.platform,
-                        instruction: "Use the build panel to configure and start the build process"
-                    }
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
+        try {
+            // Platform-plugin options (useWebGPU, orientation, …) are stored separately, keyed
+            // by build-task id rather than by platform, and belong under `packages[platform]`.
+            // The newest task is the closest thing to "what the panel is set to".
+            const map = await Editor.Profile.getProject(platform, 'builder.taskOptionsMap');
+            const ids = map && typeof map === 'object' ? Object.keys(map) : [];
+            if (ids.length) {
+                const newest = ids.sort()[ids.length - 1];
+                common.packages = { ...(common.packages || {}), [platform]: { ...(common.packages || {})[platform], ...map[newest] } };
+            }
+        } catch {
+            // platform options unavailable: build with the common config alone
+        }
+
+        return common;
+    }
+
+    /**
+     * Run a build to completion.
+     *
+     * `builder.open` only opens the panel; it was what this tool used to do, and it returned
+     * success without a build ever running. The real verb is `add-task`, whose second argument
+     * makes the editor resolve the request only once the task has finished.
+     */
+    private async buildProject(args: any): Promise<ToolResponse> {
+        const platform = args.platform;
+        const timeoutMs = Number.isFinite(Number(args.timeoutMs)) ? Number(args.timeoutMs) : 900000;
+
+        let ready: boolean;
+        try {
+            ready = await Editor.Message.request('builder', 'query-worker-ready');
+        } catch (err: any) {
+            return { success: false, error: `Cannot reach the builder: ${err.message}` };
+        }
+        if (!ready) {
+            return {
+                success: false,
+                error: 'The build worker is not ready yet. It starts with the editor; retry in a few seconds.'
+            };
+        }
+
+        const options: any = {
+            ...(await this.savedBuildOptions(platform)),
+            platform
+        };
+        if (args.debug !== undefined) options.debug = args.debug;
+        if (args.options && typeof args.options === 'object') Object.assign(options, args.options);
+
+        // Lets the builder fill in and migrate anything still missing. Not in the public
+        // message typings, so a build must not depend on it succeeding.
+        let completed = options;
+        try {
+            const checked = await (Editor.Message.request as any)('builder', 'check-and-complete-options', options);
+            if (checked && typeof checked === 'object') completed = checked;
+        } catch {
+            // older/newer editor without this message: build with what we assembled
+        }
+
+        if (!completed.taskName) completed.taskName = platform;
+
+        // The task list before the build, so the task this call creates can be told apart from
+        // earlier ones afterwards.
+        const before = new Set(await this.buildTaskIds());
+
+        const startedAt = Date.now();
+        let result: any;
+        try {
+            result = await this.withTimeout(
+                (Editor.Message.request as any)('builder', 'add-task', completed, true),
+                timeoutMs,
+                `Build did not finish within ${timeoutMs}ms. It is still running in the editor — `
+                    + 'watch it with check_builder_status, or raise timeoutMs.'
+            );
+        } catch (err: any) {
+            return { success: false, error: err.message, data: { platform, elapsedMs: Date.now() - startedAt } };
+        }
+
+        // The number `add-task` returns is NOT an exit status: a build that the builder itself
+        // logged as "build success in 9 s!" came back as 36. It is undocumented in the public
+        // typings, so the task's own state is the only verdict worth reporting.
+        const task = await this.findFinishedTask(before);
+        const state = task?.state ?? 'unknown';
+        const succeeded = state === 'success';
+
+        return {
+            success: succeeded,
+            error: succeeded ? undefined : state === 'unknown'
+                ? `Build finished but its task could not be found, so the result is unknown. `
+                    + `add-task returned ${JSON.stringify(result)}. Check the Build panel.`
+                : `Build ${state}: ${task?.message || task?.detailMessage || 'no message from the builder'}`,
+            message: succeeded ? `${task?.message || `Build finished for ${platform}`}` : undefined,
+            data: {
+                platform,
+                state,
+                taskId: task?.id,
+                addTaskResult: result,
+                elapsedMs: Date.now() - startedAt,
+                buildPath: completed.buildPath,
+                outputName: completed.outputName,
+                debug: completed.debug,
+                builderMessage: task?.message,
+                builderDetail: task?.detailMessage
+            }
+        } as ToolResponse;
+    }
+
+    private async buildTaskIds(): Promise<string[]> {
+        try {
+            const info: any = await (Editor.Message.request as any)('builder', 'query-tasks-info', { type: 'build' });
+            return Array.isArray(info?.list) ? info.list.map((t: any) => String(t.id)) : [];
+        } catch {
+            return [];
+        }
+    }
+
+    /** The task this build created: the one that is new since `before`, else the most recent. */
+    private async findFinishedTask(before: Set<string>): Promise<any> {
+        let list: any[] = [];
+        try {
+            const info: any = await (Editor.Message.request as any)('builder', 'query-tasks-info', { type: 'build' });
+            list = Array.isArray(info?.list) ? info.list : [];
+        } catch {
+            return undefined;
+        }
+        const fresh = list.filter((t) => !before.has(String(t.id)));
+        const candidates = fresh.length ? fresh : list;
+        // Task ids are creation timestamps, so the largest is the newest.
+        return candidates.sort((a, b) => Number(a.id) - Number(b.id)).pop();
+    }
+
+    private withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+        let timer: any;
+        return Promise.race([
+            promise.finally(() => clearTimeout(timer)),
+            new Promise<T>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error(message)), ms);
+            })
+        ]);
     }
 
     private async getProjectInfo(): Promise<ToolResponse> {
@@ -695,14 +862,13 @@ export class ProjectTools implements ToolExecutor {
                     success: true,
                     data: {
                         builderReady: ready,
-                        message: 'Build settings are limited in MCP plugin environment',
+                        message: 'Saved per-platform build options live in the project profile and are what build_project '
+                            + 'builds with; pass `options` to override individual fields for one build.',
                         availableActions: [
-                            'Open build panel with open_build_panel',
-                            'Check builder status with check_builder_status',
-                            'Start preview server with start_preview_server',
-                            'Stop preview server with stop_preview_server'
-                        ],
-                        limitation: 'Full build configuration requires direct Editor UI access'
+                            'Run a build with build_project (waits for the result)',
+                            'Check worker readiness and running tasks with check_builder_status',
+                            'Open the build panel with open_build_panel'
+                        ]
                     }
                 });
             }).catch((err: Error) => {
@@ -725,20 +891,37 @@ export class ProjectTools implements ToolExecutor {
     }
 
     private async checkBuilderStatus(): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('builder', 'query-worker-ready').then((ready: boolean) => {
-                resolve({
-                    success: true,
-                    data: {
-                        ready: ready,
-                        status: ready ? 'Builder worker is ready' : 'Builder worker is not ready',
-                        message: 'Builder status checked successfully'
-                    }
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
+        let ready: boolean;
+        try {
+            ready = await Editor.Message.request('builder', 'query-worker-ready');
+        } catch (err: any) {
+            return { success: false, error: err.message };
+        }
+
+        let tasks: any;
+        try {
+            tasks = await (Editor.Message.request as any)('builder', 'query-tasks-info', { type: 'build' });
+        } catch {
+            // task listing unavailable on this editor build; readiness alone still answers
+        }
+
+        const list = Array.isArray(tasks?.list) ? tasks.list : [];
+        const running = list.filter((t: any) => t.state === 'processing' || t.state === 'waiting');
+        return {
+            success: true,
+            data: {
+                ready,
+                status: ready ? 'Builder worker is ready' : 'Builder worker is not ready',
+                idle: tasks?.free,
+                runningTasks: running.map((t: any) => ({
+                    id: t.id, state: t.state, progress: t.progress, message: t.message, platform: t.options?.platform
+                })),
+                recentTasks: list.slice(-5).map((t: any) => ({
+                    id: t.id, state: t.state, message: t.message, platform: t.options?.platform, time: t.time
+                })),
+                note: 'Readiness is not a build result — run build_project to actually build.'
+            }
+        };
     }
 
     private async startPreviewServer(port: number = 7456): Promise<ToolResponse> {
@@ -912,6 +1095,15 @@ export class ProjectTools implements ToolExecutor {
     }
 
     private async reimportAsset(url: string): Promise<ToolResponse> {
+        // The asset-db calls .startsWith on whatever it is handed, so a non-db:// value
+        // surfaces as a bare TypeError with no hint of which argument was wrong.
+        if (typeof url !== 'string' || !url.startsWith('db://')) {
+            return {
+                success: false,
+                error: `reimport_asset: 'url' must be a db:// asset url (e.g. db://assets/scripts/foo.ts), `
+                    + `received ${JSON.stringify(url)}. The db:// url is also accepted as assetPath / path / assetUrl.`
+            };
+        }
         return new Promise((resolve) => {
             Editor.Message.request('asset-db', 'reimport-asset', url).then(() => {
                 resolve({

@@ -1,5 +1,7 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, SceneInfo } from '../types';
 import { signatureOf, hashSignature, diffSignatures } from '../scene-signature';
+import { decompressUuid } from '../prefab-json';
+import { ALIAS_KEY } from '../tool-args';
 
 export class SceneTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -106,6 +108,30 @@ export class SceneTools implements ToolExecutor {
                         }
                     }
                 }
+            },
+            {
+                name: 'find_component_owners',
+                description: 'Every node in the open scene that carries a component of the given class, as node path + ' +
+                    'uuid + component uuid. Use this to answer "which node owns component X" instead of inferring it ' +
+                    'from a .scene/.prefab file, where components are written as a 23-char compressed uuid and the ' +
+                    'usual shortcut ("it is in the file, so it is on the root") cannot actually tell the difference. ' +
+                    'Accepts the @ccclass name or a builtin spelled either "Sprite" or "cc.Sprite".',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        className: {
+                            type: 'string',
+                            [ALIAS_KEY]: ['componentType', 'component', 'type', 'name'],
+                            description: 'Component class name, e.g. CharacterAnimator or cc.Sprite'
+                        },
+                        includeInactive: {
+                            type: 'boolean',
+                            description: 'Include nodes that are inactive in the hierarchy (default true)',
+                            default: true
+                        }
+                    },
+                    required: ['className']
+                }
             }
         ];
     }
@@ -122,6 +148,11 @@ export class SceneTools implements ToolExecutor {
             case 'get_scene_hierarchy': return this.getSceneHierarchy(args.includeComponents);
             case 'dump':                return this.dumpScene(args || {});
             case 'checksum':            return this.checksum(args || {});
+            case 'find_component_owners':
+                return this.runSceneMethod('findComponentOwners', [{
+                    className: args.className,
+                    includeInactive: args.includeInactive
+                }]);
             default: throw new Error(`Unknown tool: ${toolName}`);
         }
     }
@@ -288,7 +319,9 @@ export class SceneTools implements ToolExecutor {
             await this.waitSceneReady();
             const tree: any = await Editor.Message.request('scene', 'query-node-tree');
             if (tree) {
-                return { success: true, data: this.buildHierarchy(tree, includeComponents) };
+                const data = this.buildHierarchy(tree, includeComponents);
+                if (includeComponents) await this.resolveHierarchyClassNames(data);
+                return { success: true, data };
             }
             return { success: false, error: 'No scene hierarchy available' };
         } catch (err: any) {
@@ -321,6 +354,56 @@ export class SceneTools implements ToolExecutor {
             }));
         }
         return result;
+    }
+
+    /** A `__type__` that is a compressed script-asset uuid rather than a `cc.` class name. */
+    private isCompressedCid(type: string): boolean {
+        return typeof type === 'string'
+            && !type.startsWith('cc.')
+            && /^[A-Za-z0-9+/]{20,24}$/.test(type);
+    }
+
+    /**
+     * Give every component in the tree a `className`.
+     *
+     * This path builds its component list from the editor's node dump, where a user script's
+     * `__type__` is the 23-char compressed uuid of its .ts asset — unreadable to a caller and
+     * not something any other tool accepts as a component type. Resolving it back to the
+     * script's class name is what makes "which node owns component X" answerable here, the
+     * same way prefab_dump already does it. `type` is left untouched.
+     */
+    private async resolveHierarchyClassNames(root: any): Promise<void> {
+        const cache = new Map<string, string>();
+        const pending = new Set<string>();
+
+        const collect = (node: any) => {
+            for (const comp of node.components || []) {
+                if (this.isCompressedCid(comp.type)) pending.add(comp.type);
+            }
+            for (const child of node.children || []) collect(child);
+        };
+        collect(root);
+
+        for (const cid of pending) {
+            let name = cid;
+            try {
+                const url: string | null = await Editor.Message.request(
+                    'asset-db', 'query-url', decompressUuid(cid)
+                );
+                if (url) name = url.split('/').pop()!.replace(/\.ts$/, '');
+            } catch {
+                // unresolvable script asset: leave the raw id as the name
+            }
+            cache.set(cid, name);
+        }
+
+        const apply = (node: any) => {
+            for (const comp of node.components || []) {
+                comp.className = cache.get(comp.type) ?? comp.type;
+            }
+            for (const child of node.children || []) apply(child);
+        };
+        apply(root);
     }
 
     private async saveSceneAs(path: string): Promise<ToolResponse> {

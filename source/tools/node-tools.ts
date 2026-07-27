@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, NodeInfo } from '../types';
 import { ComponentTools } from './component-tools';
+import { ANY_VALUE_TYPE, coerceJsonArg } from '../json-arg';
 
 export class NodeTools implements ToolExecutor {
     private componentTools = new ComponentTools();
@@ -157,6 +158,7 @@ export class NodeTools implements ToolExecutor {
                             description: 'Property name (e.g., active, name, layer)'
                         },
                         value: {
+                            type: ANY_VALUE_TYPE,
                             description: 'Property value'
                         }
                     },
@@ -325,7 +327,7 @@ export class NodeTools implements ToolExecutor {
             case 'get_all_nodes':
                 return await this.getAllNodes();
             case 'set_node_property':
-                return await this.setNodeProperty(args.uuid, args.property, args.value);
+                return await this.setNodeProperty(args.uuid, args.property, coerceJsonArg(args.value).value);
             case 'set_node_transform':
                 return await this.setNodeTransform(args);
             case 'delete_node':

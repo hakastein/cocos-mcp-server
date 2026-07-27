@@ -17,6 +17,9 @@ import { AssetAdvancedTools } from './tools/asset-advanced-tools';
 import { ValidationTools } from './tools/validation-tools';
 import { SkeletalAnimationTools } from './tools/skeletal-animation-tools';
 import { BatchTools } from './tools/batch-tools';
+import { normalizeToolArgs } from './tool-args';
+import { previewLogStore } from './preview-log-store';
+import { previewConsoleClient } from './preview-console-client';
 
 export class MCPServer {
     private settings: MCPServerSettings;
@@ -24,6 +27,8 @@ export class MCPServer {
     private tools: Record<string, any> = {};
     private toolsList: ToolDefinition[] = [];
     private enabledTools: any[] = [];
+    /** Lazily built `{category}_{tool}` -> inputSchema index; tool definitions are static. */
+    private schemaIndex: Map<string, any> | null = null;
 
     constructor(settings: MCPServerSettings) {
         this.settings = settings;
@@ -133,7 +138,42 @@ export class MCPServer {
         if (!this.tools[category]) {
             throw new Error(`Unknown tool category: ${category}`);
         }
+
+        // Validate before dispatch. A handler that reads an argument the caller spelled
+        // differently otherwise sees `undefined` and degrades silently — a match-all regex,
+        // or a TypeError thrown from inside the editor. Both look like tool bugs to the
+        // caller and neither says which parameter was wrong. See ./tool-args.
+        const schema = this.schemaFor(category, methodName);
+        if (schema) {
+            const normalized = normalizeToolArgs(toolName, schema, args);
+            if (!normalized.ok) {
+                return { success: false, error: normalized.error };
+            }
+            args = normalized.args;
+            if (normalized.renamed.length && this.settings.enableDebugLog) {
+                const pairs = normalized.renamed.map(r => `${r.from} -> ${r.to}`).join(', ');
+                console.log(`[MCPServer] ${toolName}: accepted alias argument(s) ${pairs}`);
+            }
+        }
+
         return await this.tools[category].execute(methodName, args);
+    }
+
+    /**
+     * Input schema for a tool, by category and method name. Indexed across every registered
+     * category regardless of the enabled-tools filter, so validation does not depend on
+     * which tools the current configuration exposes.
+     */
+    private schemaFor(category: string, methodName: string): any | undefined {
+        if (!this.schemaIndex) {
+            this.schemaIndex = new Map();
+            for (const [cat, toolSet] of Object.entries(this.tools)) {
+                for (const tool of toolSet.getTools()) {
+                    this.schemaIndex.set(`${cat}_${tool.name}`, tool.inputSchema);
+                }
+            }
+        }
+        return this.schemaIndex.get(`${category}_${methodName}`);
     }
 
     private rebuildToolsList(): void {
@@ -196,6 +236,15 @@ export class MCPServer {
                     id: null,
                     error: { code: -32000, message: 'Method Not Allowed' }
                 }));
+            } else if (pathname === '/preview-console.js' && req.method === 'GET') {
+                // Served from the bridge so the injected client has one source of truth and the
+                // port it posts to cannot drift from the port it was fetched from.
+                res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+                res.setHeader('Cache-Control', 'no-store');
+                res.writeHead(200);
+                res.end(previewConsoleClient({ port: this.settings.port }));
+            } else if (pathname === '/preview-log' && req.method === 'POST') {
+                await this.handlePreviewLog(req, res);
             } else if (pathname === '/health' && req.method === 'GET') {
                 res.writeHead(200);
                 res.end(JSON.stringify({ status: 'ok', tools: this.toolsList.length }));
@@ -213,6 +262,23 @@ export class MCPServer {
             res.writeHead(500);
             res.end(JSON.stringify({ error: 'Internal server error' }));
         }
+    }
+
+    /**
+     * Ingest a batch of console entries from a preview page. Always answers 200 — the page
+     * must never learn that logging failed, or its own error handling becomes another source
+     * of log traffic.
+     */
+    private async handlePreviewLog(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+        let accepted = 0;
+        try {
+            const body = await this.readRequestBody(req);
+            accepted = previewLogStore.ingest(JSON.parse(body), Date.now());
+        } catch {
+            // malformed batch: drop it, the page gets a 200 regardless
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify({ accepted }));
     }
 
     private async handleMCPRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

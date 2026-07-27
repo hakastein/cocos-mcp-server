@@ -112,7 +112,9 @@
                 "setComponentProperty",
                 "getCurrentSceneInfo",
                 "getSceneHierarchy",
-                "createPrefabFromNode"
+                "createPrefabFromNode",
+                "dumpSceneNodes",
+                "findComponentOwners"
             ]
         }
     }

@@ -62,6 +62,7 @@ export class ReferenceImageTools implements ToolExecutor {
                             enum: ['path', 'x', 'y', 'sx', 'sy', 'opacity']
                         },
                         value: {
+                            type: ['string', 'number'],
                             description: 'Property value (path: string, x/y/sx/sy: number, opacity: number 0-1)'
                         }
                     },
@@ -250,6 +251,10 @@ export class ReferenceImageTools implements ToolExecutor {
     }
 
     private async setReferenceImageData(key: string, value: any): Promise<ToolResponse> {
+        // Every key but `path` is numeric; a client that sent "0.5" must not set a string.
+        if (key !== 'path' && typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+            value = Number(value);
+        }
         return new Promise((resolve) => {
             Editor.Message.request('reference-image', 'set-image-data', key, value).then(() => {
                 resolve({

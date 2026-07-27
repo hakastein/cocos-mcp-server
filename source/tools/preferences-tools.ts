@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResponse, ToolExecutor } from '../types';
+import { ANY_VALUE_TYPE, coerceJsonArg } from '../json-arg';
 
 export class PreferencesTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -54,7 +55,7 @@ export class PreferencesTools implements ToolExecutor {
                     properties: {
                         name: { type: 'string', description: 'Plugin name' },
                         path: { type: 'string', description: 'Configuration path' },
-                        value: { description: 'Configuration value' },
+                        value: { type: ANY_VALUE_TYPE, description: 'Configuration value' },
                         type: {
                             type: 'string',
                             description: 'Configuration type',
@@ -120,7 +121,7 @@ export class PreferencesTools implements ToolExecutor {
         switch (toolName) {
             case 'open_preferences_settings': return this.openPreferencesSettings(args.tab, args.args);
             case 'query_preferences_config':  return this.queryPreferencesConfig(args.name, args.path, args.type);
-            case 'set_preferences_config':    return this.setPreferencesConfig(args.name, args.path, args.value, args.type);
+            case 'set_preferences_config':    return this.setPreferencesConfig(args.name, args.path, coerceJsonArg(args.value).value, args.type);
             case 'get_all_preferences':       return this.getAllPreferences();
             case 'reset_preferences':         return this.resetPreferences(args.name, args.type);
             case 'export_preferences':        return this.exportPreferences(args.exportPath);

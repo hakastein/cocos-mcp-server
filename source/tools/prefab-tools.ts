@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, PrefabInfo } from '../types';
 import { readAssetJson, writeAssetJson } from '../asset-json';
+import { ANY_VALUE_TYPE, coerceJsonArg } from '../json-arg';
 import {
     compressUuid,
     dumpPrefabTree,
@@ -255,7 +256,7 @@ export class PrefabTools implements ToolExecutor {
                         nodePath: { type: 'string', description: 'Slash path inside the prefab (default: root node)' },
                         nodeName: { type: 'string', description: 'Node name inside the prefab; must be unique' },
                         property: { type: 'string', description: 'Serialized property name (e.g. _shadowCastingMode, damage)' },
-                        value: { description: 'Serialized value to write' },
+                        value: { type: ANY_VALUE_TYPE, description: 'Serialized value to write' },
                         occurrence: { type: 'number', description: 'Which component when the node has several of the class (default 0)' }
                     },
                     required: ['prefabPath', 'componentType', 'property']
@@ -429,10 +430,11 @@ export class PrefabTools implements ToolExecutor {
             if (!('value' in args)) {
                 return { success: false, error: 'value is required — omitting it would delete the property from the prefab' };
             }
+            const { value, coerced } = coerceJsonArg(args.value);
             const data = await this.readPrefabArray(args.prefabPath);
             const cid = await this.resolveComponentCid(args.componentType, args.scriptPath);
             const result = setComponentPropertyInPrefabData(
-                data, this.selectorOf(args), cid, args.property, args.value, args.occurrence || 0
+                data, this.selectorOf(args), cid, args.property, value, args.occurrence || 0
             );
             await writeAssetJson(args.prefabPath, result.data);
             await Editor.Message.request('asset-db', 'refresh-asset', args.prefabPath);
@@ -443,8 +445,9 @@ export class PrefabTools implements ToolExecutor {
                     componentType: args.componentType,
                     property: args.property,
                     previous: result.previous,
-                    value: args.value,
-                    componentId: result.componentId
+                    value,
+                    componentId: result.componentId,
+                    ...(coerced ? { valueParsedFromString: true } : {})
                 }
             };
         } catch (error: any) {

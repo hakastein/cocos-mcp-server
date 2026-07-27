@@ -78,6 +78,27 @@ function ctorIsA(ctor: any, base: any): boolean {
     return !!ctor && !!base && (ctor === base || (ctor.prototype instanceof base));
 }
 
+/**
+ * The name the engine has a component registered under — `cc.Sprite` for builtins, the
+ * `@ccclass` string for user scripts. This is the name the serializer and the editor use,
+ * and the one a caller can pass back to any component-addressing tool.
+ *
+ * `constructor.name` is only the JS identifier: it is right most of the time but silently
+ * disagrees whenever a bundler renames the class or `@ccclass` was given a different
+ * string. It is kept as the fallback, never as the answer.
+ */
+function componentClassName(comp: any): string {
+    if (!comp) return 'Unknown';
+    try {
+        const { js } = require('cc');
+        const name = js.getClassName(comp);
+        if (name) return name;
+    } catch {
+        // engine class registry unavailable — fall through
+    }
+    return comp.constructor ? comp.constructor.name : 'Unknown';
+}
+
 export const methods: { [key: string]: (...any: any) => any } = {
     createNewScene() {
         try {
@@ -301,19 +322,42 @@ export const methods: { [key: string]: (...any: any) => any } = {
         // `cc`, `director` and `scene` are in scope for the evaluated code.
         void scene;
         let asyncWrapper = false;
+        let functionWrapper = false;
         let awaited = false;
         try {
             let result: any;
             try {
+                // Plain eval first, so a bare expression still evaluates to its own value —
+                // `cc.director.getScene()` has to keep returning the scene, which it would not
+                // do from inside a function body.
                 // eslint-disable-next-line no-eval
                 result = eval(code);
             } catch (err: any) {
-                // Plain eval is not an async context. Rather than fail outright, re-run the script
-                // inside an async IIFE so top-level await works — there the script must `return`.
-                if (err instanceof SyntaxError && /await is only valid/i.test(err.message || '')) {
+                // Neither a top-level `return` nor a top-level `await` is legal in plain eval.
+                // Both fail at parse time, before any statement runs, so re-running the script
+                // inside a wrapper that permits them cannot execute anything twice.
+                const message = err instanceof SyntaxError ? (err.message || '') : '';
+                if (/await is only valid/i.test(message)) {
                     asyncWrapper = true;
                     // eslint-disable-next-line no-eval
                     result = eval(`(async () => {\n${code}\n})()`);
+                } else if (/illegal return/i.test(message)) {
+                    try {
+                        functionWrapper = true;
+                        // eslint-disable-next-line no-eval
+                        result = eval(`(function () {\n${code}\n})()`);
+                    } catch (inner: any) {
+                        // A script using both `return` and `await`: V8 reports only the first
+                        // parse error, so the sync wrapper can still fail on the await.
+                        if (inner instanceof SyntaxError && /await is only valid/i.test(inner.message || '')) {
+                            functionWrapper = false;
+                            asyncWrapper = true;
+                            // eslint-disable-next-line no-eval
+                            result = eval(`(async () => {\n${code}\n})()`);
+                        } else {
+                            throw inner;
+                        }
+                    }
                 } else {
                     throw err;
                 }
@@ -345,6 +389,7 @@ export const methods: { [key: string]: (...any: any) => any } = {
             const payload: any = { result: data };
             if (awaited) payload.awaited = true;
             if (asyncWrapper) payload.asyncWrapper = true;
+            if (functionWrapper) payload.functionWrapper = true;
             return { success: true, data: payload };
         } catch (error: any) {
             return {
@@ -887,8 +932,13 @@ export const methods: { [key: string]: (...any: any) => any } = {
                         childCount: (child.children || []).length
                     };
                     if (withComps) {
+                        // `type` stays the JS constructor name because scene_checksum keys its
+                        // signature on it — changing it would invalidate every baseline captured
+                        // before this build. `className` is the registered name to address the
+                        // component by, added alongside rather than replacing it.
                         entry.components = (child.components || []).map((c: any) => ({
                             type: c && c.constructor ? c.constructor.name : 'Unknown',
+                            className: componentClassName(c),
                             uuid: c && c.uuid,
                             enabled: c ? c.enabled !== false : false
                         }));
@@ -904,6 +954,80 @@ export const methods: { [key: string]: (...any: any) => any } = {
             };
             walk(root, options.rootUuid ? root.name : '');
             return { success: true, data: { sceneName: scene.name, nodeCount: nodes.length, nodes } };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Every node in the open scene carrying a component of the given class.
+     *
+     * Answers "which node owns component X" directly. Reading it out of a prefab/scene file
+     * instead means matching the 23-char compressed uuid the serializer writes, and the
+     * usual shortcut — "the component appears in the file, so it must be on the root" — is
+     * not something that check can actually distinguish, which has produced at least one
+     * root-only-lookup runtime bug.
+     */
+    findComponentOwners(options: any = {}) {
+        try {
+            const className = typeof options === 'string' ? options : options.className;
+            if (typeof className !== 'string' || !className.trim()) {
+                return { success: false, error: "findComponentOwners requires a non-empty 'className'" };
+            }
+            const wanted = className.trim();
+            const includeInactive = options.includeInactive !== false;
+            const scene = requireActiveScene();
+
+            const owners: any[] = [];
+            let scanned = 0;
+            const walk = (parent: any, prefix: string) => {
+                const seen = new Map<string, number>();
+                for (const child of parent.children || []) {
+                    const nth = (seen.get(child.name) || 0) + 1;
+                    seen.set(child.name, nth);
+                    const label = nth === 1 ? child.name : `${child.name}#${nth}`;
+                    const path = prefix ? `${prefix}/${label}` : label;
+                    scanned++;
+                    if (includeInactive || child.activeInHierarchy) {
+                        // match the registered name, the bare JS name and the `cc.`-qualified
+                        // spelling, so 'Sprite' and 'cc.Sprite' both resolve
+                        const hits = (child.components || []).filter((c: any) => {
+                            if (!c) return false;
+                            const registered = componentClassName(c);
+                            const js = c.constructor ? c.constructor.name : '';
+                            return registered === wanted
+                                || js === wanted
+                                || `cc.${js}` === wanted
+                                || registered === `cc.${wanted}`;
+                        });
+                        for (const c of hits) {
+                            owners.push({
+                                nodePath: path,
+                                nodeUuid: child.uuid,
+                                nodeName: child.name,
+                                active: child.active,
+                                activeInHierarchy: child.activeInHierarchy,
+                                componentUuid: c.uuid,
+                                className: componentClassName(c),
+                                enabled: c.enabled !== false
+                            });
+                        }
+                    }
+                    walk(child, path);
+                }
+            };
+            walk(scene, '');
+
+            return {
+                success: true,
+                data: {
+                    className: wanted,
+                    sceneName: scene.name,
+                    nodesScanned: scanned,
+                    ownerCount: owners.length,
+                    owners
+                }
+            };
         } catch (error: any) {
             return { success: false, error: error.message };
         }
