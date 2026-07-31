@@ -61,8 +61,13 @@ export class ProjectTools implements ToolExecutor {
                 name: 'build_project',
                 description: 'Run a real build and wait for it to finish. Returns the build state (success/failure), '
                     + 'the output directory and the builder\'s own message — so a build can actually gate a task. '
-                    + 'Options not supplied are taken from the platform\'s saved build profile, i.e. whatever the Build '
-                    + 'panel is currently configured with. Builds take minutes; raise timeoutMs for a cold build.',
+                    + 'Rebuilds the platform\'s EXISTING build task in place — the same row the Build panel shows, with '
+                    + 'the settings it is configured with — instead of piling up a new task per build. CAN MODIFY SAVED '
+                    + 'SETTINGS: rebuilding writes the options back onto that task, so `debug`/`options` that disagree '
+                    + 'with it would permanently edit that Build-panel row. The call REFUSES in that case unless '
+                    + 'allowTaskEdit:true, and refuses to guess when the platform has several tasks unless taskId says '
+                    + 'which. Every refusal happens before anything is written. Builds take minutes; raise timeoutMs '
+                    + 'for a cold build.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -75,12 +80,32 @@ export class ProjectTools implements ToolExecutor {
                         },
                         debug: {
                             type: 'boolean',
-                            description: 'Debug build (default: whatever the saved profile says)'
+                            description: 'Debug build. Omit it to build the task exactly as configured. If it disagrees '
+                                + 'with the target task the call refuses rather than rewriting the task — see allowTaskEdit.'
                         },
                         options: {
                             type: 'object',
-                            description: 'Extra IBuildTaskOption fields merged over the saved profile, e.g. '
-                                + '{"sourceMaps":false,"buildPath":"project://build"}'
+                            description: 'Extra IBuildTaskOption fields merged over the target task\'s own options, e.g. '
+                                + '{"sourceMaps":false,"buildPath":"project://build"}. Fields that disagree with the task '
+                                + 'refuse the call the same way `debug` does. Merged shallowly: a nested object replaces '
+                                + 'the saved one whole.'
+                        },
+                        taskId: {
+                            type: 'string',
+                            description: 'Rebuild this specific task (ids come from check_builder_status). Required once '
+                                + 'the platform has more than one task — the tool will not pick for you.'
+                        },
+                        newTask: {
+                            type: 'boolean',
+                            description: 'Add a NEW build task with these settings instead of rebuilding an existing one. '
+                                + 'Leaves every existing task untouched, at the cost of another permanent row in the '
+                                + 'Build panel. Off by default.'
+                        },
+                        allowTaskEdit: {
+                            type: 'boolean',
+                            description: 'Permit this call to overwrite the target task\'s saved settings with `debug`/'
+                                + '`options`. Off by default. The change is permanent and indistinguishable from editing '
+                                + 'those fields in the Build panel, so only pass it when changing that task IS the intent.'
                         },
                         timeoutMs: {
                             type: 'number',
@@ -199,9 +224,9 @@ export class ProjectTools implements ToolExecutor {
             },
             {
                 name: 'check_builder_status',
-                description: 'Builder worker readiness plus any build tasks currently queued or running. "ready" means '
-                    + 'the worker process is up — it says nothing about whether a build succeeded; that is what '
-                    + 'build_project returns.',
+                description: 'Builder worker readiness plus the build tasks that exist, queued, running or finished. '
+                    + '"ready" means the worker process is up — it says nothing about whether a build succeeded; that is '
+                    + 'what build_project returns. Task ids listed here are what build_project takes as `taskId`.',
                 inputSchema: {
                     type: 'object',
                     properties: {}
@@ -582,6 +607,56 @@ export class ProjectTools implements ToolExecutor {
     }
 
     /**
+     * The build tasks this platform has, i.e. the rows the Build panel shows, oldest first.
+     * `add-task` without an `options.taskId` mints a task per call, so every bridge build used to
+     * leave another permanent entry in the panel behind it. Read-only.
+     */
+    private async platformTasks(platform: string): Promise<any[]> {
+        try {
+            const info: any = await (Editor.Message.request as any)('builder', 'query-tasks-info', { type: 'build' });
+            const list: any[] = Array.isArray(info?.list) ? info.list : [];
+            // Task ids are creation timestamps.
+            return list.filter((t) => t?.options?.platform === platform).sort((a, b) => Number(a.id) - Number(b.id));
+        } catch {
+            return [];
+        }
+    }
+
+    /** A task as the caller needs to see it to choose between several. */
+    private static describeTask(t: any): any {
+        const o = t?.options || {};
+        return {
+            taskId: String(t?.id),
+            taskName: o.name ?? o.taskName ?? t?.taskName,
+            platform: o.platform,
+            debug: o.debug,
+            sourceMaps: o.sourceMaps,
+            buildPath: o.buildPath,
+            outputName: o.outputName
+        };
+    }
+
+    /** Key order must not read as a difference. */
+    private static stable(v: any): string {
+        if (v === undefined) return 'undefined';
+        if (v === null || typeof v !== 'object') return JSON.stringify(v);
+        if (Array.isArray(v)) return `[${v.map((x) => ProjectTools.stable(x)).join(',')}]`;
+        return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${ProjectTools.stable(v[k])}`).join(',')}}`;
+    }
+
+    /**
+     * Which caller overrides would change the task's saved settings. Building a task writes its
+     * options back, so every difference here is a permanent edit to that Build-panel row — the
+     * user's `web-mobile-debug` task lost its Debug flag to a `{platform, debug:false}` call that
+     * meant nothing by it.
+     */
+    private static settingConflicts(saved: any, overrides: Record<string, any>): Array<{ field: string; saved: any; requested: any }> {
+        return Object.entries(overrides)
+            .filter(([field, requested]) => ProjectTools.stable(saved?.[field]) !== ProjectTools.stable(requested))
+            .map(([field, requested]) => ({ field, saved: saved?.[field], requested }));
+    }
+
+    /**
      * Run a build to completion.
      *
      * `builder.open` only opens the panel; it was what this tool used to do, and it returned
@@ -605,12 +680,73 @@ export class ProjectTools implements ToolExecutor {
             };
         }
 
-        const options: any = {
-            ...(await this.savedBuildOptions(platform)),
-            platform
-        };
-        if (args.debug !== undefined) options.debug = args.debug;
-        if (args.options && typeof args.options === 'object') Object.assign(options, args.options);
+        const overrides: Record<string, any> = {};
+        if (args.debug !== undefined) overrides.debug = args.debug;
+        if (args.options && typeof args.options === 'object') Object.assign(overrides, args.options);
+
+        if (args.newTask === true && args.taskId) {
+            return {
+                success: false,
+                error: 'newTask and taskId contradict each other: one adds a task, the other rebuilds an existing one.'
+            };
+        }
+
+        // Everything from here to the `add-task` below is read-only on purpose. A call that ends in
+        // a refusal must leave the Build panel exactly as it found it — the settings write is part
+        // of the build, never a precondition of deciding whether to run one.
+        const existing = await this.platformTasks(platform);
+        const listed = existing.map((t) => ProjectTools.describeTask(t));
+        let target: any;
+
+        if (args.newTask !== true) {
+            if (args.taskId) {
+                target = existing.find((t) => String(t.id) === String(args.taskId));
+                if (!target) {
+                    const elsewhere = await this.queryTask(args.taskId);
+                    return {
+                        success: false,
+                        error: elsewhere
+                            ? `Build task ${args.taskId} is a ${elsewhere?.options?.platform} task, not ${platform}.`
+                            : `No build task with id ${args.taskId}. List them with check_builder_status.`,
+                        data: { platform, tasks: listed }
+                    };
+                }
+            } else if (existing.length > 1) {
+                return {
+                    success: false,
+                    error: `${platform} has ${existing.length} build tasks holding different settings, and picking one for `
+                        + 'you is how a configuration gets destroyed. Pass taskId to name the one to rebuild, or '
+                        + 'newTask:true to build a separate task. Nothing was built and nothing was changed.',
+                    data: { platform, tasks: listed }
+                };
+            } else {
+                target = existing[0];
+            }
+        }
+
+        const conflicts = target ? ProjectTools.settingConflicts(target.options, overrides) : [];
+        if (conflicts.length && args.allowTaskEdit !== true) {
+            const d = ProjectTools.describeTask(target);
+            const shape = (pick: 'saved' | 'requested') =>
+                conflicts.map((c) => `${c.field}=${JSON.stringify(c[pick])}`).join(', ');
+            return {
+                success: false,
+                error: `Build task ${d.taskId} ("${d.taskName}") is configured with ${shape('saved')}, and this call asks `
+                    + `for ${shape('requested')}. Building it would write those values onto the task and overwrite its `
+                    + 'saved settings for good. Drop the override to rebuild the task as configured, pass newTask:true to '
+                    + 'build a separate task with these settings, or pass allowTaskEdit:true to really change this one. '
+                    + 'Nothing was built and nothing was changed.',
+                data: { platform, task: d, conflicts, tasks: listed }
+            };
+        }
+
+        // Past this line the call writes: `add-task` stores whatever options it is given onto the
+        // task it names. A target task carries the options it was last built with — the panel's own
+        // state for that row, and a better base than anything reassembled from the profile.
+        const options: any = target
+            ? { ...JSON.parse(JSON.stringify(target.options || {})), platform, taskId: String(target.id) }
+            : { ...(await this.savedBuildOptions(platform)), platform };
+        Object.assign(options, overrides);
 
         // Lets the builder fill in and migrate anything still missing. Not in the public
         // message typings, so a build must not depend on it succeeding.
@@ -623,6 +759,17 @@ export class ProjectTools implements ToolExecutor {
         }
 
         if (!completed.taskName) completed.taskName = platform;
+
+        // A new task inherits its output path from the saved profile, which mirrors whichever task
+        // was configured last — so it can land on top of another task's build without saying so.
+        // Settings survive; the artefacts in that folder do not.
+        const collision = target ? undefined : existing.find((t) =>
+            t?.options?.buildPath === completed.buildPath && t?.options?.outputName === completed.outputName);
+        const overwrites = collision
+            ? `This new task writes to the same folder as task ${collision.id} `
+                + `("${ProjectTools.describeTask(collision).taskName}"): ${completed.buildPath}/${completed.outputName}. `
+                + 'That task\'s build output is replaced; its settings are not. Set options.outputName to keep them apart.'
+            : undefined;
 
         // The task list before the build, so the task this call creates can be told apart from
         // earlier ones afterwards.
@@ -646,7 +793,9 @@ export class ProjectTools implements ToolExecutor {
         // task's own state; a disagreement is reported rather than silently resolved.
         const exitCode = typeof result === 'number' ? result : undefined;
         const exitName = exitCode === undefined ? undefined : (BUILD_EXIT_CODES[exitCode] || `UNDOCUMENTED_${exitCode}`);
-        const task = await this.findFinishedTask(before);
+        // A rebuilt task is not new, so it cannot be found by diffing the task list.
+        const task = (completed.taskId ? await this.queryTask(completed.taskId) : undefined)
+            || await this.findFinishedTask(before);
         const state = task?.state ?? 'unknown';
 
         const codeSaysOk = exitCode === undefined ? undefined : exitCode === BuildExitCode.BUILD_SUCCESS;
@@ -672,6 +821,9 @@ export class ProjectTools implements ToolExecutor {
                 exitCode,
                 exitName,
                 taskId: task?.id,
+                rebuiltExistingTask: !!target,
+                modifiedTaskSettings: conflicts.length ? conflicts.map((c) => c.field) : undefined,
+                overwrites,
                 elapsedMs: Date.now() - startedAt,
                 buildPath: completed.buildPath,
                 outputName: completed.outputName,
@@ -681,6 +833,14 @@ export class ProjectTools implements ToolExecutor {
                 disagreement
             }
         } as ToolResponse;
+    }
+
+    private async queryTask(id: string): Promise<any> {
+        try {
+            return await (Editor.Message.request as any)('builder', 'query-task', String(id));
+        } catch {
+            return undefined;
+        }
     }
 
     private async buildTaskIds(): Promise<string[]> {
@@ -896,8 +1056,10 @@ export class ProjectTools implements ToolExecutor {
                     success: true,
                     data: {
                         builderReady: ready,
-                        message: 'Saved per-platform build options live in the project profile and are what build_project '
-                            + 'builds with; pass `options` to override individual fields for one build.',
+                        message: 'build_project rebuilds the platform\'s existing Build-panel task with the options that '
+                            + 'task holds, falling back to the saved project profile when the platform has no task yet. '
+                            + 'It refuses to choose when a platform has several tasks (pass taskId) and refuses to build '
+                            + 'when `debug`/`options` disagree with the task, because building writes them onto it.',
                         availableActions: [
                             'Run a build with build_project (waits for the result)',
                             'Check worker readiness and running tasks with check_builder_status',
