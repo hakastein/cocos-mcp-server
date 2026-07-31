@@ -17,6 +17,7 @@ import { AssetAdvancedTools } from './tools/asset-advanced-tools';
 import { ValidationTools } from './tools/validation-tools';
 import { SkeletalAnimationTools } from './tools/skeletal-animation-tools';
 import { BatchTools } from './tools/batch-tools';
+import { EcsTools } from './tools/ecs-tools';
 import { normalizeToolArgs } from './tool-args';
 import { previewLogStore } from './preview-log-store';
 import { previewConsoleClient } from './preview-console-client';
@@ -52,6 +53,7 @@ export class MCPServer {
             this.tools.assetAdvanced = new AssetAdvancedTools();
             this.tools.validation = new ValidationTools();
             this.tools.skeletalAnimation = new SkeletalAnimationTools();
+            this.tools.ecs = new EcsTools();
             this.tools.batch = new BatchTools((toolName, args) => this.executeToolCall(toolName, args));
         } catch (error) {
             console.error('[MCPServer] Failed to initialize tools:', error);

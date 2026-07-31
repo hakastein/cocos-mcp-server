@@ -13,6 +13,7 @@
     "main": "./dist/main.js",
     "dependencies": {
         "fs-extra": "^11.3.0",
+        "typescript": "^5.8.2",
         "uuid": "^9.0.1",
         "vue": "^3.1.4"
     },
@@ -20,8 +21,7 @@
         "@cocos/creator-types": "^3.8.6",
         "@types/fs-extra": "^9.0.5",
         "@types/node": "^18.17.1",
-        "@types/uuid": "^9.0.8",
-        "typescript": "^5.8.2"
+        "@types/uuid": "^9.0.8"
     },
     "panels": {
         "default": {
