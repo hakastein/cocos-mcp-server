@@ -1,6 +1,18 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, ComponentInfo } from '../types';
 import { ANY_VALUE_TYPE, coerceJsonArg } from '../json-arg';
 
+/**
+ * A write checked twice: `mismatches` is what the LIVE component reads back, `persistence` is
+ * what the editor's serializer would write to the file. They disagree exactly when a write is
+ * lost on save, which is the case a live read-back alone reports as success.
+ */
+interface VerifyResult {
+    found: boolean;
+    actual: any;
+    mismatches: string[];
+    persistence: { checked: boolean; found: boolean; actual: any; mismatches: string[]; reason?: string };
+}
+
 export class ComponentTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
         return [
@@ -56,7 +68,8 @@ export class ComponentTools implements ToolExecutor {
             },
             {
                 name: 'get_component_info',
-                description: 'Get specific component information',
+                description: 'Get one component\'s property dump. Pass `properties` to fetch only the entries you ' +
+                    'asked about — a component with nested serializable arrays dumps tens of KB otherwise.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -67,6 +80,12 @@ export class ComponentTools implements ToolExecutor {
                         componentType: {
                             type: 'string',
                             description: 'Component type to get info for'
+                        },
+                        properties: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Return only these property entries. Dotted paths address nested fields and ' +
+                                'array indices, e.g. "waves.0.squads". Omit for the whole dump.'
                         }
                     },
                     required: ['nodeUuid', 'componentType']
@@ -74,7 +93,18 @@ export class ComponentTools implements ToolExecutor {
             },
             {
                 name: 'set_component_property',
-                description: 'Set component property values for UI components or custom script components. Supports setting properties of built-in UI components (e.g., cc.Label, cc.Sprite) and custom script components. Note: For node basic properties (name, active, layer, etc.), use set_node_property. For node transform properties (position, rotation, scale, etc.), use set_node_transform.',
+                description: 'Set a property on a built-in or custom script component. The target\'s real type comes ' +
+                    'from the component dump, so this writes primitives, colours/vectors, enums, asset and node ' +
+                    'references, arrays of those, nested sub-properties addressed by a DOTTED PATH, an INLINE ' +
+                    'SERIALIZABLE @ccclass written whole by its own name, and ARRAYS OF A ' +
+                    'SERIALIZABLE @ccclass — including asset references nested inside the elements — in ONE call. ' +
+                    'An array is written whole: to add, insert or remove an element, read the array, edit it and set ' +
+                    'the full array back (there is deliberately no add_array_element). An inline @ccclass is the ' +
+                    'opposite — property "enter" with value {"duration":0.5,"toScale":{"x":2,"y":2,"z":2}} PATCHES ' +
+                    'the named members and leaves every member you omit alone, and a misspelled member is an error ' +
+                    'rather than a silent no-op. ' +
+                    'Note: For node basic properties (name, active, layer, etc.), use set_node_property. For node ' +
+                    'transform properties (position, rotation, scale, etc.), use set_node_transform.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -101,18 +131,20 @@ export class ComponentTools implements ToolExecutor {
                         },
                         propertyType: {
                             type: 'string',
-                            description: 'Property type - Must explicitly specify the property data type for correct value conversion and validation',
-                            enum: [
-                                'string', 'number', 'boolean', 'integer', 'float',
-                                'color', 'vec2', 'vec3', 'size', 'enum', 'gradient', 'curve',
-                                'node', 'component', 'spriteFrame', 'prefab', 'asset',
-                                'nodeArray', 'colorArray', 'numberArray', 'stringArray'
-                            ]
-                            // Also accepts a real cc.* class name (e.g. "cc.Node", "cc.Color",
-                            // "cc.Vec3") — the value is typed accordingly. Use "enum" for
-                            // enumerations (pass the numeric value) and "gradient" for a
-                            // particle GradientRange (see the value docs).
-                                                },
+                            description: 'OPTIONAL type hint. The property type is read from the component dump, so ' +
+                                'omit it and the value is typed correctly on its own; pass it only to override the ' +
+                                'dump or when the dump does not expose the property.\n' +
+                                'ACCEPTED VALUES ARE OPEN-ENDED, not a fixed list:\n' +
+                                '• keywords: string, number, integer, float, boolean, color, vec2, vec3, size, enum,\n' +
+                                '  node, component, spriteFrame, prefab, asset,\n' +
+                                '  nodeArray, colorArray, numberArray, stringArray\n' +
+                                '• any cc.* class name: "cc.Node", "cc.Prefab", "cc.Material", "cc.Vec3", ...\n' +
+                                '• any @ccclass name from your own scripts, including one used as an ARRAY ELEMENT\n' +
+                                '  type: propertyType "WaveSquad" for a WaveSquad[] property.\n' +
+                                'A DOTTED `property` path ("waves.0.squads", "colorOverLifetimeModule.color") is\n' +
+                                'resolved from the dump and needs no hint. Only "gradient" and "curve" cannot be\n' +
+                                'inferred — pass those explicitly for particle GradientRange / CurveRange fields.'
+                        },
 
                         value: {
                             type: ANY_VALUE_TYPE,
@@ -150,6 +182,15 @@ export class ComponentTools implements ToolExecutor {
                                 '• colorArray: [{"r":255,"g":0,"b":0,"a":255}] (array of colors)\n' +
                                 '• numberArray: [1,2,3,4,5] (array of numbers)\n' +
                                 '• stringArray: ["item1","item2"] (array of strings)\n\n' +
+                                '🧩 Array of a serializable @ccclass — one call, FLAT objects, asset fields as bare\n' +
+                                '   uuid strings. For WaveSpawner.waves: WaveEntry[] where\n' +
+                                '   WaveEntry = {squads: WaveSquad[], spawnInterval, startDelay} and\n' +
+                                '   WaveSquad = {prefab: cc.Prefab, count: number}:\n' +
+                                '   property "waves", value\n' +
+                                '   [{"squads":[{"prefab":"5965dcc0-…","count":10}],"spawnInterval":0.8,"startDelay":0.5}]\n' +
+                                '   Nested asset/node references inside the elements are resolved by the tool.\n' +
+                                '   The array is REPLACED: a field you omit takes the element type\'s declared\n' +
+                                '   default, so read-edit-write the whole array to add or remove elements.\n\n' +
                                 '🌈 Gradient (propertyType "gradient", for a particle GradientRange like\n' +
                                 '   startColor or colorOverLifetimeModule.color):\n' +
                                 '   {"mode":1, "enable":true,\n' +
@@ -163,7 +204,7 @@ export class ComponentTools implements ToolExecutor {
                                 '   (time 0..1; mode 1 = Curve; final = spline(t) * multiplier)'
                         }
                     },
-                    required: ['nodeUuid', 'componentType', 'property', 'propertyType', 'value']
+                    required: ['nodeUuid', 'componentType', 'property', 'value']
                 }
             },
             {
@@ -280,7 +321,7 @@ export class ComponentTools implements ToolExecutor {
             case 'get_components':
                 return await this.getComponents(args.nodeUuid);
             case 'get_component_info':
-                return await this.getComponentInfo(args.nodeUuid, args.componentType);
+                return await this.getComponentInfo(args.nodeUuid, args.componentType, args.properties);
             case 'set_component_property':
                 return await this.setComponentProperty(args);
             case 'attach_script':
@@ -585,7 +626,8 @@ export class ComponentTools implements ToolExecutor {
         });
     }
 
-    private async getComponentInfo(nodeUuid: string, componentType: string): Promise<ToolResponse> {
+    private async getComponentInfo(nodeUuid: string, componentType: string, propertyFilter?: any): Promise<ToolResponse> {
+        const wanted = this.normalizePropertyFilter(propertyFilter);
         return new Promise((resolve) => {
             // Prefer Editor API for node info query
             Editor.Message.request('scene', 'query-node', nodeUuid).then((nodeData: any) => {
@@ -593,6 +635,7 @@ export class ComponentTools implements ToolExecutor {
                     const component = nodeData.__comps__.find((comp: any) => this.componentMatches(comp, componentType));
 
                     if (component) {
+                        const all = this.extractComponentProperties(component);
                         resolve({
                             success: true,
                             data: {
@@ -601,7 +644,8 @@ export class ComponentTools implements ToolExecutor {
                                 resolvedCid: this.componentCid(component),
                                 className: this.componentClassName(component) || undefined,
                                 enabled: component.enabled !== undefined ? component.enabled : true,
-                                properties: this.extractComponentProperties(component)
+                                ...(wanted ? { requestedProperties: wanted } : {}),
+                                properties: wanted ? this.pickProperties(all, wanted) : all
                             }
                         });
                     } else {
@@ -627,7 +671,10 @@ export class ComponentTools implements ToolExecutor {
                                 data: {
                                     nodeUuid: nodeUuid,
                                     componentType: componentType,
-                                    ...component
+                                    ...component,
+                                    ...(wanted && component.properties
+                                        ? { requestedProperties: wanted, properties: this.pickProperties(component.properties, wanted) }
+                                        : {})
                                 }
                             });
                         } else {
@@ -641,6 +688,28 @@ export class ComponentTools implements ToolExecutor {
                 });
             });
         });
+    }
+
+    /** The `properties` filter as a list of paths, or null when the caller wants the whole dump. */
+    private normalizePropertyFilter(filter: any): string[] | null {
+        const raw = coerceJsonArg(filter).value;
+        const list = Array.isArray(raw) ? raw : (typeof raw === 'string' && raw.trim() ? [raw] : null);
+        if (!list) return null;
+        const paths = list.map((p: any) => String(p).trim()).filter(Boolean);
+        return paths.length ? paths : null;
+    }
+
+    /** Resolve each requested (possibly dotted) path against a component dump. */
+    private pickProperties(properties: Record<string, any>, paths: string[]): Record<string, any> {
+        const picked: Record<string, any> = {};
+        for (const path of paths) {
+            const entry = this.resolveDumpPath(properties, path);
+            picked[path] = entry !== undefined ? entry : {
+                error: `'${path}' is not present in this component's dump`,
+                availableProperties: Object.keys(properties)
+            };
+        }
+        return picked;
     }
 
     private extractComponentProperties(component: any): Record<string, any> {
@@ -752,816 +821,969 @@ export class ComponentTools implements ToolExecutor {
         return value;
     }
 
+    /**
+     * Write one component property.
+     *
+     * The target's type comes from the component dump, so `propertyType` is only a hint: it
+     * names a shape the dump cannot describe (a particle gradient/curve) or overrides the dump
+     * when the caller knows better. Which writer runs is decided by the resolved descriptor,
+     * not by a keyword, so an @ccclass name, a cc.* class name and the old keywords all reach
+     * the same code.
+     *
+     *   gradient / curve  -> engine API via scene script; set-property cannot write key arrays
+     *   UITransform size  -> width/height and anchorX/anchorY are separate editor fields
+     *   class array       -> full-array dump plus a second pass for the references inside it
+     *   asset             -> metadata-driven per-slot asset dump
+     *   everything else   -> one typed dump through the editor set-property channel
+     */
     private async setComponentProperty(args: any): Promise<ToolResponse> {
-        const { nodeUuid, componentType, property, propertyType } = args;
-        const value = this.coerceIncomingValue(args.value, propertyType);
+        const { nodeUuid, componentType, property } = args;
+        const propertyType: string = (args.propertyType === undefined || args.propertyType === null)
+            ? '' : String(args.propertyType);
+        let value = this.coerceIncomingValue(args.value, propertyType);
 
-        return new Promise(async (resolve) => {
-            try {
-                console.log(`[ComponentTools] Setting ${componentType}.${property} (type: ${propertyType}) = ${JSON.stringify(value)} (raw: ${JSON.stringify(args.value)}) on node ${nodeUuid}`);
-                
-                // Step 0: Detect node-level properties and redirect to the appropriate node method
-                const nodeRedirectResult = await this.checkAndRedirectNodeProperties(args);
-                if (nodeRedirectResult) {
-                    resolve(nodeRedirectResult);
-                    return;
-                }
-                
-                // Step 1: Get component info using the same method as getComponents
-                const componentsResponse = await this.getComponents(nodeUuid);
-                if (!componentsResponse.success || !componentsResponse.data) {
-                    resolve({
-                        success: false,
-                        error: `Failed to get components for node '${nodeUuid}': ${componentsResponse.error}`,
-                        instruction: `Please verify that node UUID '${nodeUuid}' is correct. Use get_all_nodes or find_node_by_name to get the correct node UUID.`
-                    });
-                    return;
-                }
-                
-                const allComponents = componentsResponse.data.components;
-                
-                // Step 2: Find target component by cid OR @ccclass name / builtin type.
-                let targetComponent: any = null;
-                let resolvedCid: string = componentType; // the actual cid, used for raw dump matching
-                const availableTypes: string[] = [];
+        try {
+            const nodeRedirect = await this.checkAndRedirectNodeProperties(args);
+            if (nodeRedirect) return nodeRedirect;
 
-                for (let i = 0; i < allComponents.length; i++) {
-                    const comp = allComponents[i];
-                    availableTypes.push(comp.className ? `${comp.className}(${comp.type})` : comp.type);
+            const componentsResponse = await this.getComponents(nodeUuid);
+            if (!componentsResponse.success || !componentsResponse.data) {
+                return {
+                    success: false,
+                    error: `Failed to get components for node '${nodeUuid}': ${componentsResponse.error}`,
+                    instruction: `Please verify that node UUID '${nodeUuid}' is correct. Use get_all_nodes or find_node_by_name to get the correct node UUID.`
+                };
+            }
 
-                    if (this.componentMatches(comp, componentType)) {
-                        targetComponent = comp;
-                        resolvedCid = comp.type;
-                        break;
-                    }
-                }
-                
-                if (!targetComponent) {
-                    // Provide detailed error info and suggestions
-                    const instruction = this.generateComponentSuggestion(componentType, availableTypes, property);
-                    resolve({
-                        success: false,
-                        error: `Component '${componentType}' not found on node. Available components: ${availableTypes.join(', ')}`,
-                        instruction: instruction
-                    });
-                    return;
-                }
+            const allComponents: any[] = componentsResponse.data.components || [];
+            const availableTypes: string[] = allComponents.map((comp: any) =>
+                comp.className ? `${comp.className}(${comp.type})` : comp.type);
+            const targetComponent = allComponents.find((comp: any) => this.componentMatches(comp, componentType));
+            if (!targetComponent) {
+                return {
+                    success: false,
+                    error: `Component '${componentType}' not found on node. Available components: ${availableTypes.join(', ')}`,
+                    instruction: this.generateComponentSuggestion(componentType, availableTypes, property)
+                };
+            }
+            const resolvedCid: string = targetComponent.type;
 
-                // Fast path: asset-typed property assignment (mesh, material(s), texture,
-                // spriteFrame, prefab, effect, ...). This is metadata-driven — it reads the
-                // component dump to find the exact asset class and array shape — so it works
-                // for ANY asset property and for MeshRenderer's `sharedMaterials` array
-                // (settable getters like `material` are handled here, before analyzeProperty,
-                // which would otherwise reject them because they are absent from the dump).
+            if (propertyType === 'gradient') {
+                return await this.writeParticleGradient(nodeUuid, componentType, property, value);
+            }
+            if (propertyType === 'curve') {
+                return await this.writeParticleCurve(nodeUuid, componentType, property, value);
+            }
+
+            const rawIndex = await this.rawComponentIndex(nodeUuid, resolvedCid);
+            if (rawIndex === -1) {
+                return { success: false, error: `Could not find component '${componentType}' in the raw node dump, so '${property}' has no settable path` };
+            }
+            const basePath = `__comps__.${rawIndex}.${property}`;
+            const descriptor = this.resolveDumpPath(targetComponent.properties || {}, property);
+
+            // A String field keeps JSON-looking text verbatim; coerceIncomingValue only knows
+            // that when the caller spelled out propertyType.
+            if (typeof args.value === 'string' && !propertyType && descriptor && descriptor.type === 'String') {
+                value = args.value;
+            }
+
+            if (componentType === 'cc.UITransform' && /^_?(contentSize|anchorPoint)$/.test(property)) {
+                return await this.writeUITransformPair(nodeUuid, resolvedCid, rawIndex, property, value);
+            }
+            if (this.isClassArrayDescriptor(descriptor)) {
+                return await this.writeClassArray(nodeUuid, resolvedCid, componentType, property, basePath, descriptor, value);
+            }
+            if (this.isClassDescriptor(descriptor) && value && typeof value === 'object' && !Array.isArray(value)) {
+                return await this.writeClassValue(nodeUuid, resolvedCid, componentType, property, basePath, descriptor, value);
+            }
+            if (!property.includes('.')) {
                 const assetResult = await this.trySetAssetProperty(
                     nodeUuid, resolvedCid, property, propertyType, value, targetComponent
                 );
-                if (assetResult) {
-                    resolve(assetResult);
-                    return;
-                }
-
-                // Advanced typed / nested / gradient set. Handles what the legacy keyword
-                // switch could not: real cc.* type names (cc.Node/cc.Color/cc.Vec3),
-                // dotted sub-property paths (e.g. `colorOverLifetimeModule.color`,
-                // `rateOverTime.constant`), Enum leaves, and particle GradientRanges. It
-                // routes through the editor Inspector `set-property` channel with a properly
-                // typed dump (or the engine API for gradient keys). Returns null to fall
-                // through to the legacy single-level keyword path below.
-                const advResult = await this.trySetAdvancedProperty(
-                    nodeUuid, resolvedCid, componentType, property, propertyType, value, targetComponent
-                );
-                if (advResult) {
-                    resolve(advResult);
-                    return;
-                }
-
-                // Step 3: Auto-detect and convert property value
-                let propertyInfo;
-                try {
-                    console.log(`[ComponentTools] Analyzing property: ${property}`);
-                    propertyInfo = this.analyzeProperty(targetComponent, property);
-                } catch (analyzeError: any) {
-                    console.error(`[ComponentTools] Error in analyzeProperty:`, analyzeError);
-                    resolve({
-                        success: false,
-                        error: `Failed to analyze property '${property}': ${analyzeError.message}`
-                    });
-                    return;
-                }
-                
-                if (!propertyInfo.exists) {
-                    resolve({
-                        success: false,
-                        error: `Property '${property}' not found on component '${componentType}'. Available properties: ${propertyInfo.availableProperties.join(', ')}`
-                    });
-                    return;
-                }
-                
-                // Step 4: Process property value and apply
-                const originalValue = propertyInfo.originalValue;
-                let processedValue: any;
-                
-                // Process value based on explicit propertyType
-                switch (propertyType) {
-                    case 'string':
-                        processedValue = String(value);
-                        break;
-                    case 'number':
-                    case 'integer':
-                    case 'float':
-                        processedValue = Number(value);
-                        break;
-                    case 'boolean':
-                        processedValue = Boolean(value);
-                        break;
-                    case 'color':
-                        if (typeof value === 'string') {
-                            // String format: supports hex, color names, rgb()/rgba()
-                            processedValue = this.parseColorString(value);
-                        } else if (typeof value === 'object' && value !== null) {
-                            // Object format: validate and convert RGBA values
-                            processedValue = {
-                                r: Math.min(255, Math.max(0, Number(value.r) || 0)),
-                                g: Math.min(255, Math.max(0, Number(value.g) || 0)),
-                                b: Math.min(255, Math.max(0, Number(value.b) || 0)),
-                                a: value.a !== undefined ? Math.min(255, Math.max(0, Number(value.a))) : 255
-                            };
-                        } else {
-                            throw new Error('Color value must be an object with r, g, b properties or a hexadecimal string (e.g., "#FF0000")');
-                        }
-                        break;
-                    case 'vec2':
-                        if (typeof value === 'object' && value !== null) {
-                            processedValue = {
-                                x: Number(value.x) || 0,
-                                y: Number(value.y) || 0
-                            };
-                        } else {
-                            throw new Error('Vec2 value must be an object with x, y properties');
-                        }
-                        break;
-                    case 'vec3':
-                        if (typeof value === 'object' && value !== null) {
-                            processedValue = {
-                                x: Number(value.x) || 0,
-                                y: Number(value.y) || 0,
-                                z: Number(value.z) || 0
-                            };
-                        } else {
-                            throw new Error('Vec3 value must be an object with x, y, z properties');
-                        }
-                        break;
-                    case 'size':
-                        if (typeof value === 'object' && value !== null) {
-                            processedValue = {
-                                width: Number(value.width) || 0,
-                                height: Number(value.height) || 0
-                            };
-                        } else {
-                            throw new Error('Size value must be an object with width, height properties');
-                        }
-                        break;
-                    case 'node':
-                        if (typeof value === 'string') {
-                            processedValue = { uuid: value };
-                        } else if (value && typeof value === 'object' && typeof value.uuid === 'string') {
-                            processedValue = { uuid: value.uuid };
-                        } else {
-                            throw new Error('Node reference value must be a uuid string or a { uuid } object');
-                        }
-                        break;
-                    case 'component':
-                        if (typeof value === 'string') {
-                            // Component references need special handling: find component __id__ via node UUID
-                            processedValue = value; // Store node UUID for now, will be converted to __id__ later
-                        } else {
-                            throw new Error('Component reference value must be a string (node UUID containing the target component)');
-                        }
-                        break;
-                    case 'spriteFrame':
-                    case 'prefab':
-                    case 'asset':
-                        if (typeof value === 'string') {
-                            processedValue = { uuid: value };
-                        } else if (value && typeof value === 'object' && typeof value.uuid === 'string') {
-                            processedValue = { uuid: value.uuid };
-                        } else {
-                            throw new Error(`${propertyType} value must be a uuid string or a { uuid } object`);
-                        }
-                        break;
-                    case 'nodeArray':
-                        if (Array.isArray(value)) {
-                            processedValue = value.map((item: any) => {
-                                if (typeof item === 'string') {
-                                    return { uuid: item };
-                                } else {
-                                    throw new Error('NodeArray items must be string UUIDs');
-                                }
-                            });
-                        } else {
-                            throw new Error('NodeArray value must be an array');
-                        }
-                        break;
-                    case 'colorArray':
-                        if (Array.isArray(value)) {
-                            processedValue = value.map((item: any) => {
-                                if (typeof item === 'object' && item !== null && 'r' in item) {
-                                    return {
-                                        r: Math.min(255, Math.max(0, Number(item.r) || 0)),
-                                        g: Math.min(255, Math.max(0, Number(item.g) || 0)),
-                                        b: Math.min(255, Math.max(0, Number(item.b) || 0)),
-                                        a: item.a !== undefined ? Math.min(255, Math.max(0, Number(item.a))) : 255
-                                    };
-                                } else {
-                                    return { r: 255, g: 255, b: 255, a: 255 };
-                                }
-                            });
-                        } else {
-                            throw new Error('ColorArray value must be an array');
-                        }
-                        break;
-                    case 'numberArray':
-                        if (Array.isArray(value)) {
-                            processedValue = value.map((item: any) => Number(item));
-                        } else {
-                            throw new Error('NumberArray value must be an array');
-                        }
-                        break;
-                    case 'stringArray':
-                        if (Array.isArray(value)) {
-                            processedValue = value.map((item: any) => String(item));
-                        } else {
-                            throw new Error('StringArray value must be an array');
-                        }
-                        break;
-                    default:
-                        throw new Error(`Unsupported property type: ${propertyType}`);
-                }
-                
-                console.log(`[ComponentTools] Converting value: ${JSON.stringify(value)} -> ${JSON.stringify(processedValue)} (type: ${propertyType})`);
-                console.log(`[ComponentTools] Property analysis result: propertyInfo.type="${propertyInfo.type}", propertyType="${propertyType}"`);
-                console.log(`[ComponentTools] Will use color special handling: ${propertyType === 'color' && processedValue && typeof processedValue === 'object'}`);
-                
-                // Actual expected value for verification (component refs need special handling)
-                let actualExpectedValue = processedValue;
-                
-                // Step 5: Get raw node data to build correct property path
-                const rawNodeData = await Editor.Message.request('scene', 'query-node', nodeUuid);
-                if (!rawNodeData || !rawNodeData.__comps__) {
-                    resolve({
-                        success: false,
-                        error: `Failed to get raw node data for property setting`
-                    });
-                    return;
-                }
-                
-                // Find the index of the target component in raw data (match by resolved cid).
-                let rawComponentIndex = -1;
-                for (let i = 0; i < rawNodeData.__comps__.length; i++) {
-                    const comp = rawNodeData.__comps__[i] as any;
-                    const compType = comp.__type__ || comp.cid || comp.type || 'Unknown';
-                    if (compType === resolvedCid) {
-                        rawComponentIndex = i;
-                        break;
-                    }
-                }
-                
-                if (rawComponentIndex === -1) {
-                    resolve({
-                        success: false,
-                        error: `Could not find component index for setting property`
-                    });
-                    return;
-                }
-                
-                // Build the correct property path
-                let propertyPath = `__comps__.${rawComponentIndex}.${property}`;
-                
-                // Special handling for asset-type properties
-                if (propertyType === 'asset' || propertyType === 'spriteFrame' || propertyType === 'prefab' || 
-                    (propertyInfo.type === 'asset' && propertyType === 'string')) {
-                    
-                    console.log(`[ComponentTools] Setting asset reference:`, {
-                        value: processedValue,
-                        property: property,
-                        propertyType: propertyType,
-                        path: propertyPath
-                    });
-                    
-                    // Determine asset type based on property name
-                    let assetType = 'cc.SpriteFrame'; // default
-                    if (property.toLowerCase().includes('texture')) {
-                        assetType = 'cc.Texture2D';
-                    } else if (property.toLowerCase().includes('material')) {
-                        assetType = 'cc.Material';
-                    } else if (property.toLowerCase().includes('font')) {
-                        assetType = 'cc.Font';
-                    } else if (property.toLowerCase().includes('clip')) {
-                        assetType = 'cc.AudioClip';
-                    } else if (propertyType === 'prefab') {
-                        assetType = 'cc.Prefab';
-                    }
-                    
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: propertyPath,
-                        dump: { 
-                            value: processedValue,
-                            type: assetType
-                        }
-                    });
-                } else if (componentType === 'cc.UITransform' && (property === '_contentSize' || property === 'contentSize')) {
-                    // Special handling for UITransform contentSize - set width and height separately.
-                    // Use Number.isFinite (not `|| 100`) so a legitimate 0 is not clobbered to the default.
-                    const parsedW = Number(value.width);
-                    const parsedH = Number(value.height);
-                    const width = Number.isFinite(parsedW) ? parsedW : 100;
-                    const height = Number.isFinite(parsedH) ? parsedH : 100;
-                    
-                    // Set width first
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: `__comps__.${rawComponentIndex}.width`,
-                        dump: { value: width }
-                    });
-                    
-                    // Then set height
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: `__comps__.${rawComponentIndex}.height`,
-                        dump: { value: height }
-                    });
-                } else if (componentType === 'cc.UITransform' && (property === '_anchorPoint' || property === 'anchorPoint')) {
-                    // Special handling for UITransform anchorPoint - set anchorX and anchorY separately.
-                    // Use Number.isFinite (not `|| 0.5`) so a legitimate 0 is not clobbered to the default.
-                    const parsedX = Number(value.x);
-                    const parsedY = Number(value.y);
-                    const anchorX = Number.isFinite(parsedX) ? parsedX : 0.5;
-                    const anchorY = Number.isFinite(parsedY) ? parsedY : 0.5;
-                    
-                    // Set anchorX first
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: `__comps__.${rawComponentIndex}.anchorX`,
-                        dump: { value: anchorX }
-                    });
-                    
-                    // Then set anchorY  
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: `__comps__.${rawComponentIndex}.anchorY`,
-                        dump: { value: anchorY }
-                    });
-                } else if (propertyType === 'color' && processedValue && typeof processedValue === 'object') {
-                    // Special handling for color properties to ensure correct RGBA values
-                    // Cocos Creator color values range 0-255
-                    const colorValue = {
-                        r: Math.min(255, Math.max(0, Number(processedValue.r) || 0)),
-                        g: Math.min(255, Math.max(0, Number(processedValue.g) || 0)),
-                        b: Math.min(255, Math.max(0, Number(processedValue.b) || 0)),
-                        a: processedValue.a !== undefined ? Math.min(255, Math.max(0, Number(processedValue.a))) : 255
-                    };
-                    
-                    console.log(`[ComponentTools] Setting color value:`, colorValue);
-                    
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: propertyPath,
-                        dump: { 
-                            value: colorValue,
-                            type: 'cc.Color'
-                        }
-                    });
-                } else if (propertyType === 'vec3' && processedValue && typeof processedValue === 'object') {
-                    // Special handling for Vec3 properties
-                    const vec3Value = {
-                        x: Number(processedValue.x) || 0,
-                        y: Number(processedValue.y) || 0,
-                        z: Number(processedValue.z) || 0
-                    };
-                    
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: propertyPath,
-                        dump: { 
-                            value: vec3Value,
-                            type: 'cc.Vec3'
-                        }
-                    });
-                } else if (propertyType === 'vec2' && processedValue && typeof processedValue === 'object') {
-                    // Special handling for Vec2 properties
-                    const vec2Value = {
-                        x: Number(processedValue.x) || 0,
-                        y: Number(processedValue.y) || 0
-                    };
-                    
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: propertyPath,
-                        dump: { 
-                            value: vec2Value,
-                            type: 'cc.Vec2'
-                        }
-                    });
-                } else if (propertyType === 'size' && processedValue && typeof processedValue === 'object') {
-                    // Special handling for Size properties
-                    const sizeValue = {
-                        width: Number(processedValue.width) || 0,
-                        height: Number(processedValue.height) || 0
-                    };
-                    
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: propertyPath,
-                        dump: { 
-                            value: sizeValue,
-                            type: 'cc.Size'
-                        }
-                    });
-                } else if (propertyType === 'node' && processedValue && typeof processedValue === 'object' && 'uuid' in processedValue) {
-                    // Special handling for node references
-                    console.log(`[ComponentTools] Setting node reference with UUID: ${processedValue.uuid}`);
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: propertyPath,
-                        dump: { 
-                            value: processedValue,
-                            type: 'cc.Node'
-                        }
-                    });
-                } else if (propertyType === 'component' && typeof processedValue === 'string') {
-                    // Special handling for component references: find __id__ via node UUID
-                    const targetNodeUuid = processedValue;
-                    console.log(`[ComponentTools] Setting component reference - finding component on node: ${targetNodeUuid}`);
-                    
-                    // Get expected component type from current component attribute metadata
-                    let expectedComponentType = '';
-                    
-                    // Get current component details including attribute metadata
-                    const currentComponentInfo = await this.getComponentInfo(nodeUuid, componentType);
-                    if (currentComponentInfo.success && currentComponentInfo.data?.properties?.[property]) {
-                        const propertyMeta = currentComponentInfo.data.properties[property];
-                        
-                        // Extract component type info from attribute metadata
-                        if (propertyMeta && typeof propertyMeta === 'object') {
-                            // Check for type field indicating component type
-                            if (propertyMeta.type) {
-                                expectedComponentType = propertyMeta.type;
-                            } else if (propertyMeta.ctor) {
-                                // Some properties may use ctor field
-                                expectedComponentType = propertyMeta.ctor;
-                            } else if (propertyMeta.extends && Array.isArray(propertyMeta.extends)) {
-                                // Check extends array; first entry is typically most specific type
-                                for (const extendType of propertyMeta.extends) {
-                                    if (extendType.startsWith('cc.') && extendType !== 'cc.Component' && extendType !== 'cc.Object') {
-                                        expectedComponentType = extendType;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    if (!expectedComponentType) {
-                        throw new Error(`Unable to determine required component type for property '${property}' on component '${componentType}'. Property metadata may not contain type information.`);
-                    }
-                    
-                    console.log(`[ComponentTools] Detected required component type: ${expectedComponentType} for property: ${property}`);
-                    
-                    try {
-                        // Get component info for target node
-                        const targetNodeData = await Editor.Message.request('scene', 'query-node', targetNodeUuid);
-                        if (!targetNodeData || !targetNodeData.__comps__) {
-                            throw new Error(`Target node ${targetNodeUuid} not found or has no components`);
-                        }
-                        
-                        // Log target node component overview
-                        console.log(`[ComponentTools] Target node ${targetNodeUuid} has ${targetNodeData.__comps__.length} components:`);
-                        targetNodeData.__comps__.forEach((comp: any, index: number) => {
-                            const sceneId = comp.value && comp.value.uuid && comp.value.uuid.value ? comp.value.uuid.value : 'unknown';
-                            console.log(`[ComponentTools] Component ${index}: ${comp.type} (scene_id: ${sceneId})`);
-                        });
-                        
-                        // Find matching component
-                        let targetComponent = null;
-                        let componentId: string | null = null;
-                        
-                        // Search _components array for specified component type
-                        // Note: __comps__ and _components share the same index
-                        console.log(`[ComponentTools] Searching for component type: ${expectedComponentType}`);
-                        
-                        for (let i = 0; i < targetNodeData.__comps__.length; i++) {
-                            const comp = targetNodeData.__comps__[i] as any;
-                            console.log(`[ComponentTools] Checking component ${i}: type=${comp.type}, target=${expectedComponentType}`);
-                            
-                            if (comp.type === expectedComponentType) {
-                                targetComponent = comp;
-                                console.log(`[ComponentTools] Found matching component at index ${i}: ${comp.type}`);
-                                
-                                // Get scene ID from component value.uuid.value
-                                if (comp.value && comp.value.uuid && comp.value.uuid.value) {
-                                    componentId = comp.value.uuid.value;
-                                    console.log(`[ComponentTools] Got componentId from comp.value.uuid.value: ${componentId}`);
-                                } else {
-                                    console.log(`[ComponentTools] Component structure:`, {
-                                        hasValue: !!comp.value,
-                                        hasUuid: !!(comp.value && comp.value.uuid),
-                                        hasUuidValue: !!(comp.value && comp.value.uuid && comp.value.uuid.value),
-                                        uuidStructure: comp.value ? comp.value.uuid : 'No value'
-                                    });
-                                    throw new Error(`Unable to extract component ID from component structure`);
-                                }
-                                
-                                break;
-                            }
-                        }
-                        
-                        if (!targetComponent) {
-                            // Component not found - list available ones with their real scene IDs
-                            const availableComponents = targetNodeData.__comps__.map((comp: any, index: number) => {
-                                let sceneId = 'unknown';
-                                // Get scene ID from component value.uuid.value
-                                if (comp.value && comp.value.uuid && comp.value.uuid.value) {
-                                    sceneId = comp.value.uuid.value;
-                                }
-                                return `${comp.type}(scene_id:${sceneId})`;
-                            });
-                            throw new Error(`Component type '${expectedComponentType}' not found on node ${targetNodeUuid}. Available components: ${availableComponents.join(', ')}`);
-                        }
-                        
-                        console.log(`[ComponentTools] Found component ${expectedComponentType} with scene ID: ${componentId} on node ${targetNodeUuid}`);
-                        
-                        // Update expected value to actual component ID object format for later verification
-                        if (componentId) {
-                            actualExpectedValue = { uuid: componentId };
-                        }
-                        
-                        // Try the same {uuid: componentId} format as node/asset references
-                        // Test whether component reference can be set correctly this way
-                        await Editor.Message.request('scene', 'set-property', {
-                            uuid: nodeUuid,
-                            path: propertyPath,
-                            dump: { 
-                                value: { uuid: componentId },  // Use object format, same as node/asset references
-                                type: expectedComponentType
-                            }
-                        });
-                        
-                    } catch (error) {
-                        console.error(`[ComponentTools] Error setting component reference:`, error);
-                        throw error;
-                    }
-                } else if (propertyType === 'nodeArray' && Array.isArray(processedValue)) {
-                    // Special handling for node arrays - preserve pre-processed format
-                    console.log(`[ComponentTools] Setting node array:`, processedValue);
-                    
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: propertyPath,
-                        dump: { 
-                            value: processedValue  // Keep [{uuid: "..."}, {uuid: "..."}] format
-                        }
-                    });
-                } else if (propertyType === 'colorArray' && Array.isArray(processedValue)) {
-                    // Special handling for color arrays
-                    const colorArrayValue = processedValue.map((item: any) => {
-                        if (item && typeof item === 'object' && 'r' in item) {
-                            return {
-                                r: Math.min(255, Math.max(0, Number(item.r) || 0)),
-                                g: Math.min(255, Math.max(0, Number(item.g) || 0)),
-                                b: Math.min(255, Math.max(0, Number(item.b) || 0)),
-                                a: item.a !== undefined ? Math.min(255, Math.max(0, Number(item.a))) : 255
-                            };
-                        } else {
-                            return { r: 255, g: 255, b: 255, a: 255 };
-                        }
-                    });
-                    
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: propertyPath,
-                        dump: { 
-                            value: colorArrayValue,
-                            type: 'cc.Color'
-                        }
-                    });
-                } else {
-                    // Normal property setting for non-asset properties
-                    await Editor.Message.request('scene', 'set-property', {
-                        uuid: nodeUuid,
-                        path: propertyPath,
-                        dump: { value: processedValue }
-                    });
-                }
-                
-                // Step 5: Wait for Editor to finish updating, then verify
-                await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms for Editor to finish updating
-                
-                const verification = await this.verifyPropertyChange(nodeUuid, resolvedCid, property, originalValue, actualExpectedValue);
-
-                // Honest success: for primitive and node-reference types the read-back
-                // comparison in verifyPropertyChange is reliable, so a failed verification means
-                // the editor silently did NOT apply the value (e.g. Boolean("false") no-op, or a
-                // node ref the target rejected). Report that as success:false instead of the old
-                // unconditional success:true. Object-shaped types (vec/color/arrays) keep
-                // success:true but still expose the honest changeVerified flag, because their
-                // JSON-equality check can false-negative on editor-side normalisation.
-                // A property the dump does not expose at all yields no evidence either way, so
-                // it is reported applied-but-unverified — a failure there would abort a batch
-                // over a value that did land.
-                const strictVerifyTypes = ['boolean', 'number', 'integer', 'float', 'string', 'node'];
-                const strict = strictVerifyTypes.includes((propertyType || '').toString());
-                const contradicted = strict && verification.readable && !verification.verified;
-                const applied = !contradicted;
-
-                resolve({
-                    success: applied,
-                    message: applied
-                        ? `Successfully set ${componentType}.${property}`
-                        : `Editor did not apply ${componentType}.${property}: requested ${JSON.stringify(actualExpectedValue)} but read back ${JSON.stringify(verification.actualValue)}`,
-                    ...(contradicted ? { error: `Property '${property}' was not applied by the editor (changeVerified=false). The value read back does not match the requested value.` } : {}),
-                    ...(applied && !verification.readable ? { warning: `Set ${componentType}.${property} but could not read it back for verification — '${property}' is not exposed in the component dump. The write itself did not error.` } : {}),
-                    data: {
-                        nodeUuid,
-                        componentType,
-                        property,
-                        actualValue: verification.actualValue,
-                        changeVerified: verification.verified
-                    }
-                });
-                
-            } catch (error: any) {
-                console.error(`[ComponentTools] Error setting property:`, error);
-                resolve({
-                    success: false,
-                    error: `Failed to set property: ${error.message}`
-                });
+                if (assetResult) return assetResult;
             }
-        });
+            if (propertyType === 'component'
+                || (this.isComponentDescriptor(descriptor) && typeof value === 'string')) {
+                return await this.writeComponentRef(nodeUuid, resolvedCid, componentType, property, basePath, value);
+            }
+            return await this.writeTypedProperty(
+                nodeUuid, resolvedCid, componentType, property, basePath, propertyType, value, descriptor, targetComponent
+            );
+        } catch (error: any) {
+            console.error(`[ComponentTools] Error setting property:`, error);
+            return { success: false, error: `Failed to set property: ${error.message}` };
+        }
     }
 
+    // ----- Dump descriptors --------------------------------------------------------------
+    // The editor describes every serialized field as a descriptor: { name, value, type,
+    // extends, isArray, elementTypeData, ... }. These read that metadata, so the writers below
+    // never have to guess from a property name or trust a caller-supplied keyword.
+
+    /** Keys the editor puts on a descriptor. Anything else makes an object a plain value. */
+    private static readonly DUMP_DESCRIPTOR_KEYS = new Set([
+        'name', 'value', 'default', 'type', 'readonly', 'visible', 'animatable', 'tooltip',
+        'isArray', 'elementTypeData', 'extends', 'displayName', 'displayOrder', 'group',
+        'editorOnly', 'min', 'max', 'step', 'slide', 'enumList', 'userData', 'path', 'cid', 'method'
+    ]);
+
+    private isDumpDescriptor(candidate: any): boolean {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+        const keys = Object.keys(candidate);
+        return keys.includes('value') && keys.every(key => ComponentTools.DUMP_DESCRIPTOR_KEYS.has(key));
+    }
+
+    /** Walk a dotted path — array indices included — over a component dump. */
+    private resolveDumpPath(properties: Record<string, any>, path: string): any {
+        const segments = path.split('.');
+        let current: any = properties ? properties[segments[0]] : undefined;
+        for (let i = 1; i < segments.length && current != null; i++) {
+            current = current.value ? current.value[segments[i]] : undefined;
+        }
+        return current === null ? undefined : current;
+    }
+
+    private isAssetDescriptor(descriptor: any): boolean {
+        return Array.isArray(descriptor?.extends) && descriptor.extends.includes('cc.Asset');
+    }
+
+    private isNodeDescriptor(descriptor: any): boolean {
+        return descriptor?.type === 'cc.Node';
+    }
+
+    private isComponentDescriptor(descriptor: any): boolean {
+        return Array.isArray(descriptor?.extends) && descriptor.extends.includes('cc.Component');
+    }
+
+    /** Asset, node or component field — the three the editor stores as a uuid, not inline. */
+    private isReferenceDescriptor(descriptor: any): boolean {
+        return this.isAssetDescriptor(descriptor)
+            || this.isNodeDescriptor(descriptor)
+            || this.isComponentDescriptor(descriptor);
+    }
 
     /**
-     * Advanced typed / nested / gradient property set. Returns a ToolResponse when it
-     * handled the property, or null to defer to the legacy keyword switch.
-     *
-     * Triggers (leaving simple single-level keyword sets — 'color','vec3','node',… — to
-     * the legacy path so nothing that already worked regresses) when ANY of:
-     *   - `property` is a dotted path (a nested sub-property / sub-module),
-     *   - `propertyType` is 'gradient' or 'enum',
-     *   - `propertyType` is a real cc.* class name (cc.Node / cc.Color / cc.Vec3 / …).
-     *
-     * For gradients it calls the engine-API scene script (the only route that can write
-     * GradientColorKey arrays). For everything else it builds a correctly typed dump —
-     * discovering the target's type from the live component dump when the caller did not
-     * name it — and applies it via the editor `set-property` channel, supporting nested
-     * paths (`__comps__.<i>.<a>.<b>…`), then reads the value back to verify.
+     * A serializable @ccclass stored inline: its dump `value` is a map of field descriptors.
+     * cc.Color / cc.Vec3 are excluded — their `value` holds plain numbers, not descriptors.
      */
-    private async trySetAdvancedProperty(
+    private isClassDescriptor(descriptor: any): boolean {
+        if (!descriptor || descriptor.isArray === true) return false;
+        if (this.isReferenceDescriptor(descriptor)) return false;
+        if (typeof descriptor.type === 'string' && descriptor.type.startsWith('cc.')) return false;
+        const fields = descriptor.value;
+        if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return false;
+        const entries = Object.values(fields);
+        return entries.length > 0 && entries.every(field => this.isDumpDescriptor(field));
+    }
+
+    private isClassArrayDescriptor(descriptor: any): boolean {
+        return descriptor?.isArray === true && this.isClassDescriptor(descriptor.elementTypeData);
+    }
+
+    private toUuidString(value: any): string | null {
+        if (typeof value === 'string') return value;
+        if (value && typeof value === 'object') {
+            if (typeof value.uuid === 'string') return value.uuid;
+            if (typeof value.__uuid__ === 'string') return value.__uuid__;
+        }
+        return null;
+    }
+
+    /**
+     * Accept a value in either spelling: the flat shape a human writes
+     * ({prefab: '<uuid>', count: 10}) or the editor's own dump shape
+     * ({type: 'WaveSquad', value: {prefab: {value: {uuid: '…'}}, count: {value: 10}}}).
+     */
+    private unwrapDumpValue(value: any): any {
+        if (Array.isArray(value)) return value.map(item => this.unwrapDumpValue(item));
+        if (this.isDumpDescriptor(value)) return this.unwrapDumpValue(value.value);
+        if (value && typeof value === 'object') {
+            const plain: Record<string, any> = {};
+            for (const [key, item] of Object.entries(value)) plain[key] = this.unwrapDumpValue(item);
+            return plain;
+        }
+        return value;
+    }
+
+    /** Index of a component in the raw `query-node` dump — the index a set-property path uses. */
+    private async rawComponentIndex(nodeUuid: string, resolvedCid: string): Promise<number> {
+        const rawNodeData: any = await Editor.Message.request('scene', 'query-node', nodeUuid);
+        const comps: any[] = (rawNodeData && rawNodeData.__comps__) || [];
+        for (let i = 0; i < comps.length; i++) {
+            const type = comps[i].__type__ || comps[i].cid || comps[i].type || 'Unknown';
+            if (type === resolvedCid) return i;
+        }
+        return -1;
+    }
+
+    // ----- Writers -----------------------------------------------------------------------
+
+    /**
+     * Write an array of a serializable @ccclass, references inside the elements included.
+     *
+     * The editor decodes a reference nested in an array element by ASSIGNING the dump onto the
+     * live object instead of resolving the uuid: the field is silently left empty, or the write
+     * throws `Cannot set property uuid of [object Object] which has only a getter` when an
+     * asset is already in the slot. So the array goes in without its reference fields and each
+     * reference is then written at its own dotted path, where the decoder does resolve it.
+     */
+    private async writeClassArray(
         nodeUuid: string,
         resolvedCid: string,
         componentType: string,
         property: string,
-        propertyType: string,
-        value: any,
-        targetComponent: any
-    ): Promise<ToolResponse | null> {
-        const pt = (propertyType || '').toString();
-        const isNested = property.includes('.');
-        const isGradient = pt === 'gradient';
-        const isCurve = pt === 'curve';
-        const isTypedCc = pt.startsWith('cc.') || pt === 'enum';
-        if (!isNested && !isGradient && !isCurve && !isTypedCc) {
-            return null; // simple keyword set — let the legacy switch handle it unchanged
-        }
-
-        // Resolve the component's index in the raw node dump.
-        const rawNodeData: any = await Editor.Message.request('scene', 'query-node', nodeUuid);
-        if (!rawNodeData || !rawNodeData.__comps__) {
-            return { success: false, error: 'Failed to get raw node data for advanced property set' };
-        }
-        let idx = -1;
-        for (let i = 0; i < rawNodeData.__comps__.length; i++) {
-            const c = rawNodeData.__comps__[i] as any;
-            const t = c.__type__ || c.cid || c.type || 'Unknown';
-            if (t === resolvedCid) { idx = i; break; }
-        }
-        if (idx === -1) {
-            return { success: false, error: `Could not find component '${componentType}' index for advanced set` };
-        }
-
-        // --- Gradient: engine-API scene script (set-property cannot write gradient keys) ---
-        if (isGradient) {
-            const colorKeys = Array.isArray(value?.colorKeys) ? value.colorKeys : [];
-            const alphaKeys = Array.isArray(value?.alphaKeys) ? value.alphaKeys : [];
-            const mode = value?.mode;
-            const enableModule = value?.enable === true || /module/i.test(property);
-            let res: any;
-            try {
-                res = await Editor.Message.request('scene', 'execute-scene-script', {
-                    name: 'cocos-mcp-server',
-                    method: 'setParticleGradient',
-                    args: [nodeUuid, componentType, property, colorKeys, alphaKeys, mode, enableModule]
-                });
-            } catch (err: any) {
-                return { success: false, error: `Gradient scene script failed: ${err.message}` };
-            }
-            if (res && res.success) {
-                const applied = Number(res.data?.colorKeys || 0);
-                return {
-                    success: true,
-                    message: `Set gradient ${componentType}.${property} (${res.data?.colorKeys} colour / ${res.data?.alphaKeys} alpha keys)`,
-                    data: { nodeUuid, componentType, property, ...res.data, changeVerified: applied > 0 }
-                };
-            }
-            return { success: false, error: res?.error || 'Gradient set failed' };
-        }
-
-        // --- CurveRange animation curve: engine-API scene script ---
-        if (isCurve) {
-            const keyframes = Array.isArray(value?.keyframes) ? value.keyframes
-                : (Array.isArray(value) ? value : []);
-            const mode = value?.mode;
-            const multiplier = value?.multiplier;
-            const enableModule = value?.enable === true || /module/i.test(property);
-            let res: any;
-            try {
-                res = await Editor.Message.request('scene', 'execute-scene-script', {
-                    name: 'cocos-mcp-server',
-                    method: 'setParticleCurve',
-                    args: [nodeUuid, componentType, property, keyframes, mode, multiplier, enableModule]
-                });
-            } catch (err: any) {
-                return { success: false, error: `Curve scene script failed: ${err.message}` };
-            }
-            if (res && res.success) {
-                return {
-                    success: true,
-                    message: `Set curve ${componentType}.${property} (${res.data?.keyCount} keys, eval 0→1: ${res.data?.eval0}→${res.data?.eval1})`,
-                    data: { nodeUuid, componentType, property, ...res.data, changeVerified: Number(res.data?.keyCount || 0) > 0 }
-                };
-            }
-            return { success: false, error: res?.error || 'Curve set failed' };
-        }
-
-        // --- Typed / nested leaf via the editor set-property channel ---
-        const discovered = this.discoverDumpType(targetComponent, property);
-        const dump = this.buildTypedDump(pt, value, discovered);
-        if (!dump) {
+        basePath: string,
+        descriptor: any,
+        rawValue: any
+    ): Promise<ToolResponse> {
+        const template = descriptor.elementTypeData;
+        const plain = this.unwrapDumpValue(rawValue);
+        const elements: any[] | null = Array.isArray(plain)
+            ? plain
+            : (plain && typeof plain === 'object' ? [plain] : null);
+        if (!elements) {
             return {
                 success: false,
-                error: `Could not build a typed dump for '${property}' (propertyType='${propertyType}', discovered='${discovered || 'unknown'}', value=${JSON.stringify(value)})`
+                error: `'${property}' takes ${this.describeClassArrayForm(descriptor)}; got ${JSON.stringify(rawValue)}`
             };
         }
-        const path = `__comps__.${idx}.${property}`;
+
+        const built = elements.map((element, index) =>
+            this.buildClassElement(template, element, `${basePath}.${index}`));
         try {
-            await Editor.Message.request('scene', 'set-property', { uuid: nodeUuid, path, dump });
+            await Editor.Message.request('scene', 'set-property', {
+                uuid: nodeUuid,
+                path: basePath,
+                dump: { type: template.type, value: built.map(entry => entry.dump) }
+            });
         } catch (err: any) {
-            return { success: false, error: `set-property failed for '${path}': ${err.message}` };
+            return {
+                success: false,
+                error: `Failed to write '${property}' as ${template.type}[]: ${err.message}. `
+                    + `It takes ${this.describeClassArrayForm(descriptor)}`
+            };
         }
 
-        await new Promise(r => setTimeout(r, 150));
-        const actual = await this.readDumpValueAtPath(nodeUuid, resolvedCid, property);
+        const references = built.reduce<Array<{ path: string; type: string; uuid: string }>>(
+            (all, entry) => all.concat(entry.refs), []);
+        const referenceErrors: string[] = [];
+        for (const reference of references) {
+            try {
+                await Editor.Message.request('scene', 'set-property', {
+                    uuid: nodeUuid,
+                    path: reference.path,
+                    dump: { type: reference.type, value: { uuid: reference.uuid } }
+                });
+            } catch (err: any) {
+                referenceErrors.push(`${reference.path} (${reference.type}): ${err.message}`);
+            }
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const expected = built.map(entry => entry.expected);
+        const check = await this.verifyAgainst(nodeUuid, resolvedCid, property, expected);
+        const failures = referenceErrors.map(err => `reference write failed: ${err}`)
+            .concat(check.mismatches)
+            .concat(check.persistence.mismatches.map(m => `would not survive a save — ${m}`));
+
+        if (failures.length) {
+            return {
+                success: false,
+                error: `${componentType}.${property} did not land as requested: ${failures.join('; ')}`,
+                data: {
+                    nodeUuid, componentType, property,
+                    elementType: template.type,
+                    requested: expected,
+                    actualValue: check.actual,
+                    changeVerified: false,
+                    ...this.persistenceReport(check, property)
+                }
+            };
+        }
         return {
             success: true,
-            message: `Set ${componentType}.${property}`,
+            message: `Set ${componentType}.${property} = ${template.type}[${elements.length}]`
+                + `${references.length ? `, ${references.length} nested reference(s) resolved` : ''}`,
+            ...(check.found ? {} : { warning: `Wrote ${property} but the dump does not expose it for read-back.` }),
             data: {
-                nodeUuid,
-                componentType,
-                property,
-                dumpType: dump.type || discovered || 'inferred',
-                actualValue: actual,
-                changeVerified: actual !== undefined && actual !== null
+                nodeUuid, componentType, property,
+                elementType: template.type,
+                elementCount: elements.length,
+                references: references.map(reference => `${reference.path} = ${reference.uuid || '(cleared)'}`),
+                actualValue: check.actual,
+                changeVerified: check.found,
+                ...this.persistenceReport(check, property)
             }
         };
     }
 
     /**
-     * Walk a (possibly dotted) property path through a processed component dump
-     * (`targetComponent.properties` === the editor `comp.value`) and return the editor
-     * `type` string of the addressed leaf, e.g. 'cc.Color', 'cc.Node', 'cc.Vec3',
-     * 'Number', 'Boolean', 'Enum'. Undefined when the path does not resolve.
+     * Write a serializable @ccclass held inline by a component — `enter` on a StagingTween, not
+     * an array element. The editor wants a RECURSIVE dump here: every member spelled as its own
+     * {value,type} descriptor. Handing it the caller's flat object instead made it walk into a
+     * raw number looking for `.value` and throw `Cannot use 'in' operator to search for 'value'
+     * in 0.5`, so a whole authored block could not be written at all.
+     *
+     * Members the caller omits keep what they hold now — the live descriptor IS the template, so
+     * this patches rather than replaces. That is the opposite of the array case above, and
+     * deliberately: an array is addressed as a whole, a named block is addressed by member.
      */
-    private discoverDumpType(targetComponent: any, property: string): string | undefined {
-        const props = targetComponent?.properties || {};
-        const segs = property.split('.');
-        let cur: any = props[segs[0]];
-        for (let i = 1; i < segs.length && cur != null; i++) {
-            cur = cur.value ? cur.value[segs[i]] : undefined;
+    private async writeClassValue(
+        nodeUuid: string,
+        resolvedCid: string,
+        componentType: string,
+        property: string,
+        basePath: string,
+        descriptor: any,
+        rawValue: any
+    ): Promise<ToolResponse> {
+        const supplied = this.unwrapDumpValue(rawValue);
+        const built = this.buildClassPatch(descriptor, supplied, basePath);
+        if (built.unknown.length) {
+            return {
+                success: false,
+                error: `${componentType}.${property} (${descriptor.type}) has no member(s) `
+                    + `${built.unknown.join(', ')}. Members: ${Object.keys(descriptor.value || {}).join(', ')}`
+            };
         }
-        return cur?.type;
+
+        try {
+            await Editor.Message.request('scene', 'set-property', { uuid: nodeUuid, path: basePath, dump: built.dump });
+        } catch (err: any) {
+            return { success: false, error: `set-property failed for '${basePath}': ${err.message}` };
+        }
+
+        const referenceErrors: string[] = [];
+        for (const reference of built.refs) {
+            try {
+                await Editor.Message.request('scene', 'set-property', {
+                    uuid: nodeUuid,
+                    path: reference.path,
+                    dump: { type: reference.type, value: { uuid: reference.uuid } }
+                });
+            } catch (err: any) {
+                referenceErrors.push(`${reference.path} (${reference.type}): ${err.message}`);
+            }
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const check = await this.verifyAgainst(nodeUuid, resolvedCid, property, built.expected);
+        const failures = referenceErrors.map(err => `reference write failed: ${err}`)
+            .concat(check.mismatches)
+            .concat(check.persistence.mismatches.map(m => `would not survive a save — ${m}`));
+        if (failures.length) {
+            return {
+                success: false,
+                error: `${componentType}.${property} did not land as requested: ${failures.join('; ')}`,
+                data: {
+                    nodeUuid, componentType, property, dumpType: descriptor.type,
+                    requested: built.expected, actualValue: check.actual, changeVerified: false,
+                    ...this.persistenceReport(check, property)
+                }
+            };
+        }
+        return {
+            success: true,
+            message: `Set ${componentType}.${property} (${descriptor.type}): `
+                + `${Object.keys(built.expected).join(', ')}`,
+            ...(check.found ? {} : { warning: `Wrote ${property} but the dump does not expose it for read-back.` }),
+            data: {
+                nodeUuid, componentType, property, dumpType: descriptor.type,
+                membersWritten: Object.keys(built.expected),
+                actualValue: check.actual, changeVerified: check.found,
+                ...this.persistenceReport(check, property)
+            }
+        };
     }
 
     /**
-     * Build a correctly typed editor `dump` ({type,value}) from the caller's propertyType
-     * hint and/or the discovered dump type. Returns null when the value cannot be coerced.
+     * The live dump for an inline @ccclass with the supplied members overwritten in place, so
+     * every member the caller did not name keeps its current value and its declared type.
+     *
+     * Reference members are stripped from the inline dump whether or not they were supplied: the
+     * editor decodes a nested reference by assigning the dump onto the live object rather than
+     * resolving the uuid, which silently empties the slot (the same reason writeClassArray writes
+     * them by dotted path). A supplied one goes out as its own set-property call; an untouched
+     * one is simply not written.
      */
-    private buildTypedDump(propertyType: string, value: any, discovered?: string): any | null {
+    private buildClassPatch(
+        descriptor: any, supplied: any, basePath: string
+    ): { dump: any; refs: Array<{ path: string; type: string; uuid: string }>; expected: any; unknown: string[] } {
+        const dump = JSON.parse(JSON.stringify(descriptor));
+        const fields: Record<string, any> = dump.value || {};
+        const refs: Array<{ path: string; type: string; uuid: string }> = [];
+        const expected: Record<string, any> = {};
+        const unknown: string[] = [];
+        const given: Record<string, any> = (supplied && typeof supplied === 'object' && !Array.isArray(supplied))
+            ? supplied : {};
+
+        for (const [field, fieldTemplate] of Object.entries<any>(fields)) {
+            if (this.isReferenceDescriptor(fieldTemplate)) delete fields[field];
+        }
+
+        for (const [field, value] of Object.entries(given)) {
+            const fieldTemplate = (descriptor.value || {})[field];
+            if (!fieldTemplate) { unknown.push(field); continue; }
+            const fieldPath = `${basePath}.${field}`;
+
+            if (this.isReferenceDescriptor(fieldTemplate)) {
+                const uuid = this.toUuidString(value) || '';
+                refs.push({ path: fieldPath, type: fieldTemplate.type, uuid });
+                expected[field] = { uuid };
+                continue;
+            }
+            if (this.isClassArrayDescriptor(fieldTemplate)) {
+                const items: any[] = Array.isArray(value) ? value : [];
+                const inner = items.map((item, index) =>
+                    this.buildClassElement(fieldTemplate.elementTypeData, item, `${fieldPath}.${index}`));
+                fields[field] = { type: fieldTemplate.elementTypeData.type, value: inner.map(entry => entry.dump) };
+                inner.forEach(entry => refs.push(...entry.refs));
+                expected[field] = inner.map(entry => entry.expected);
+                continue;
+            }
+            if (this.isClassDescriptor(fieldTemplate)) {
+                const inner = this.buildClassPatch(fieldTemplate, value, fieldPath);
+                fields[field] = inner.dump;
+                refs.push(...inner.refs);
+                expected[field] = inner.expected;
+                unknown.push(...inner.unknown.map(name => `${field}.${name}`));
+                continue;
+            }
+
+            const leaf = this.buildTypedDump('', value, fieldTemplate.type, field, fieldTemplate);
+            fields[field] = { ...fieldTemplate, value: leaf ? leaf.value : value };
+            expected[field] = fields[field].value;
+        }
+
+        return { dump, refs, expected, unknown };
+    }
+
+    /**
+     * One element of a serializable-class array: the dump to write inline, the reference fields
+     * to write afterwards by path, and what the whole element should read back as. A field the
+     * caller omitted takes the element type's declared default, so the array is a full
+     * replacement rather than a patch over whatever occupied the index before.
+     */
+    private buildClassElement(
+        template: any, supplied: any, pathPrefix: string
+    ): { dump: any; refs: Array<{ path: string; type: string; uuid: string }>; expected: any } {
+        const fields: Record<string, any> = (template && template.value) || {};
+        const given: Record<string, any> = (supplied && typeof supplied === 'object' && !Array.isArray(supplied))
+            ? supplied : {};
+        const dumpValue: Record<string, any> = {};
+        const refs: Array<{ path: string; type: string; uuid: string }> = [];
+        const expected: Record<string, any> = {};
+
+        for (const [field, fieldTemplate] of Object.entries<any>(fields)) {
+            const fieldPath = `${pathPrefix}.${field}`;
+            const hasValue = Object.prototype.hasOwnProperty.call(given, field);
+
+            if (this.isReferenceDescriptor(fieldTemplate)) {
+                const uuid = hasValue ? (this.toUuidString(given[field]) || '') : '';
+                refs.push({ path: fieldPath, type: fieldTemplate.type, uuid });
+                expected[field] = { uuid };
+                continue;
+            }
+            if (fieldTemplate?.isArray === true && this.isReferenceDescriptor(fieldTemplate.elementTypeData)) {
+                const items: any[] = hasValue && Array.isArray(given[field]) ? given[field] : [];
+                const uuids = items.map(item => this.toUuidString(item) || '');
+                const elementType = fieldTemplate.elementTypeData.type;
+                dumpValue[field] = { type: elementType, value: uuids.map(uuid => ({ uuid })) };
+                uuids.forEach((uuid, index) => refs.push({ path: `${fieldPath}.${index}`, type: elementType, uuid }));
+                expected[field] = uuids.map(uuid => ({ uuid }));
+                continue;
+            }
+            if (this.isClassArrayDescriptor(fieldTemplate)) {
+                const items: any[] = hasValue && Array.isArray(given[field]) ? given[field] : [];
+                const inner = items.map((item, index) =>
+                    this.buildClassElement(fieldTemplate.elementTypeData, item, `${fieldPath}.${index}`));
+                dumpValue[field] = {
+                    type: fieldTemplate.elementTypeData.type,
+                    value: inner.map(entry => entry.dump)
+                };
+                inner.forEach(entry => refs.push(...entry.refs));
+                expected[field] = inner.map(entry => entry.expected);
+                continue;
+            }
+            if (this.isClassDescriptor(fieldTemplate)) {
+                const inner = this.buildClassElement(fieldTemplate, hasValue ? given[field] : {}, fieldPath);
+                dumpValue[field] = inner.dump;
+                refs.push(...inner.refs);
+                expected[field] = inner.expected;
+                continue;
+            }
+
+            const fallback = fieldTemplate?.value !== undefined ? fieldTemplate.value : fieldTemplate?.default;
+            const plainValue = hasValue ? given[field] : fallback;
+            dumpValue[field] = { type: fieldTemplate?.type, value: plainValue };
+            expected[field] = plainValue;
+        }
+
+        return { dump: { type: template?.type, value: dumpValue }, refs, expected };
+    }
+
+    /** "an ARRAY of WaveSquad entries, e.g. [{"prefab":"<cc.Prefab asset uuid>","count":3}]" */
+    private describeClassArrayForm(descriptor: any): string {
+        const template = descriptor?.elementTypeData;
+        return `an ARRAY of ${template?.type || 'object'} entries, `
+            + `e.g. ${JSON.stringify([this.exampleForClass(template)])}`;
+    }
+
+    private exampleForClass(template: any): any {
+        const example: Record<string, any> = {};
+        for (const [field, fieldTemplate] of Object.entries<any>((template && template.value) || {})) {
+            if (this.isAssetDescriptor(fieldTemplate)) {
+                example[field] = `<${fieldTemplate.type} asset uuid>`;
+            } else if (this.isNodeDescriptor(fieldTemplate) || this.isComponentDescriptor(fieldTemplate)) {
+                example[field] = '<node uuid>';
+            } else if (this.isClassArrayDescriptor(fieldTemplate)) {
+                example[field] = [this.exampleForClass(fieldTemplate.elementTypeData)];
+            } else if (this.isClassDescriptor(fieldTemplate)) {
+                example[field] = this.exampleForClass(fieldTemplate);
+            } else {
+                example[field] = fieldTemplate?.value !== undefined ? fieldTemplate.value : fieldTemplate?.default;
+            }
+        }
+        return example;
+    }
+
+    /** Everything the dump can describe: one typed dump through the editor set-property channel. */
+    private async writeTypedProperty(
+        nodeUuid: string,
+        resolvedCid: string,
+        componentType: string,
+        property: string,
+        basePath: string,
+        propertyType: string,
+        value: any,
+        descriptor: any,
+        targetComponent: any
+    ): Promise<ToolResponse> {
+        if (!descriptor && !propertyType) {
+            const available = Object.keys(targetComponent?.properties || {});
+            return {
+                success: false,
+                error: `Property '${property}' is not in ${componentType}'s dump and no propertyType was given, `
+                    + `so its shape is unknown. Available properties: ${available.join(', ')}`,
+                instruction: property.includes('.')
+                    ? `A dotted path only resolves through values that already exist — set the parent array or object first, then address its elements.`
+                    : `Pass propertyType to write a property the dump does not expose (e.g. a settable getter).`
+            };
+        }
+
+        const leafName = property.split('.').pop() || property;
+        const dump = this.buildTypedDump(propertyType, value, descriptor?.type, leafName, descriptor);
+        if (!dump) {
+            return {
+                success: false,
+                error: `Could not build a typed dump for '${property}' `
+                    + `(propertyType='${propertyType || '(none)'}', dump type='${descriptor?.type || 'unknown'}', `
+                    + `value=${JSON.stringify(value)})`
+            };
+        }
+
+        try {
+            await Editor.Message.request('scene', 'set-property', { uuid: nodeUuid, path: basePath, dump });
+        } catch (err: any) {
+            return { success: false, error: `set-property failed for '${basePath}': ${err.message}` };
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const check = await this.verifyAgainst(nodeUuid, resolvedCid, property, dump.value);
+        const failures = (check.found ? check.mismatches : []).concat(
+            check.persistence.mismatches.map(m => `would not survive a save — ${m}`));
+        if (failures.length) {
+            return {
+                success: false,
+                error: `The editor did not apply ${componentType}.${property}: ${failures.join('; ')}`,
+                data: {
+                    nodeUuid, componentType, property,
+                    dumpType: dump.type || descriptor?.type || 'inferred',
+                    requested: dump.value,
+                    actualValue: check.actual,
+                    changeVerified: false,
+                    ...this.persistenceReport(check, property)
+                }
+            };
+        }
+        return {
+            success: true,
+            message: `Successfully set ${componentType}.${property}`,
+            ...(check.found ? {} : {
+                warning: `Set ${componentType}.${property} but could not read it back for verification — `
+                    + `'${property}' is not exposed in the component dump. The write itself did not error.`
+            }),
+            data: {
+                nodeUuid, componentType, property,
+                dumpType: dump.type || descriptor?.type || 'inferred',
+                actualValue: check.actual,
+                changeVerified: check.found,
+                ...this.persistenceReport(check, property)
+            }
+        };
+    }
+
+    /**
+     * A component-typed field. The editor stores it by the target COMPONENT's scene uuid, so
+     * the node uuid the caller passes is resolved against the field's declared component class.
+     */
+    private async writeComponentRef(
+        nodeUuid: string,
+        resolvedCid: string,
+        componentType: string,
+        property: string,
+        basePath: string,
+        value: any
+    ): Promise<ToolResponse> {
+        const targetNodeUuid = this.toUuidString(value);
+        if (!targetNodeUuid) {
+            return {
+                success: false,
+                error: `Component reference '${property}' expects the uuid of the NODE holding the target `
+                    + `component; got ${JSON.stringify(value)}.`
+            };
+        }
+
+        const info = await this.getComponentInfo(nodeUuid, componentType, [property]);
+        const meta: any = info.success && info.data?.properties?.[property];
+        let expectedComponentType = '';
+        if (meta && typeof meta === 'object') {
+            if (meta.type) {
+                expectedComponentType = meta.type;
+            } else if (meta.ctor) {
+                expectedComponentType = meta.ctor;
+            } else if (Array.isArray(meta.extends)) {
+                for (const parent of meta.extends) {
+                    if (parent.startsWith('cc.') && parent !== 'cc.Component' && parent !== 'cc.Object') {
+                        expectedComponentType = parent;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!expectedComponentType) {
+            return {
+                success: false,
+                error: `Unable to determine the component type required by '${property}' on '${componentType}'.`,
+                instruction: `Use set_component_ref — it assigns on the live object and needs no Inspector metadata.`
+            };
+        }
+
+        const targetNodeData: any = await Editor.Message.request('scene', 'query-node', targetNodeUuid);
+        const targetComps: any[] = (targetNodeData && targetNodeData.__comps__) || [];
+        const match = targetComps.find((comp: any) => comp.type === expectedComponentType);
+        const componentId: string | undefined = match?.value?.uuid?.value;
+        if (!componentId) {
+            return {
+                success: false,
+                error: `Component '${expectedComponentType}' not found on node ${targetNodeUuid}. `
+                    + `Available: ${targetComps.map((comp: any) => comp.type).join(', ') || '(none)'}`
+            };
+        }
+
+        try {
+            await Editor.Message.request('scene', 'set-property', {
+                uuid: nodeUuid,
+                path: basePath,
+                dump: { value: { uuid: componentId }, type: expectedComponentType }
+            });
+        } catch (err: any) {
+            return { success: false, error: `set-property failed for '${basePath}': ${err.message}` };
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const check = await this.verifyAgainst(nodeUuid, resolvedCid, property, { uuid: componentId });
+        if (check.found && check.mismatches.length) {
+            return {
+                success: false,
+                error: `The editor did not apply ${componentType}.${property}: ${check.mismatches.join('; ')}`,
+                data: { nodeUuid, componentType, property, actualValue: check.actual, changeVerified: false }
+            };
+        }
+        return {
+            success: true,
+            message: `Set ${componentType}.${property} -> ${expectedComponentType} on node ${targetNodeUuid}`,
+            data: {
+                nodeUuid, componentType, property,
+                targetComponentType: expectedComponentType,
+                targetComponentUuid: componentId,
+                actualValue: check.actual,
+                changeVerified: check.found
+            }
+        };
+    }
+
+    /** cc.UITransform stores contentSize and anchorPoint as two scalar fields each. */
+    private async writeUITransformPair(
+        nodeUuid: string, resolvedCid: string, rawIndex: number, property: string, value: any
+    ): Promise<ToolResponse> {
+        const isSize = property.toLowerCase().includes('contentsize');
+        const fallback = isSize ? 100 : 0.5;
+        // Number.isFinite, not `|| fallback`, so a legitimate 0 is not clobbered by the default.
+        const pick = (raw: any) => Number.isFinite(Number(raw)) ? Number(raw) : fallback;
+        const fields: Array<[string, number]> = isSize
+            ? [['width', pick(value?.width)], ['height', pick(value?.height)]]
+            : [['anchorX', pick(value?.x)], ['anchorY', pick(value?.y)]];
+
+        for (const [field, fieldValue] of fields) {
+            await Editor.Message.request('scene', 'set-property', {
+                uuid: nodeUuid,
+                path: `__comps__.${rawIndex}.${field}`,
+                dump: { value: fieldValue }
+            });
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const mismatches: string[] = [];
+        const actual: Record<string, any> = {};
+        for (const [field, fieldValue] of fields) {
+            const check = await this.verifyAgainst(nodeUuid, resolvedCid, field, fieldValue);
+            actual[field] = check.actual;
+            mismatches.push(...check.mismatches);
+        }
+        if (mismatches.length) {
+            return {
+                success: false,
+                error: `The editor did not apply cc.UITransform.${property}: ${mismatches.join('; ')}`,
+                data: { nodeUuid, componentType: 'cc.UITransform', property, actualValue: actual, changeVerified: false }
+            };
+        }
+        return {
+            success: true,
+            message: `Successfully set cc.UITransform.${property}`,
+            data: { nodeUuid, componentType: 'cc.UITransform', property, actualValue: actual, changeVerified: true }
+        };
+    }
+
+    /** Particle GradientRange — the only route that can write GradientColorKey arrays. */
+    private async writeParticleGradient(
+        nodeUuid: string, componentType: string, property: string, value: any
+    ): Promise<ToolResponse> {
+        const colorKeys = Array.isArray(value?.colorKeys) ? value.colorKeys : [];
+        const alphaKeys = Array.isArray(value?.alphaKeys) ? value.alphaKeys : [];
+        const enableModule = value?.enable === true || /module/i.test(property);
+        let result: any;
+        try {
+            result = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'setParticleGradient',
+                args: [nodeUuid, componentType, property, colorKeys, alphaKeys, value?.mode, enableModule]
+            });
+        } catch (err: any) {
+            return { success: false, error: `Gradient scene script failed: ${err.message}` };
+        }
+        if (result && result.success) {
+            const applied = Number(result.data?.colorKeys || 0);
+            return {
+                success: applied > 0,
+                message: `Set gradient ${componentType}.${property} (${result.data?.colorKeys} colour / ${result.data?.alphaKeys} alpha keys)`,
+                ...(applied > 0 ? {} : { error: `No gradient colour keys were applied to ${componentType}.${property}` }),
+                data: { nodeUuid, componentType, property, ...result.data, changeVerified: applied > 0 }
+            };
+        }
+        return { success: false, error: result?.error || 'Gradient set failed' };
+    }
+
+    /** Particle CurveRange — same reason as the gradient: set-property cannot write keyframes. */
+    private async writeParticleCurve(
+        nodeUuid: string, componentType: string, property: string, value: any
+    ): Promise<ToolResponse> {
+        const keyframes = Array.isArray(value?.keyframes) ? value.keyframes
+            : (Array.isArray(value) ? value : []);
+        const enableModule = value?.enable === true || /module/i.test(property);
+        let result: any;
+        try {
+            result = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'setParticleCurve',
+                args: [nodeUuid, componentType, property, keyframes, value?.mode, value?.multiplier, enableModule]
+            });
+        } catch (err: any) {
+            return { success: false, error: `Curve scene script failed: ${err.message}` };
+        }
+        if (result && result.success) {
+            const keyCount = Number(result.data?.keyCount || 0);
+            return {
+                success: keyCount > 0,
+                message: `Set curve ${componentType}.${property} (${result.data?.keyCount} keys, eval 0→1: ${result.data?.eval0}→${result.data?.eval1})`,
+                ...(keyCount > 0 ? {} : { error: `No curve keyframes were applied to ${componentType}.${property}` }),
+                data: { nodeUuid, componentType, property, ...result.data, changeVerified: keyCount > 0 }
+            };
+        }
+        return { success: false, error: result?.error || 'Curve set failed' };
+    }
+
+    // ----- Read-back verification --------------------------------------------------------
+
+    /**
+     * Read the property back and report every place it disagrees with what was requested.
+     * `found: false` means the dump does not expose the property at all — no evidence either
+     * way, which is not the same as a contradiction and must not be reported as a failure.
+     */
+    private async verifyAgainst(
+        nodeUuid: string, componentType: string, property: string, expected: any
+    ): Promise<VerifyResult> {
+        const persistence = await this.verifyPersisted(nodeUuid, componentType, property, expected);
+        const read = await this.readDumpProperty(nodeUuid, componentType, property);
+        if (!read.found) return { found: false, actual: undefined, mismatches: [], persistence };
+        const actual = this.unwrapDumpValue(read.entry);
+        const mismatches: string[] = [];
+        this.collectMismatches(expected, actual, property, mismatches);
+        return { found: true, actual, mismatches, persistence };
+    }
+
+    /**
+     * Compare the request against what the editor's serializer emits for the component, which is
+     * the call the save path runs — not against the Inspector dump the live read-back uses.
+     *
+     * This catches a property the dump exposes but the serializer does not write, which is a write
+     * that does nothing on save while reading back as applied. It does NOT prove the scene file
+     * changed: the serializer walks the same live object graph, so a loss that happened before it
+     * ran is invisible to both checks. That boundary is why the result reports `persistenceVerified`
+     * as its own verdict instead of folding into `changeVerified`, and why an unreachable
+     * serializer leaves `checked` false and says so rather than implying a pass.
+     */
+    private async verifyPersisted(
+        nodeUuid: string, resolvedCid: string, property: string, expected: any
+    ): Promise<{ checked: boolean; found: boolean; actual: any; mismatches: string[]; reason?: string }> {
+        try {
+            const result: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'serializedComponentValue',
+                args: [nodeUuid, resolvedCid, property]
+            });
+            if (!result || result.success !== true) {
+                return { checked: false, found: false, actual: undefined, mismatches: [], reason: result?.error || 'scene script unavailable' };
+            }
+            if (!result.data?.found) {
+                return { checked: true, found: false, actual: undefined, mismatches: [] };
+            }
+            const actual = result.data.value;
+            const mismatches: string[] = [];
+            this.collectMismatches(expected, actual, property, mismatches);
+            return { checked: true, found: true, actual, mismatches };
+        } catch (err: any) {
+            return { checked: false, found: false, actual: undefined, mismatches: [], reason: err?.message || String(err) };
+        }
+    }
+
+    /**
+     * How a write is reported once both checks have run. `changeVerified` still means the live
+     * component agrees; `persistence` is the separate question of whether a save would keep it.
+     */
+    private persistenceReport(check: VerifyResult, property: string): Record<string, any> {
+        const { persistence } = check;
+        if (!persistence.checked) {
+            return {
+                persistenceVerified: false,
+                persistenceNote: `'${property}' was NOT verified against the saved form `
+                    + `(${persistence.reason || 'serializer unavailable'}). The live component agrees, which does `
+                    + `not prove the value survives a save.`
+            };
+        }
+        if (!persistence.found) {
+            return {
+                persistenceVerified: false,
+                persistenceNote: `The serializer does not emit '${property}', so persistence could not be `
+                    + `confirmed. The write itself did not error.`
+            };
+        }
+        return { persistenceVerified: true, persistedValue: persistence.actual };
+    }
+
+    /** Keys absent from `expected` are not compared — a partial write is checked partially. */
+    private collectMismatches(expected: any, actual: any, path: string, out: string[]): void {
+        if (expected === undefined) return;
+        if (Array.isArray(expected)) {
+            if (!Array.isArray(actual)) {
+                out.push(`${path}: expected an array of ${expected.length}, read ${JSON.stringify(actual)}`);
+                return;
+            }
+            if (actual.length !== expected.length) {
+                out.push(`${path}: expected ${expected.length} element(s), read ${actual.length}`);
+            }
+            for (let i = 0; i < Math.min(expected.length, actual.length); i++) {
+                this.collectMismatches(expected[i], actual[i], `${path}.${i}`, out);
+            }
+            return;
+        }
+        if (expected && typeof expected === 'object') {
+            if (!actual || typeof actual !== 'object') {
+                out.push(`${path}: expected ${JSON.stringify(expected)}, read ${JSON.stringify(actual)}`);
+                return;
+            }
+            for (const [key, nested] of Object.entries(expected)) {
+                this.collectMismatches(nested, (actual as any)[key], `${path}.${key}`, out);
+            }
+            return;
+        }
+        if (!this.scalarEquals(expected, actual)) {
+            out.push(`${path}: expected ${JSON.stringify(expected)}, read ${JSON.stringify(actual)}`);
+        }
+    }
+
+    private scalarEquals(expected: any, actual: any): boolean {
+        if (expected === actual) return true;
+        if (expected === null || expected === undefined) return actual === null || actual === undefined;
+        const expectedNumber = Number(expected);
+        const actualNumber = Number(actual);
+        if (Number.isFinite(expectedNumber) && Number.isFinite(actualNumber)) {
+            return Math.abs(expectedNumber - actualNumber) < 1e-5;
+        }
+        return String(expected) === String(actual);
+    }
+
+    /**
+     * Build a correctly typed editor `dump` ({type,value}) from the dump descriptor and the
+     * caller's propertyType hint. Returns null when the value cannot be coerced.
+     *
+     * The `…Array` keywords and the asset keywords are aliases for shapes the descriptor
+     * describes on its own; they stay accepted so existing callers keep working, and each one
+     * produces the dump the editor already took before this was one path.
+     */
+    private buildTypedDump(propertyType: string, value: any, discovered?: string, propertyName?: string, descriptor?: any): any | null {
         const clamp = (v: any) => Math.min(255, Math.max(0, Number(v) || 0));
         const pt = propertyType || '';
         const dt = discovered || '';
         const wants = (kw: string, cc: string) => pt === kw || pt === cc || dt === cc;
+        const asList = (v: any): any[] => Array.isArray(v) ? v : [v];
+        const isArrayTarget = descriptor?.isArray === true || Array.isArray(value);
+
+        if (pt === 'nodeArray' || (isArrayTarget && this.isNodeDescriptor(descriptor?.elementTypeData))) {
+            const uuids = asList(value).map(item => this.toUuidString(item)).filter((u): u is string => u !== null);
+            return { value: uuids.map(uuid => ({ uuid })) };
+        }
+        if (pt === 'colorArray' || (isArrayTarget && descriptor?.elementTypeData?.type === 'cc.Color')) {
+            const colors = asList(value).map((item: any) => (typeof item === 'string')
+                ? this.parseColorString(item)
+                : {
+                    r: clamp(item?.r), g: clamp(item?.g), b: clamp(item?.b),
+                    a: item?.a !== undefined ? clamp(item.a) : 255
+                });
+            return { type: 'cc.Color', value: colors };
+        }
+        if (pt === 'numberArray' || (isArrayTarget && descriptor?.elementTypeData?.type === 'Number')) {
+            return { value: asList(value).map(Number) };
+        }
+        if (pt === 'stringArray' || (isArrayTarget && descriptor?.elementTypeData?.type === 'String')) {
+            return { value: asList(value).map(String) };
+        }
+        if (isArrayTarget && this.isAssetDescriptor(descriptor?.elementTypeData)) {
+            const elementType = descriptor.elementTypeData.type;
+            const uuids = asList(value).map(item => this.toUuidString(item) || '');
+            return { type: elementType, value: uuids.map(uuid => ({ uuid })) };
+        }
+        if (pt === 'spriteFrame' || pt === 'prefab' || pt === 'asset' || this.isAssetDescriptor(descriptor)) {
+            const uuid = this.toUuidString(value);
+            if (uuid === null) return null;
+            const assetType = dt.startsWith('cc.') ? dt
+                : pt.startsWith('cc.') ? pt
+                : pt === 'prefab' ? 'cc.Prefab'
+                : pt === 'spriteFrame' ? 'cc.SpriteFrame'
+                : this.guessAssetTypeByName(propertyName || '');
+            return { type: assetType, value: { uuid } };
+        }
 
         if (wants('color', 'cc.Color')) {
             const v = (typeof value === 'string')
@@ -1611,11 +1833,6 @@ export class ComponentTools implements ToolExecutor {
             return type ? { type, value } : { value };
         }
         return null;
-    }
-
-    /** Read back the dump `value` at a (possibly dotted) property path for verification. */
-    private async readDumpValueAtPath(nodeUuid: string, componentType: string, property: string): Promise<any> {
-        return (await this.readDumpProperty(nodeUuid, componentType, property)).value;
     }
 
     /**
@@ -1760,11 +1977,35 @@ export class ComponentTools implements ToolExecutor {
             }
         };
         collect(verifyValue);
-        const verified = uuids.every(u => readUuids.includes(u));
+        const readable = readUuids.length > 0;
+        const verified = readable && uuids.every(u => readUuids.includes(u));
+
+        if (readable && !verified) {
+            return {
+                success: false,
+                error: `The editor did not apply ${componentType}.${effectiveProperty}: requested `
+                    + `[${uuids.join(', ')}] but read back [${readUuids.join(', ')}]`,
+                data: {
+                    nodeUuid,
+                    componentType,
+                    property: effectiveProperty,
+                    requestedProperty: property,
+                    assetType: assetClass,
+                    assignedUuids: uuids,
+                    isArray,
+                    changeVerified: false,
+                    actualValue: verifyValue
+                }
+            };
+        }
 
         return {
             success: true,
             message: `Set ${componentType}.${effectiveProperty} = ${assetClass}[${uuids.join(', ')}]${effectiveProperty !== property ? ` (via '${property}')` : ''}`,
+            ...(readable ? {} : {
+                warning: `Set ${componentType}.${effectiveProperty} but no asset uuid read back from the dump, `
+                    + `so the assignment is unverified. The write itself did not error.`
+            }),
             data: {
                 nodeUuid,
                 componentType,
@@ -1926,315 +2167,6 @@ export class ComponentTools implements ToolExecutor {
         };
     }
 
-    private isValidPropertyDescriptor(propData: any): boolean {
-        // Check if this is a valid property descriptor object
-        if (typeof propData !== 'object' || propData === null) {
-            return false;
-        }
-        
-        try {
-            const keys = Object.keys(propData);
-            
-            // Avoid traversing simple value objects like {width: 200, height: 150}
-            const isSimpleValueObject = keys.every(key => {
-                const value = propData[key];
-                return typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean';
-            });
-            
-            if (isSimpleValueObject) {
-                return false;
-            }
-            
-            // Check for property descriptor characteristic fields without using the 'in' operator
-            const hasName = keys.includes('name');
-            const hasValue = keys.includes('value');
-            const hasType = keys.includes('type');
-            const hasDisplayName = keys.includes('displayName');
-            const hasReadonly = keys.includes('readonly');
-            
-            // Must have name or value field, typically also has type field
-            const hasValidStructure = (hasName || hasValue) && (hasType || hasDisplayName || hasReadonly);
-            
-            // Extra check: skip deep traversal if default field exists with a complex structure
-            if (keys.includes('default') && propData.default && typeof propData.default === 'object') {
-                const defaultKeys = Object.keys(propData.default);
-                if (defaultKeys.includes('value') && typeof propData.default.value === 'object') {
-                    // Only return top-level properties; do not traverse into default.value
-                    return hasValidStructure;
-                }
-            }
-            
-            return hasValidStructure;
-        } catch (error) {
-            console.warn(`[isValidPropertyDescriptor] Error checking property descriptor:`, error);
-            return false;
-        }
-    }
-
-    private analyzeProperty(component: any, propertyName: string): { exists: boolean; type: string; availableProperties: string[]; originalValue: any } {
-        // Extract available properties from complex component structure
-        const availableProperties: string[] = [];
-        let propertyValue: any = undefined;
-        let propertyExists = false;
-        
-        // Try multiple approaches to find the property:
-        // 1. Direct property access
-        if (Object.prototype.hasOwnProperty.call(component, propertyName)) {
-            propertyValue = component[propertyName];
-            propertyExists = true;
-        }
-        
-        // 2. Search in nested structure (e.g., complex structure seen in test data)
-        if (!propertyExists && component.properties && typeof component.properties === 'object') {
-            // First check if properties.value exists (structure seen in getComponents)
-            if (component.properties.value && typeof component.properties.value === 'object') {
-                const valueObj = component.properties.value;
-                for (const [key, propData] of Object.entries(valueObj)) {
-                    // Check if propData is a valid property descriptor object
-                    // Ensure propData is an object with expected property structure
-                    if (this.isValidPropertyDescriptor(propData)) {
-                        const propInfo = propData as any;
-                        availableProperties.push(key);
-                        if (key === propertyName) {
-                            // Prefer value property; fall back to propData itself
-                            try {
-                                const propKeys = Object.keys(propInfo);
-                                propertyValue = propKeys.includes('value') ? propInfo.value : propInfo;
-                            } catch (error) {
-                                // Fall back to propInfo if check fails
-                                propertyValue = propInfo;
-                            }
-                            propertyExists = true;
-                        }
-                    }
-                }
-            } else {
-                // Fallback: search directly in properties
-                for (const [key, propData] of Object.entries(component.properties)) {
-                    if (this.isValidPropertyDescriptor(propData)) {
-                        const propInfo = propData as any;
-                        availableProperties.push(key);
-                        if (key === propertyName) {
-                            // Prefer value property; fall back to propData itself
-                            try {
-                                const propKeys = Object.keys(propInfo);
-                                propertyValue = propKeys.includes('value') ? propInfo.value : propInfo;
-                            } catch (error) {
-                                // Fall back to propInfo if check fails
-                                propertyValue = propInfo;
-                            }
-                            propertyExists = true;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // 3. Extract simple property names from direct attributes
-        if (availableProperties.length === 0) {
-            for (const key of Object.keys(component)) {
-                if (!key.startsWith('_') && !['__type__', 'cid', 'node', 'uuid', 'name', 'enabled', 'type', 'readonly', 'visible'].includes(key)) {
-                    availableProperties.push(key);
-                }
-            }
-        }
-        
-        if (!propertyExists) {
-            return {
-                exists: false,
-                type: 'unknown',
-                availableProperties,
-                originalValue: undefined
-            };
-        }
-        
-        let type = 'unknown';
-        
-        // Smart type detection
-        if (Array.isArray(propertyValue)) {
-            // Array type detection
-            if (propertyName.toLowerCase().includes('node')) {
-                type = 'nodeArray';
-            } else if (propertyName.toLowerCase().includes('color')) {
-                type = 'colorArray';
-            } else {
-                type = 'array';
-            }
-        } else if (typeof propertyValue === 'string') {
-            // Check if property name suggests it's an asset
-            if (['spriteFrame', 'texture', 'material', 'font', 'clip', 'prefab'].includes(propertyName.toLowerCase())) {
-                type = 'asset';
-            } else {
-                type = 'string';
-            }
-        } else if (typeof propertyValue === 'number') {
-            type = 'number';
-        } else if (typeof propertyValue === 'boolean') {
-            type = 'boolean';
-        } else if (propertyValue && typeof propertyValue === 'object') {
-            try {
-                const keys = Object.keys(propertyValue);
-                if (keys.includes('r') && keys.includes('g') && keys.includes('b')) {
-                    type = 'color';
-                } else if (keys.includes('x') && keys.includes('y')) {
-                    type = propertyValue.z !== undefined ? 'vec3' : 'vec2';
-                } else if (keys.includes('width') && keys.includes('height')) {
-                    type = 'size';
-                } else if (keys.includes('uuid') || keys.includes('__uuid__')) {
-                    // Check if this is a node reference (via property name or __id__ attribute)
-                    if (propertyName.toLowerCase().includes('node') || 
-                        propertyName.toLowerCase().includes('target') ||
-                        keys.includes('__id__')) {
-                        type = 'node';
-                    } else {
-                        type = 'asset';
-                    }
-                } else if (keys.includes('__id__')) {
-                    // Node reference characteristic
-                    type = 'node';
-                } else {
-                    type = 'object';
-                }
-            } catch (error) {
-                console.warn(`[analyzeProperty] Error checking property type for: ${JSON.stringify(propertyValue)}`);
-                type = 'object';
-            }
-        } else if (propertyValue === null || propertyValue === undefined) {
-            // For null/undefined values, check property name to determine type
-            if (['spriteFrame', 'texture', 'material', 'font', 'clip', 'prefab'].includes(propertyName.toLowerCase())) {
-                type = 'asset';
-            } else if (propertyName.toLowerCase().includes('node') || 
-                      propertyName.toLowerCase().includes('target')) {
-                type = 'node';
-            } else if (propertyName.toLowerCase().includes('component')) {
-                type = 'component';
-            } else {
-                type = 'unknown';
-            }
-        }
-        
-        return {
-            exists: true,
-            type,
-            availableProperties,
-            originalValue: propertyValue
-        };
-    }
-
-    private smartConvertValue(inputValue: any, propertyInfo: any): any {
-        const { type, originalValue } = propertyInfo;
-        
-        console.log(`[smartConvertValue] Converting ${JSON.stringify(inputValue)} to type: ${type}`);
-        
-        switch (type) {
-            case 'string':
-                return String(inputValue);
-                
-            case 'number':
-                return Number(inputValue);
-                
-            case 'boolean':
-                if (typeof inputValue === 'boolean') return inputValue;
-                if (typeof inputValue === 'string') {
-                    return inputValue.toLowerCase() === 'true' || inputValue === '1';
-                }
-                return Boolean(inputValue);
-                
-            case 'color':
-                // Optimized color handling supporting multiple input formats
-                if (typeof inputValue === 'string') {
-                    // String format: hex, color names, rgb()/rgba()
-                    return this.parseColorString(inputValue);
-                } else if (typeof inputValue === 'object' && inputValue !== null) {
-                    try {
-                        const inputKeys = Object.keys(inputValue);
-                        // If input is a color object, validate and convert
-                        if (inputKeys.includes('r') || inputKeys.includes('g') || inputKeys.includes('b')) {
-                            return {
-                                r: Math.min(255, Math.max(0, Number(inputValue.r) || 0)),
-                                g: Math.min(255, Math.max(0, Number(inputValue.g) || 0)),
-                                b: Math.min(255, Math.max(0, Number(inputValue.b) || 0)),
-                                a: inputValue.a !== undefined ? Math.min(255, Math.max(0, Number(inputValue.a))) : 255
-                            };
-                        }
-                    } catch (error) {
-                        console.warn(`[smartConvertValue] Invalid color object: ${JSON.stringify(inputValue)}`);
-                    }
-                }
-                // Keep original value structure and update provided fields
-                if (originalValue && typeof originalValue === 'object') {
-                    try {
-                        const inputKeys = typeof inputValue === 'object' && inputValue ? Object.keys(inputValue) : [];
-                        return {
-                            r: inputKeys.includes('r') ? Math.min(255, Math.max(0, Number(inputValue.r))) : (originalValue.r || 255),
-                            g: inputKeys.includes('g') ? Math.min(255, Math.max(0, Number(inputValue.g))) : (originalValue.g || 255),
-                            b: inputKeys.includes('b') ? Math.min(255, Math.max(0, Number(inputValue.b))) : (originalValue.b || 255),
-                            a: inputKeys.includes('a') ? Math.min(255, Math.max(0, Number(inputValue.a))) : (originalValue.a || 255)
-                        };
-                    } catch (error) {
-                        console.warn(`[smartConvertValue] Error processing color with original value: ${error}`);
-                    }
-                }
-                // Default to white
-                console.warn(`[smartConvertValue] Using default white color for invalid input: ${JSON.stringify(inputValue)}`);
-                return { r: 255, g: 255, b: 255, a: 255 };
-                
-            case 'vec2':
-                if (typeof inputValue === 'object' && inputValue !== null) {
-                    return {
-                        x: Number(inputValue.x) || originalValue.x || 0,
-                        y: Number(inputValue.y) || originalValue.y || 0
-                    };
-                }
-                return originalValue;
-                
-            case 'vec3':
-                if (typeof inputValue === 'object' && inputValue !== null) {
-                    return {
-                        x: Number(inputValue.x) || originalValue.x || 0,
-                        y: Number(inputValue.y) || originalValue.y || 0,
-                        z: Number(inputValue.z) || originalValue.z || 0
-                    };
-                }
-                return originalValue;
-                
-            case 'size':
-                if (typeof inputValue === 'object' && inputValue !== null) {
-                    return {
-                        width: Number(inputValue.width) || originalValue.width || 100,
-                        height: Number(inputValue.height) || originalValue.height || 100
-                    };
-                }
-                return originalValue;
-                
-            case 'node':
-                if (typeof inputValue === 'string') {
-                    // Node references require special handling
-                    return inputValue;
-                } else if (typeof inputValue === 'object' && inputValue !== null) {
-                    // Already object form: return UUID or full object
-                    return inputValue.uuid || inputValue;
-                }
-                return originalValue;
-                
-            case 'asset':
-                if (typeof inputValue === 'string') {
-                    // Convert string path to asset object
-                    return { uuid: inputValue };
-                } else if (typeof inputValue === 'object' && inputValue !== null) {
-                    return inputValue;
-                }
-                return originalValue;
-                
-            default:
-                // For unknown types, try to preserve original structure
-                if (typeof inputValue === typeof originalValue) {
-                    return inputValue;
-                }
-                return originalValue;
-        }
-    }
-
         private parseColorString(colorStr: string): { r: number; g: number; b: number; a: number } {
         const str = colorStr.trim();
         
@@ -2256,103 +2188,6 @@ export class ComponentTools implements ToolExecutor {
         
         // Return error if not a valid hexadecimal format
         throw new Error(`Invalid color format: "${colorStr}". Only hexadecimal format is supported (e.g., "#FF0000" or "#FF0000FF")`);
-    }
-
-    private async verifyPropertyChange(nodeUuid: string, componentType: string, property: string, originalValue: any, expectedValue: any): Promise<{ verified: boolean; readable: boolean; actualValue: any; fullData: any }> {
-        console.log(`[verifyPropertyChange] Starting verification for ${componentType}.${property}`);
-        console.log(`[verifyPropertyChange] Expected value:`, JSON.stringify(expectedValue));
-        console.log(`[verifyPropertyChange] Original value:`, JSON.stringify(originalValue));
-
-        try {
-            // Same read the get_components tool performs — see readDumpProperty.
-            const read = await this.readDumpProperty(nodeUuid, componentType, property);
-            console.log(`[verifyPropertyChange] readDumpProperty found:`, read.found);
-
-            if (read.found) {
-                const propertyData = read.entry;
-                const actualValue = read.value;
-                console.log(`[verifyPropertyChange] actualValue:`, JSON.stringify(actualValue));
-
-                // Check whether actual value matches expected value
-                let verified = false;
-
-                if (typeof expectedValue === 'object' && expectedValue !== null && 'uuid' in expectedValue) {
-                    // For reference types (node/component/asset), compare UUID
-                    const actualUuid = actualValue && typeof actualValue === 'object' && 'uuid' in actualValue ? actualValue.uuid : '';
-                    const expectedUuid = expectedValue.uuid || '';
-                    verified = actualUuid === expectedUuid && expectedUuid !== '';
-                    
-                    console.log(`[verifyPropertyChange] Reference comparison:`);
-                    console.log(`  - Expected UUID: "${expectedUuid}"`);
-                    console.log(`  - Actual UUID: "${actualUuid}"`);
-                    console.log(`  - UUID match: ${actualUuid === expectedUuid}`);
-                    console.log(`  - UUID not empty: ${expectedUuid !== ''}`);
-                    console.log(`  - Final verified: ${verified}`);
-                } else {
-                    // For other types, compare values directly
-                    console.log(`[verifyPropertyChange] Value comparison:`);
-                    console.log(`  - Expected type: ${typeof expectedValue}`);
-                    console.log(`  - Actual type: ${typeof actualValue}`);
-                    
-                    if (typeof actualValue === typeof expectedValue) {
-                        if (typeof actualValue === 'object' && actualValue !== null && expectedValue !== null) {
-                            // Deep comparison for object types
-                            verified = JSON.stringify(actualValue) === JSON.stringify(expectedValue);
-                            console.log(`  - Object comparison (JSON): ${verified}`);
-                        } else {
-                            // Direct comparison for primitive types
-                            verified = actualValue === expectedValue;
-                            console.log(`  - Direct comparison: ${verified}`);
-                        }
-                    } else {
-                        // Special handling for type mismatches (e.g. number vs string)
-                        const stringMatch = String(actualValue) === String(expectedValue);
-                        const numberMatch = Number(actualValue) === Number(expectedValue);
-                        verified = stringMatch || numberMatch;
-                        console.log(`  - String match: ${stringMatch}`);
-                        console.log(`  - Number match: ${numberMatch}`);
-                        console.log(`  - Type mismatch verified: ${verified}`);
-                    }
-                }
-                
-                console.log(`[verifyPropertyChange] Final verification result: ${verified}`);
-                console.log(`[verifyPropertyChange] Final actualValue:`, JSON.stringify(actualValue));
-                
-                const result = {
-                    verified,
-                    readable: true,
-                    actualValue,
-                    fullData: {
-                        // Return only modified property info, not full component data
-                        modifiedProperty: {
-                            name: property,
-                            before: originalValue,
-                            expected: expectedValue,
-                            actual: actualValue,
-                            verified,
-                            propertyMetadata: propertyData // Only includes metadata for this property
-                        },
-                        componentSummary: { nodeUuid, componentType }
-                    }
-                };
-
-                console.log(`[verifyPropertyChange] Returning result:`, JSON.stringify(result, null, 2));
-                return result;
-            } else {
-                console.log(`[verifyPropertyChange] '${property}' is not exposed in the dump — cannot verify`);
-            }
-        } catch (error) {
-            console.error('[verifyPropertyChange] Verification failed with error:', error);
-            console.error('[verifyPropertyChange] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
-        }
-
-        // Nothing was read back, so this is "no evidence", not "the editor refused".
-        return {
-            verified: false,
-            readable: false,
-            actualValue: undefined,
-            fullData: null
-        };
     }
 
     /**

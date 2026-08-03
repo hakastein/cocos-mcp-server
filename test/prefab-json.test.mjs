@@ -169,3 +169,71 @@ test('setComponentPropertyInPrefabData writes scalars and asset refs, returning 
     assert.deepEqual(second.data[2]._materials, [{ __uuid__: 'u1' }]);
     assert.equal(second.previous, undefined);
 });
+
+// ---- nested @ccclass members -------------------------------------------------------------
+// A serializable @ccclass is stored as its own entry and referenced by {__id__}. Writing
+// `exit.duration` used to create a literal "exit.duration" key on the component, and writing
+// `exit` used to overwrite the reference with a plain object, orphaning the block.
+
+function nestedFixture() {
+    const data = fixture();
+    data[2].exit = { __id__: 7 };
+    data[7] = { __type__: 'TransformTweenSpec', duration: 0.5, easing: 'backIn', endsShown: false };
+    return data;
+}
+
+test('a dotted path writes into the referenced block, not a literal dotted key', () => {
+    const r = setComponentPropertyInPrefabData(
+        nestedFixture(), { nodePath: 'Root' }, 'cc.MeshRenderer', 'exit.duration', 0.25);
+
+    assert.equal(r.data[7].duration, 0.25);
+    assert.equal(r.data[7].easing, 'backIn', 'a sibling member is untouched');
+    assert.equal('exit.duration' in r.data[2], false);
+    assert.deepEqual(r.data[2].exit, { __id__: 7 }, 'the reference itself is unchanged');
+    assert.equal(r.previous, 0.5);
+});
+
+test('a whole block patches the referenced entry and never replaces the {__id__} reference', () => {
+    const r = setComponentPropertyInPrefabData(
+        nestedFixture(), { nodePath: 'Root' }, 'cc.MeshRenderer', 'exit', { duration: 0.25, endsShown: true });
+
+    assert.deepEqual(r.data[2].exit, { __id__: 7 });
+    assert.equal(r.data[7].duration, 0.25);
+    assert.equal(r.data[7].endsShown, true);
+    assert.equal(r.data[7].easing, 'backIn', 'an omitted member keeps its value');
+    assert.equal(r.data[7].__type__, 'TransformTweenSpec');
+});
+
+test('the input array is not mutated, so a throw cannot leave a half-written prefab', () => {
+    const original = nestedFixture();
+    setComponentPropertyInPrefabData(original, { nodePath: 'Root' }, 'cc.MeshRenderer', 'exit.duration', 0.25);
+    assert.equal(original[7].duration, 0.5);
+});
+
+test('a misspelled member of a block is refused instead of being added to the prefab', () => {
+    assert.throws(
+        () => setComponentPropertyInPrefabData(
+            nestedFixture(), { nodePath: 'Root' }, 'cc.MeshRenderer', 'exit', { duraton: 0.25 }),
+        /has no member\(s\) duraton/);
+});
+
+test('a dotted path through a plain value is refused, naming the segment that is not a block', () => {
+    assert.throws(
+        () => setComponentPropertyInPrefabData(
+            nestedFixture(), { nodePath: 'Root' }, 'cc.MeshRenderer', '_shadowCastingMode.duration', 1),
+        /'_shadowCastingMode' is not a nested block/);
+});
+
+test('a dotted path to a member the block does not have is refused', () => {
+    assert.throws(
+        () => setComponentPropertyInPrefabData(
+            nestedFixture(), { nodePath: 'Root' }, 'cc.MeshRenderer', 'exit.nope', 1),
+        /'nope' is not a member of TransformTweenSpec/);
+});
+
+test('a block given a scalar is refused rather than orphaning the referenced entry', () => {
+    assert.throws(
+        () => setComponentPropertyInPrefabData(
+            nestedFixture(), { nodePath: 'Root' }, 'cc.MeshRenderer', 'exit', 0.25),
+        /stored by reference; it takes an object of its members/);
+});

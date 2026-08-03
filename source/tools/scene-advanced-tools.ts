@@ -49,7 +49,10 @@ export class SceneAdvancedTools implements ToolExecutor {
             },
             {
                 name: 'remove_array_element',
-                description: 'Remove array element at specific index',
+                description: 'Remove array element at specific index. There is deliberately no add_array_element: ' +
+                    'component_set_component_property writes a whole array in one call — including an array of a ' +
+                    'serializable @ccclass with asset references inside its elements — so adding or inserting is ' +
+                    'read the array, edit it, set it back.',
                 inputSchema: {
                     type: 'object',
                     properties: {

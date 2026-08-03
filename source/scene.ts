@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { buildPathIndex, resolvePathInIndex, siblingLabels } from './node-path';
 module.paths.push(join(Editor.App.path, 'node_modules'));
 
 // `cce` is the editor-side engine facade available in the scene process (it exposes
@@ -59,6 +60,78 @@ function findComponentByUuid(scene: any, uuid: string): any {
         if (n.children && n.children.length) stack.push(...n.children);
     }
     return null;
+}
+
+/**
+ * Serialized output as plain comparable data: `__id__` back-references followed into the object
+ * array, an asset's `__uuid__` spelled the way a dump spells it, and the bookkeeping keys that
+ * carry no authored value dropped.
+ */
+function plainSerialized(objects: any[], value: any, depth: number): any {
+    if (depth > 8 || !value || typeof value !== 'object') return value;
+    if (typeof value.__id__ === 'number') return plainSerialized(objects, objects[value.__id__], depth + 1);
+    if (typeof value.__uuid__ === 'string') return { uuid: value.__uuid__ };
+    if (Array.isArray(value)) return value.map(item => plainSerialized(objects, item, depth + 1));
+    const plain: Record<string, any> = {};
+    for (const [key, item] of Object.entries(value)) {
+        if (key === '__type__' || key === '_objFlags' || key === '__editorExtras__') continue;
+        plain[key] = plainSerialized(objects, item, depth + 1);
+    }
+    return plain;
+}
+
+/** Nearest ancestor carrying a PrefabInstance — the node a property override actually belongs to. */
+function findPrefabInstanceRoot(node: any): any {
+    let cur = node && node.parent;
+    while (cur) {
+        if (cur._prefab && cur._prefab.instance) return cur;
+        cur = cur.parent;
+    }
+    return null;
+}
+
+/**
+ * fileId -> descriptor for every node and component under a prefab instance root. A
+ * CCPropertyOverrideInfo names its target by that fileId alone, so this is what turns a
+ * record into something a reader can act on.
+ */
+function mapPrefabFileIds(root: any): Record<string, any> {
+    const map: Record<string, any> = {};
+    const walk = (n: any, path: string) => {
+        const nodeId = n._prefab && n._prefab.fileId;
+        if (nodeId) map[nodeId] = { kind: 'node', name: n.name, path, type: 'cc.Node' };
+        for (const c of n.components || []) {
+            const compId = c && c.__prefab && c.__prefab.fileId;
+            if (compId) map[compId] = { kind: 'component', name: n.name, path, type: c.constructor && c.constructor.name };
+        }
+        (n.children || []).forEach((child: any) => walk(child, path + '/' + child.name));
+    };
+    walk(root, root.name);
+    return map;
+}
+
+/** Classify an override value: primitive, asset ref, node/component ref, or engine value type. */
+function describeOverrideValue(value: any): Record<string, any> {
+    if (value === null || value === undefined) return { valueKind: 'null', value: null };
+    const kind = typeof value;
+    if (kind === 'string' || kind === 'number' || kind === 'boolean') return { valueKind: 'primitive', value };
+    if (Array.isArray(value)) return { valueKind: 'array', length: value.length };
+    const cc = require('cc');
+    const typeName = (value.constructor && value.constructor.name) || 'object';
+    if (cc.Asset && value instanceof cc.Asset) {
+        return { valueKind: 'asset', valueType: typeName, assetUuid: value._uuid || null, assetName: value.name };
+    }
+    if (cc.Node && value instanceof cc.Node) return { valueKind: 'node', refUuid: value.uuid, refName: value.name };
+    if (cc.Component && value instanceof cc.Component) {
+        return { valueKind: 'component', valueType: typeName, refUuid: value.uuid, refName: value.node && value.node.name };
+    }
+    if (cc.ValueType && value instanceof cc.ValueType) {
+        return { valueKind: 'valueType', valueType: typeName, value: JSON.parse(JSON.stringify(value)) };
+    }
+    // An asset whose uuid no longer resolves can survive as the raw serialized stub.
+    const stubUuid = value._uuid || value.__uuid__;
+    if (stubUuid) return { valueKind: 'asset', valueType: typeName, assetUuid: stubUuid };
+    return { valueKind: 'object', valueType: typeName };
 }
 
 /** CCClass attribute metadata is absent for plenty of custom-script fields — absence is not an error here. */
@@ -735,6 +808,116 @@ export const methods: { [key: string]: (...any: any) => any } = {
     },
 
     /**
+     * Describe every property override on a prefab-instance node. The records live on
+     * `node._prefab.instance.propertyOverrides` as CCPropertyOverrideInfo: a `targetInfo.localID`
+     * chain naming the node or component inside the instance, a `propertyPath`, and the overriding
+     * `value`. The editor appends them as the scene is edited and never re-derives them from a diff
+     * on save, so a record outlives the value it was written for — an asset ref whose uuid stopped
+     * resolving keeps being serialised into the .scene and keeps failing to load at runtime.
+     * Asset liveness is deliberately NOT judged here: the engine cache still hands back a reimported
+     * asset under its old uuid, so the caller resolves each `assetUuid` against the asset database.
+     */
+    listPrefabOverrides(nodeUuid: string) {
+        try {
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const instance = node._prefab && node._prefab.instance;
+            if (!instance) {
+                const root = findPrefabInstanceRoot(node);
+                const hint = root
+                    ? ` The enclosing prefab instance root is '${root.name}' (uuid ${root.uuid}) — pass that.`
+                    : ' This node is not part of a prefab instance.';
+                return { success: false, error: `Node '${node.name}' carries no PrefabInstance.${hint}` };
+            }
+            const targets = mapPrefabFileIds(node);
+            const overrides = (instance.propertyOverrides || []).map((o: any, index: number) => {
+                const localID: string[] = (o.targetInfo && o.targetInfo.localID) || [];
+                const propertyPath: string[] = o.propertyPath || [];
+                return {
+                    index,
+                    propertyPath: propertyPath.join('.'),
+                    propertyPathParts: propertyPath,
+                    localID,
+                    target: targets[localID[localID.length - 1]] || null,
+                    ...describeOverrideValue(o.value)
+                };
+            });
+            return {
+                success: true,
+                data: {
+                    nodeUuid: node.uuid,
+                    nodeName: node.name,
+                    prefabAsset: node._prefab.asset && node._prefab.asset._uuid,
+                    overrideCount: overrides.length,
+                    removedComponents: (instance.removedComponents || []).length,
+                    mountedChildren: (instance.mountedChildren || []).length,
+                    overrides
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Drop ONE CCPropertyOverrideInfo from a prefab instance, leaving every other override
+     * (transform, materials, designer-added components) untouched — which is what separates this
+     * from restore-prefab, which discards the lot. The record is spliced off the live
+     * `propertyOverrides` array and the editor serialises what remains on the next save, so the
+     * file's `__id__` numbering is regenerated by the serialiser rather than patched by hand.
+     * A propertyPath that matches several records (the same path on two child nodes) is refused
+     * with the candidates listed; disambiguate with `localID` or `index`.
+     */
+    removePrefabOverride(nodeUuid: string, propertyPath: string | string[], localID?: string, index?: number) {
+        try {
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const instance = node._prefab && node._prefab.instance;
+            if (!instance) return { success: false, error: `Node '${node.name}' carries no PrefabInstance` };
+            const all = instance.propertyOverrides || [];
+            const wanted = Array.isArray(propertyPath) ? propertyPath.join('.') : String(propertyPath);
+            const targets = mapPrefabFileIds(node);
+
+            const matches = all
+                .map((o: any, i: number) => ({ o, i }))
+                .filter(({ o, i }: any) => {
+                    if (typeof index === 'number' && i !== index) return false;
+                    if ((o.propertyPath || []).join('.') !== wanted) return false;
+                    if (!localID) return true;
+                    const chain = (o.targetInfo && o.targetInfo.localID) || [];
+                    return chain[chain.length - 1] === localID || chain.join('/') === localID;
+                });
+
+            if (!matches.length) {
+                const paths = all.map((o: any) => (o.propertyPath || []).join('.'));
+                return { success: false, error: `No override with propertyPath '${wanted}'${localID ? ` for localID '${localID}'` : ''} on '${node.name}'. Present: ${paths.join(', ') || '(none)'}` };
+            }
+            if (matches.length > 1) {
+                const candidates = matches.map(({ o, i }: any) => {
+                    const chain = (o.targetInfo && o.targetInfo.localID) || [];
+                    const t = targets[chain[chain.length - 1]];
+                    return `index ${i} (localID ${chain.join('/')}${t ? `, ${t.kind} ${t.path}` : ''})`;
+                });
+                return { success: false, error: `propertyPath '${wanted}' matches ${matches.length} overrides — pass localID or index. Candidates: ${candidates.join('; ')}` };
+            }
+
+            const { o, i } = matches[0];
+            const chain = (o.targetInfo && o.targetInfo.localID) || [];
+            const removed = {
+                index: i,
+                propertyPath: wanted,
+                localID: chain,
+                target: targets[chain[chain.length - 1]] || null,
+                ...describeOverrideValue(o.value)
+            };
+            instance.propertyOverrides = all.filter((_x: any, k: number) => k !== i);
+            return { success: true, data: { nodeUuid: node.uuid, removed, remaining: instance.propertyOverrides.length } };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
      * Set a MeshRenderer / SkinnedMeshRenderer's material slots from an array of Material asset uuids,
      * via the ENGINE (`renderer.setMaterial(mat, i)`). The editor `set-property` channel cannot write
      * the `materials` array from asset refs — the array-of-assets dump throws and NULLs the slot — so
@@ -777,6 +960,45 @@ export const methods: { [key: string]: (...any: any) => any } = {
             };
         } catch (error: any) {
             return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * What the editor's serializer emits for one component property. `EditorExtends.serialize` is
+     * the call the save path runs, so a property the Inspector dump shows as written and this one
+     * does not emit is a write that vanishes on save.
+     *
+     * The path is resolved through `__id__` back-references, because an inline @ccclass such as a
+     * TransformTweenSpec is serialized as its own entry rather than nested in the component — the
+     * same indirection that makes `exit.duration` unreadable from the component object alone.
+     */
+    serializedComponentValue(nodeUuid: string, cid: string, property: string) {
+        try {
+            const cc = require('cc');
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const component = (node.components || []).find((c: any) =>
+                c && (cc.js as any)._getClassId(c.constructor) === cid);
+            if (!component) {
+                return { success: false, error: `No component with cid '${cid}' on node ${nodeUuid}` };
+            }
+
+            const serialized = (globalThis as any).EditorExtends.serialize(component, { stringify: false });
+            const objects: any[] = Array.isArray(serialized) ? serialized : [serialized];
+
+            let current: any = objects[0];
+            for (const segment of property.split('.')) {
+                if (current && typeof current === 'object' && typeof current.__id__ === 'number') {
+                    current = objects[current.__id__];
+                }
+                if (!current || typeof current !== 'object' || !(segment in current)) {
+                    return { success: true, data: { found: false, value: undefined } };
+                }
+                current = current[segment];
+            }
+            return { success: true, data: { found: true, value: plainSerialized(objects, current, 0) } };
+        } catch (error: any) {
+            return { success: false, error: error.message || String(error) };
         }
     },
 
@@ -860,7 +1082,15 @@ export const methods: { [key: string]: (...any: any) => any } = {
                     continue;
                 }
                 const targetComp = findComponentByUuid(scene, uuid);
-                if (!targetComp) return { success: false, error: `Target uuid '${uuid}' matched no node and no component in the scene` };
+                if (!targetComp) {
+                    return {
+                        success: false,
+                        verified: false,
+                        error: `Target uuid '${uuid}' matched no node and no component in the open scene. `
+                            + 'A uuid captured before a scene reload or a script recompile can name nothing while still '
+                            + 'looking valid — pass targetPath instead and it is resolved against the scene as it is now.'
+                    };
+                }
                 resolved.push(wantsNode ? targetComp.node : targetComp);
             }
 
@@ -878,10 +1108,36 @@ export const methods: { [key: string]: (...any: any) => any } = {
             const current = owner[property];
             const shapeOk = Array.isArray(current) === assignArray;
             const actual = Array.isArray(current) ? current.map((v: any) => v && v.uuid) : [current && current.uuid];
-            const verified = shapeOk && actual.length === expected.length && expected.every((u, i) => u === actual[i]);
-            if (!verified) {
-                return { success: false, error: `Assignment did not stick: expected ${assignArray ? 'array' : 'single'} [${expected.join(', ')}], read back [${actual.join(', ')}]` };
+            const readBack = shapeOk && actual.length === expected.length && expected.every((u, i) => u === actual[i]);
+            if (!readBack) {
+                return {
+                    success: false,
+                    verified: false,
+                    error: `Assignment did not stick: expected ${assignArray ? 'array' : 'single'} [${expected.join(', ')}], read back [${actual.join(', ')}]`
+                };
             }
+
+            // Reading the uuid back off the object just assigned proves the setter ran, and nothing
+            // more. What produced the red "Missing Node" in the Inspector is a reference to an object
+            // that is no longer part of the open scene: it answers with its uuid, the read-back agrees
+            // with itself, and the serializer writes a uuid that resolves to nothing on load. So each
+            // assigned value is re-resolved from the scene root, and the tool reports verified:false
+            // when it cannot be found there — reporting success for a write into nowhere is the worst
+            // thing this tool can do.
+            const dangling = resolved
+                .filter((v: any) => v.isValid === false
+                    || !(findNodeByUuidOrNull(scene, v.uuid) || findComponentByUuid(scene, v.uuid)))
+                .map((v: any) => `${v.uuid} (${v.name || (v.node && v.node.name) || v.constructor && v.constructor.name})`);
+            if (dangling.length) {
+                return {
+                    success: false,
+                    verified: false,
+                    error: `'${property}' was assigned but the target is not reachable from the open scene: ${dangling.join(', ')}. `
+                        + 'It will serialise as a reference that resolves to nothing (a red "Missing Node" in the Inspector). '
+                        + 'Re-address the target by path.'
+                };
+            }
+
             return {
                 success: true,
                 data: {
@@ -894,9 +1150,33 @@ export const methods: { [key: string]: (...any: any) => any } = {
                     warning: !effectiveCtor && resolved[0] instanceof cc.Node
                         ? `No type metadata for '${property}' and it was empty — assigned the NODE. If a component was meant, pass targetComponentType.`
                         : undefined,
-                    verified
+                    verified: true
                 }
             };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Resolve scene paths to node uuids against the scene the editor has open right now.
+     *
+     * Engine-side because this must see the live tree, including branches under an inactive
+     * parent, and because resolving at call time is the entire point: a uuid captured earlier
+     * may already name nothing. One walk answers the whole batch, so a tool call carrying
+     * several paths costs one traversal.
+     */
+    resolveNodePaths(paths: any) {
+        try {
+            const wanted: string[] = Array.isArray(paths) ? paths : [paths];
+            const scene = requireActiveScene();
+            const index = buildPathIndex(scene);
+            const resolutions: Record<string, any> = {};
+            for (const path of wanted) {
+                if (typeof path !== 'string') continue;
+                resolutions[path] = resolvePathInIndex(index, path);
+            }
+            return { success: true, data: { sceneName: scene.name, nodeCount: index.canonical.size, resolutions } };
         } catch (error: any) {
             return { success: false, error: error.message };
         }
@@ -915,12 +1195,13 @@ export const methods: { [key: string]: (...any: any) => any } = {
             const nodes: any[] = [];
             const walk = (parent: any, prefix: string) => {
                 // Same-named siblings are common (crowds, bone rigs); without a suffix their paths
-                // collide and a path-keyed diff goes blind to one of them.
-                const seen = new Map<string, number>();
-                for (const child of parent.children || []) {
-                    const nth = (seen.get(child.name) || 0) + 1;
-                    seen.set(child.name, nth);
-                    const label = nth === 1 ? child.name : `${child.name}#${nth}`;
+                // collide and a path-keyed diff goes blind to one of them. `siblingLabels` is the
+                // same rule the path resolver indexes by, so every path printed here is one that
+                // can be handed straight back as `nodePath`.
+                const children = (parent.children || []).filter(Boolean);
+                const labels = siblingLabels(children);
+                children.forEach((child: any, i: number) => {
+                    const label = labels[i];
                     const path = prefix ? `${prefix}/${label}` : label;
                     const entry: any = {
                         uuid: child.uuid,
@@ -950,7 +1231,7 @@ export const methods: { [key: string]: (...any: any) => any } = {
                     }
                     nodes.push(entry);
                     walk(child, path);
-                }
+                });
             };
             walk(root, options.rootUuid ? root.name : '');
             return { success: true, data: { sceneName: scene.name, nodeCount: nodes.length, nodes } };
@@ -981,12 +1262,10 @@ export const methods: { [key: string]: (...any: any) => any } = {
             const owners: any[] = [];
             let scanned = 0;
             const walk = (parent: any, prefix: string) => {
-                const seen = new Map<string, number>();
-                for (const child of parent.children || []) {
-                    const nth = (seen.get(child.name) || 0) + 1;
-                    seen.set(child.name, nth);
-                    const label = nth === 1 ? child.name : `${child.name}#${nth}`;
-                    const path = prefix ? `${prefix}/${label}` : label;
+                const children = (parent.children || []).filter(Boolean);
+                const labels = siblingLabels(children);
+                children.forEach((child: any, i: number) => {
+                    const path = prefix ? `${prefix}/${labels[i]}` : labels[i];
                     scanned++;
                     if (includeInactive || child.activeInHierarchy) {
                         // match the registered name, the bare JS name and the `cc.`-qualified
@@ -1014,7 +1293,7 @@ export const methods: { [key: string]: (...any: any) => any } = {
                         }
                     }
                     walk(child, path);
-                }
+                });
             };
             walk(scene, '');
 

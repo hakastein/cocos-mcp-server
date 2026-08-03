@@ -19,6 +19,7 @@ import { SkeletalAnimationTools } from './tools/skeletal-animation-tools';
 import { BatchTools } from './tools/batch-tools';
 import { EcsTools } from './tools/ecs-tools';
 import { normalizeToolArgs } from './tool-args';
+import { augmentToolDefinition, applyResolvedPaths, requestedPaths, PathResolution } from './node-path';
 import { previewLogStore } from './preview-log-store';
 import { previewConsoleClient } from './preview-console-client';
 
@@ -28,8 +29,13 @@ export class MCPServer {
     private tools: Record<string, any> = {};
     private toolsList: ToolDefinition[] = [];
     private enabledTools: any[] = [];
-    /** Lazily built `{category}_{tool}` -> inputSchema index; tool definitions are static. */
-    private schemaIndex: Map<string, any> | null = null;
+    /**
+     * Lazily built `{category}_{tool}` -> definition index, holding the path-augmented copy of
+     * every tool. Definitions are static, and both the advertised list and argument validation
+     * must read the same one — a client offered `nodePath` by `tools/list` and then validated
+     * against the un-augmented schema would be rejected for supplying what it was told to.
+     */
+    private definitionIndex: Map<string, ToolDefinition> | null = null;
 
     constructor(settings: MCPServerSettings) {
         this.settings = settings;
@@ -156,9 +162,57 @@ export class MCPServer {
                 const pairs = normalized.renamed.map(r => `${r.from} -> ${r.to}`).join(', ');
                 console.log(`[MCPServer] ${toolName}: accepted alias argument(s) ${pairs}`);
             }
+
+            // Paths become uuids here and nowhere earlier. Resolving at dispatch is what makes a
+            // path immune to the churn a uuid suffers: whatever happened to the scene since the
+            // caller last looked at it, this resolution reads the tree as it is now.
+            const paths = requestedPaths(schema, args);
+            const lookup = paths.length
+                ? await this.resolveScenePaths(paths)
+                : { ok: true as const, resolutions: {} };
+            if (!lookup.ok) {
+                return { success: false, error: `${toolName}: ${lookup.error}` };
+            }
+            const applied = applyResolvedPaths(toolName, schema, args, lookup.resolutions);
+            if (!applied.ok) {
+                return { success: false, error: applied.error };
+            }
+            args = applied.args;
+            if (applied.resolved.length && this.settings.enableDebugLog) {
+                const spelled = applied.resolved
+                    .map(r => `${r.parameter}='${r.path}' -> ${r.uuid} (${r.matchedPath})`).join(', ');
+                console.log(`[MCPServer] ${toolName}: resolved ${spelled}`);
+            }
         }
 
         return await this.tools[category].execute(methodName, args);
+    }
+
+    /**
+     * Ask the scene script to turn paths into uuids. A transport failure is reported as such
+     * rather than degrading to "path not found": the two need different fixes, and conflating
+     * them sends the caller hunting through a scene that was never consulted.
+     */
+    private async resolveScenePaths(paths: string[]): Promise<
+        { ok: true; resolutions: Record<string, PathResolution> } | { ok: false; error: string }
+    > {
+        let result: any;
+        try {
+            result = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'resolveNodePaths',
+                args: [paths]
+            });
+        } catch (err: any) {
+            return {
+                ok: false,
+                error: `could not resolve node path(s) — the scene script did not answer: ${(err && err.message) || String(err)}`
+            };
+        }
+        if (!result || result.success !== true || !result.data) {
+            return { ok: false, error: `could not resolve node path(s): ${(result && result.error) || 'no scene is open'}` };
+        }
+        return { ok: true, resolutions: (result.data.resolutions || {}) as Record<string, PathResolution> };
     }
 
     /**
@@ -167,15 +221,26 @@ export class MCPServer {
      * which tools the current configuration exposes.
      */
     private schemaFor(category: string, methodName: string): any | undefined {
-        if (!this.schemaIndex) {
-            this.schemaIndex = new Map();
-            for (const [cat, toolSet] of Object.entries(this.tools)) {
+        const def = this.definitions().get(`${category}_${methodName}`);
+        return def && def.inputSchema;
+    }
+
+    /** `{category}_{tool}` -> the path-augmented definition, built once. */
+    private definitions(): Map<string, ToolDefinition> {
+        if (!this.definitionIndex) {
+            this.definitionIndex = new Map();
+            for (const [category, toolSet] of Object.entries(this.tools)) {
                 for (const tool of toolSet.getTools()) {
-                    this.schemaIndex.set(`${cat}_${tool.name}`, tool.inputSchema);
+                    const augmented = augmentToolDefinition(tool);
+                    this.definitionIndex.set(`${category}_${tool.name}`, {
+                        name: `${category}_${tool.name}`,
+                        description: augmented.description,
+                        inputSchema: augmented.inputSchema
+                    });
                 }
             }
         }
-        return this.schemaIndex.get(`${category}_${methodName}`);
+        return this.definitionIndex;
     }
 
     private rebuildToolsList(): void {
@@ -184,16 +249,9 @@ export class MCPServer {
             : null;
 
         this.toolsList = [];
-        for (const [category, toolSet] of Object.entries(this.tools)) {
-            for (const tool of toolSet.getTools()) {
-                const qualifiedName = `${category}_${tool.name}`;
-                if (!enabledSet || enabledSet.has(qualifiedName)) {
-                    this.toolsList.push({
-                        name: qualifiedName,
-                        description: tool.description,
-                        inputSchema: tool.inputSchema
-                    });
-                }
+        for (const definition of this.definitions().values()) {
+            if (!enabledSet || enabledSet.has(definition.name)) {
+                this.toolsList.push(definition);
             }
         }
     }

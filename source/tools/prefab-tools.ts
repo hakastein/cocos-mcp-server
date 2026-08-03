@@ -261,6 +261,57 @@ export class PrefabTools implements ToolExecutor {
                     },
                     required: ['prefabPath', 'componentType', 'property']
                 }
+            },
+            {
+                name: 'list_overrides',
+                description: 'Every property override on a prefab-instance node in the CURRENT SCENE: the property path, ' +
+                    'which node or component inside the instance it targets, the value, and for an asset reference whether ' +
+                    'that uuid still resolves in the asset database. Overrides are appended as the scene is edited and are ' +
+                    'never re-derived on save, so a record survives a reimport that revoked the sub-uuid it points at — the ' +
+                    'source of "The asset <uuid>@<sub> is missing!" at every preview run. Judge liveness by assetExists, ' +
+                    'not by the value shown: the engine cache still hands back reimported assets under their old uuid. ' +
+                    'Pass the INSTANCE ROOT node; the error names it if you pass a node inside the instance.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        nodeUuid: { type: 'string', description: 'UUID of the prefab instance root node in the open scene' }
+                    },
+                    required: ['nodeUuid']
+                }
+            },
+            {
+                name: 'remove_override',
+                description: 'Remove ONE property override from a prefab instance by property path, leaving every other ' +
+                    'override in place — unlike restore_prefab_node / sceneAdvanced_restore_prefab, which discard the whole ' +
+                    'set including the designer\'s transform, materials and added components. The record is spliced off the ' +
+                    'live instance and the editor reserialises the scene, so __id__ numbering is regenerated rather than ' +
+                    'hand-patched. Saves the scene unless save:false. When one path matches several records (the same ' +
+                    'property on two child nodes) the call is refused and lists the candidates — disambiguate with localID ' +
+                    'or index, both from list_overrides.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        nodeUuid: { type: 'string', description: 'UUID of the prefab instance root node in the open scene' },
+                        propertyPath: {
+                            type: 'string',
+                            description: 'Dot-joined path exactly as list_overrides reports it, e.g. "_clips.2" or "_lpos"'
+                        },
+                        localID: {
+                            type: 'string',
+                            description: 'targetInfo fileId of the node/component to disambiguate between same-path records'
+                        },
+                        index: {
+                            type: 'number',
+                            description: 'Override index from list_overrides — the other way to disambiguate'
+                        },
+                        save: {
+                            type: 'boolean',
+                            default: true,
+                            description: 'Save the scene after removing. Pass false to batch several removals and save once.'
+                        }
+                    },
+                    required: ['nodeUuid', 'propertyPath']
+                }
             }
         ];
     }
@@ -295,8 +346,75 @@ export class PrefabTools implements ToolExecutor {
                 return await this.removeComponentFromAsset(args);
             case 'set_component_property':
                 return await this.setComponentPropertyOnAsset(args);
+            case 'list_overrides':
+                return await this.listOverrides(args.nodeUuid);
+            case 'remove_override':
+                return await this.removeOverride(args);
             default:
                 throw new Error(`Unknown tool: ${toolName}`);
+        }
+    }
+
+    /**
+     * Property overrides of a scene prefab instance, each asset reference checked against the asset
+     * database. Liveness cannot be judged in the scene process: the engine keeps a reimported asset
+     * cached under the uuid it used to have, so a revoked sub-uuid still resolves to a live object
+     * there while the runtime loader — and every preview run — reports it missing.
+     */
+    private async listOverrides(nodeUuid: string): Promise<ToolResponse> {
+        const res = await this.runSceneMethod('listPrefabOverrides', [nodeUuid]);
+        if (!res.success || !res.data) return res;
+        const overrides: any[] = res.data.overrides || [];
+        const uuids = Array.from(new Set(overrides.map(o => o.assetUuid).filter(Boolean)));
+        const known = new Map<string, any>();
+        for (const uuid of uuids) {
+            try {
+                known.set(uuid, await Editor.Message.request('asset-db', 'query-asset-info', uuid));
+            } catch {
+                known.set(uuid, null);
+            }
+        }
+        let deadCount = 0;
+        for (const o of overrides) {
+            if (!o.assetUuid) continue;
+            const info = known.get(o.assetUuid);
+            o.assetExists = !!info;
+            o.assetUrl = info ? info.url : null;
+            if (!info) deadCount++;
+        }
+        return { success: true, data: { ...res.data, deadAssetRefs: deadCount } };
+    }
+
+    /** Remove one override record and, by default, save the scene so the record stops being serialised. */
+    private async removeOverride(args: any): Promise<ToolResponse> {
+        const res = await this.runSceneMethod('removePrefabOverride', [
+            args.nodeUuid, args.propertyPath, args.localID, args.index
+        ]);
+        if (!res.success) return res;
+        const save = args.save !== false;
+        if (!save) return { success: true, data: { ...res.data, saved: false } };
+        try {
+            await Editor.Message.request('scene', 'save-scene');
+        } catch (err: any) {
+            return { success: false, error: `Override removed but saving the scene failed: ${err.message || String(err)}` };
+        }
+        return { success: true, data: { ...res.data, saved: true } };
+    }
+
+    /** Route to a scene.ts method (engine context) and pass its ToolResponse straight through. */
+    private async runSceneMethod(method: string, args: any[]): Promise<ToolResponse> {
+        try {
+            const result: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method,
+                args
+            });
+            if (result && typeof result === 'object' && 'success' in result) {
+                return result as ToolResponse;
+            }
+            return { success: true, data: result };
+        } catch (err: any) {
+            return { success: false, error: err.message || String(err) };
         }
     }
 

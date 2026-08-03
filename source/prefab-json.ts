@@ -252,7 +252,64 @@ export function setComponentPropertyInPrefabData(
     if (componentId === undefined) {
         throw new Error(`Node '${node._name}' has ${matches.length} '${cid}' component(s); occurrence ${occurrence} is out of range`);
     }
-    const previous = out[componentId][property];
-    out[componentId] = { ...out[componentId], [property]: value };
+    const segments = property.split('.');
+    let ownerId = componentId;
+    let owner: any = { ...out[ownerId] };
+    out[ownerId] = owner;
+
+    for (let i = 0; i < segments.length - 1; i++) {
+        const step = owner[segments[i]];
+        if (!isSerializedRef(step)) {
+            throw new Error(
+                `'${segments.slice(0, i + 1).join('.')}' is not a nested block in this prefab `
+                + `(it holds ${JSON.stringify(step)}), so '${property}' has no target. A dotted path only `
+                + `resolves through a serializable @ccclass, which is stored as its own object.`
+            );
+        }
+        ownerId = step.__id__;
+        owner = { ...out[ownerId] };
+        out[ownerId] = owner;
+    }
+
+    const leaf = segments[segments.length - 1];
+    const previous = owner[leaf];
+
+    // An inline @ccclass lives in its own entry and is referenced by `{__id__}`. Overwriting the
+    // reference with the plain object would orphan that entry and leave a prefab the engine
+    // cannot load, so a block is patched member by member instead.
+    if (isSerializedRef(previous)) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            throw new Error(
+                `'${property}' is a nested block stored by reference; it takes an object of its members, `
+                + `got ${JSON.stringify(value)}`
+            );
+        }
+        const blockId = previous.__id__;
+        const block = out[blockId];
+        const unknown = Object.keys(value).filter((member) => !(member in block));
+        if (unknown.length) {
+            throw new Error(
+                `'${property}' (${block.__type__}) has no member(s) ${unknown.join(', ')}. `
+                + `Members: ${Object.keys(block).filter((k) => !k.startsWith('__')).join(', ')}`
+            );
+        }
+        out[blockId] = { ...block, ...value };
+        return { data: out, previous: block, componentId };
+    }
+
+    if (segments.length > 1 && !(leaf in owner)) {
+        throw new Error(
+            `'${property}' does not exist in this prefab — '${leaf}' is not a member of `
+            + `${owner.__type__ || 'the target block'}. Members: `
+            + `${Object.keys(owner).filter((k) => !k.startsWith('__')).join(', ')}`
+        );
+    }
+
+    owner[leaf] = value;
     return { data: out, previous, componentId };
+}
+
+/** `{"__id__": 12}` — how the serializer stores a nested object, an inline @ccclass included. */
+function isSerializedRef(value: any): value is { __id__: number } {
+    return !!value && typeof value === 'object' && typeof value.__id__ === 'number';
 }
