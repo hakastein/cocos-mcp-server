@@ -1,6 +1,7 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, NodeInfo } from '../types';
 import { ComponentTools } from './component-tools';
 import { ANY_VALUE_TYPE, coerceJsonArg } from '../json-arg';
+import { applyLinkageOptions, linkageVerdict, queryAssetType, verifyPrefabLinkage } from '../prefab-linkage';
 
 export class NodeTools implements ToolExecutor {
     private componentTools = new ComponentTools();
@@ -8,7 +9,11 @@ export class NodeTools implements ToolExecutor {
         return [
             {
                 name: 'create_node',
-                description: 'Create a new node in the scene. Supports creating empty nodes, nodes with components, or instantiating from assets (prefabs, etc.). IMPORTANT: You should always provide parentUuid to specify where to create the node.',
+                description: 'Create a new node in the scene: empty, with components, or instantiated from '
+                    + 'an asset. A node made from a prefab asset comes out as a LINKED instance and the '
+                    + 'result reports prefabLinked (live node) and prefabLinkagePersisted (what the editor '
+                    + 'serializer emits) separately, failing rather than returning a flat copy as a '
+                    + 'success. IMPORTANT: You should always provide parentUuid to specify where to create the node.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -46,7 +51,8 @@ export class NodeTools implements ToolExecutor {
                         },
                         unlinkPrefab: {
                             type: 'boolean',
-                            description: 'If true and creating from prefab, unlink from prefab to create a regular node',
+                            description: 'Produce a flat, unlinked copy instead of a prefab instance. The '
+                                + 'node stops tracking the asset and prefab edits no longer reach it.',
                             default: false
                         },
                         keepWorldTransform: {
@@ -403,12 +409,14 @@ export class NodeTools implements ToolExecutor {
                     createNodeOptions.parent = targetParentUuid;
                 }
 
-                // Instantiate from asset
+                // Instantiate from asset. create-node has to be told the asset's type or the editor
+                // strips the PrefabInfo and the result is a flat copy — see prefab-linkage.ts.
+                let assetType: string | null = null;
+                const unlinkPrefab = !!args.unlinkPrefab;
                 if (finalAssetUuid) {
                     createNodeOptions.assetUuid = finalAssetUuid;
-                    if (args.unlinkPrefab) {
-                        createNodeOptions.unlinkPrefab = true;
-                    }
+                    assetType = await queryAssetType(finalAssetUuid);
+                    applyLinkageOptions(createNodeOptions, assetType, unlinkPrefab);
                 }
 
                 // Add components
@@ -514,12 +522,20 @@ export class NodeTools implements ToolExecutor {
                     console.warn('Failed to get verification data:', err);
                 }
 
-                const successMessage = finalAssetUuid 
+                // A node made from a prefab asset is judged on its linkage, from both the live node
+                // and the serializer. A flat copy reported as a success is the failure this closes.
+                const linkage = finalAssetUuid
+                    ? await verifyPrefabLinkage(uuid)
+                    : null;
+                const verdict = linkage ? linkageVerdict(linkage, assetType, unlinkPrefab) : null;
+
+                const successMessage = finalAssetUuid
                     ? `Node '${args.name}' instantiated from asset successfully`
                     : `Node '${args.name}' created successfully`;
 
                 resolve({
-                    success: true,
+                    success: !verdict?.failed,
+                    ...(verdict?.failed ? { error: `Node '${args.name}' was created as an UNLINKED copy of the prefab` } : {}),
                     data: {
                         uuid: uuid,
                         name: args.name,
@@ -527,7 +543,11 @@ export class NodeTools implements ToolExecutor {
                         nodeType: args.nodeType || 'Node',
                         fromAsset: !!finalAssetUuid,
                         assetUuid: finalAssetUuid,
-                        message: successMessage
+                        ...(assetType ? { assetType } : {}),
+                        ...(verdict ? verdict.fields : {}),
+                        message: verdict?.failed
+                            ? `Node '${args.name}' was created as an UNLINKED copy of the prefab`
+                            : successMessage
                     },
                     verificationData: verificationData
                 });

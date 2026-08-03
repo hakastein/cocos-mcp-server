@@ -8,6 +8,7 @@ import {
     removeComponentFromPrefabData,
     setComponentPropertyInPrefabData
 } from '../prefab-json';
+import { applyLinkageOptions, linkageVerdict, queryAssetType, verifyPrefabLinkage } from '../prefab-linkage';
 
 export class PrefabTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -42,7 +43,12 @@ export class PrefabTools implements ToolExecutor {
             },
             {
                 name: 'instantiate_prefab',
-                description: 'Instantiate a prefab in the scene',
+                description: 'Instantiate a prefab in the scene as a LINKED instance: the node keeps a '
+                    + 'PrefabInfo, the saved scene carries its `_prefab` block, and later edits to the '
+                    + 'prefab asset propagate to it. Works for a .prefab and for an FBX/glTF model (its '
+                    + 'gltf-scene sub-asset). The result reports prefabLinked (live node) and '
+                    + 'prefabLinkagePersisted (what the editor serializer emits) separately, and fails '
+                    + 'rather than returning a flat copy as a success.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -62,6 +68,12 @@ export class PrefabTools implements ToolExecutor {
                                 y: { type: 'number' },
                                 z: { type: 'number' }
                             }
+                        },
+                        unlinkPrefab: {
+                            type: 'boolean',
+                            description: 'Produce a flat, unlinked copy instead of an instance. The node '
+                                + 'stops tracking the asset and prefab edits no longer reach it.',
+                            default: false
                         }
                     },
                     required: ['prefabPath']
@@ -619,32 +631,6 @@ export class PrefabTools implements ToolExecutor {
         });
     }
 
-    /**
-     * Verify whether a live scene node actually carries prefab linkage (a PrefabInfo on
-     * `node._prefab`). Runs in the scene process via evalInScene because linkage lives on the
-     * runtime node, not in the tool process. Returns {linked:false} on any error so callers
-     * degrade to an honest "not linked" rather than a false positive.
-     */
-    private async verifyPrefabLinkage(nodeUuid: string): Promise<{ linked: boolean; asset: string | null; fileId: string | null }> {
-        try {
-            const code = `(function(){` +
-                `function find(n,u){ if(n.uuid===u) return n; for(var i=0;i<n.children.length;i++){ var r=find(n.children[i],u); if(r) return r; } return null; }` +
-                `var node = find(cc.director.getScene(), ${JSON.stringify(nodeUuid)});` +
-                `var pi = node && node._prefab;` +
-                `return { linked: !!pi, asset: (pi && pi.asset) ? pi.asset._uuid : null, fileId: pi ? (pi.fileId || null) : null };` +
-                `})()`;
-            const res: any = await Editor.Message.request('scene', 'execute-scene-script', {
-                name: 'cocos-mcp-server',
-                method: 'evalInScene',
-                args: [code]
-            });
-            const r = res && res.data ? res.data.result : null;
-            if (r && typeof r === 'object') {
-                return { linked: !!r.linked, asset: r.asset || null, fileId: r.fileId || null };
-            }
-        } catch { /* fall through to unlinked */ }
-        return { linked: false, asset: null, fileId: null };
-    }
 
     private async instantiatePrefab(args: any): Promise<ToolResponse> {
         return new Promise(async (resolve) => {
@@ -677,7 +663,11 @@ export class PrefabTools implements ToolExecutor {
                     }
                 } catch { /* no meta / not a model container — instantiate the main asset */ }
 
-                const createNodeOptions: any = { assetUuid };
+                // Tell create-node what the asset is. Without it the editor strips the PrefabInfo
+                // and the instance is a flat copy — see prefab-linkage.ts.
+                const assetType = await queryAssetType(assetUuid);
+                const unlinkPrefab = !!args.unlinkPrefab;
+                const createNodeOptions: any = applyLinkageOptions({ assetUuid }, assetType, unlinkPrefab);
                 if (args.parentUuid) {
                     createNodeOptions.parent = args.parentUuid;
                 }
@@ -709,30 +699,28 @@ export class PrefabTools implements ToolExecutor {
                     return;
                 }
 
-                // HONEST linkage reporting. The editor establishes real prefab linkage
-                // (a PrefabInfo on the node, persisted as a `_prefab` block) for MODEL
-                // (gltf-scene) prefabs, but NOT for plain .prefab assets instantiated this
-                // way — those come out as an unlinked copy. Rather than claim "linkage
-                // established" unconditionally (the old lie), verify the live node and report
-                // what actually happened.
-                const linkage = await this.verifyPrefabLinkage(uuid);
+                // Linkage is reported, never assumed, and from both the live node and the
+                // serializer — reporting success for a flat copy is what kept this invisible.
+                const linkage = await verifyPrefabLinkage(uuid);
+                const verdict = linkageVerdict(linkage, assetType, unlinkPrefab);
                 resolve({
-                    success: true,
+                    success: !verdict.failed,
+                    ...(verdict.failed ? { error: 'Prefab instantiated as an UNLINKED copy' } : {}),
                     data: {
                         nodeUuid: uuid,
                         prefabPath: args.prefabPath,
                         assetUuid,
+                        assetType,
                         modelPrefab: usedModelPrefab,
                         modelSubId,
                         parentUuid: args.parentUuid,
                         position: args.position,
-                        prefabLinked: linkage.linked,
-                        message: linkage.linked
-                            ? (usedModelPrefab
-                                ? `Model prefab instantiated from FBX/glTF sub-asset (${assetUuid}); prefab linkage established.`
-                                : 'Prefab instantiated successfully and prefab linkage established.')
-                            : 'Prefab instantiated as an UNLINKED copy: the editor did not establish prefab linkage for this asset, so the node has no PrefabInfo, the saved scene will contain no `_prefab` block, and edits to the prefab asset will NOT propagate to this node. (Plain .prefab assets instantiated via this tool are not auto-linked — drive truly-prefab objects from a Prefab reference in code instead.)',
-                        ...(linkage.linked ? {} : { warning: 'prefab-linkage-not-established' })
+                        ...verdict.fields,
+                        message: verdict.failed
+                            ? 'Prefab instantiated as an UNLINKED copy.'
+                            : (usedModelPrefab
+                                ? `Model prefab instantiated from FBX/glTF sub-asset (${assetUuid}).`
+                                : 'Prefab instantiated successfully.')
                     }
                 });
             } catch (err: any) {
@@ -745,349 +733,6 @@ export class PrefabTools implements ToolExecutor {
         });
     }
 
-    /**
-     * Establish the link between a node and a prefab asset.
-     * Creates the necessary PrefabInfo and PrefabInstance structures.
-     */
-    private async establishPrefabConnection(nodeUuid: string, prefabUuid: string, prefabPath: string): Promise<void> {
-        try {
-            // Read the prefab file to get the root node's fileId
-            const prefabContent = await this.readPrefabFile(prefabPath);
-            if (!prefabContent || !prefabContent.data || !prefabContent.data.length) {
-                throw new Error('Unable to read prefab file content');
-            }
-
-            // Find the prefab root node's fileId (usually the second object, index 1)
-            const rootNode = prefabContent.data.find((item: any) => item.__type === 'cc.Node' && item._parent === null);
-            if (!rootNode || !rootNode._prefab) {
-                throw new Error('Unable to find prefab root node or its prefab info');
-            }
-
-            // Get the root node's PrefabInfo
-            const rootPrefabInfo = prefabContent.data[rootNode._prefab.__id__];
-            if (!rootPrefabInfo || rootPrefabInfo.__type !== 'cc.PrefabInfo') {
-                throw new Error('Unable to find PrefabInfo for the prefab root node');
-            }
-
-            const rootFileId = rootPrefabInfo.fileId;
-
-            // Use the scene API to establish the prefab connection
-            const prefabConnectionData = {
-                node: nodeUuid,
-                prefab: prefabUuid,
-                fileId: rootFileId
-            };
-
-            // Try multiple API methods to establish the prefab connection
-            const connectionMethods = [
-                () => Editor.Message.request('scene', 'connect-prefab-instance', prefabConnectionData),
-                () => Editor.Message.request('scene', 'set-prefab-connection', prefabConnectionData),
-                () => Editor.Message.request('scene', 'apply-prefab-link', prefabConnectionData)
-            ];
-
-            let connected = false;
-            for (const method of connectionMethods) {
-                try {
-                    await method();
-                    connected = true;
-                    break;
-                } catch (error) {
-                    console.warn('Prefab connection method failed, trying next method:', error);
-                }
-            }
-
-            if (!connected) {
-                // If all API methods fail, attempt to manually modify the scene data
-                console.warn('All prefab connection APIs failed, attempting manual connection');
-                await this.manuallyEstablishPrefabConnection(nodeUuid, prefabUuid, rootFileId);
-            }
-
-        } catch (error) {
-            console.error('Failed to establish prefab connection:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Manually establish the prefab connection (fallback when API methods fail).
-     */
-    private async manuallyEstablishPrefabConnection(nodeUuid: string, prefabUuid: string, rootFileId: string): Promise<void> {
-        try {
-            // Attempt to modify the node's _prefab property using the dump API
-            const prefabConnectionData = {
-                [nodeUuid]: {
-                    '_prefab': {
-                        '__uuid__': prefabUuid,
-                        '__expectedType__': 'cc.Prefab',
-                        'fileId': rootFileId
-                    }
-                }
-            };
-
-            await Editor.Message.request('scene', 'set-property', {
-                uuid: nodeUuid,
-                path: '_prefab',
-                dump: {
-                    value: {
-                        '__uuid__': prefabUuid,
-                        '__expectedType__': 'cc.Prefab'
-                    }
-                }
-            });
-
-        } catch (error) {
-            console.error('Manual prefab connection also failed:', error);
-            // Do not throw; the basic node creation already succeeded
-        }
-    }
-
-    /**
-     * Read the content of a prefab file.
-     */
-    private async readPrefabFile(prefabPath: string): Promise<any> {
-        try {
-            // Try to read the file content using the asset-db API
-            let assetContent: any;
-            try {
-                assetContent = await Editor.Message.request('asset-db', 'query-asset-info', prefabPath);
-                if (assetContent && assetContent.source) {
-                    // If a source path exists, read the file directly
-                    const fs = require('fs');
-                    const path = require('path');
-                    const fullPath = path.resolve(assetContent.source);
-                    const fileContent = fs.readFileSync(fullPath, 'utf8');
-                    return JSON.parse(fileContent);
-                }
-            } catch (error) {
-                console.warn('Reading via asset-db failed, trying alternative method:', error);
-            }
-
-            // Fallback: convert the db:// path to an actual file path
-            const fsPath = prefabPath.replace('db://assets/', 'assets/').replace('db://assets', 'assets');
-            const fs = require('fs');
-            const path = require('path');
-
-            // Try multiple possible project root paths
-            const possiblePaths = [
-                path.resolve(process.cwd(), '../../NewProject_3', fsPath),
-                path.resolve('/Users/lizhiyong/NewProject_3', fsPath),
-                path.resolve(fsPath),
-                // Also try a direct path if the file is in the root directory
-                path.resolve('/Users/lizhiyong/NewProject_3/assets', path.basename(fsPath))
-            ];
-
-            console.log('Attempting to read prefab file, path conversion:', {
-                originalPath: prefabPath,
-                fsPath: fsPath,
-                possiblePaths: possiblePaths
-            });
-
-            for (const fullPath of possiblePaths) {
-                try {
-                    console.log(`Checking path: ${fullPath}`);
-                    if (fs.existsSync(fullPath)) {
-                        console.log(`Found file: ${fullPath}`);
-                        const fileContent = fs.readFileSync(fullPath, 'utf8');
-                        const parsed = JSON.parse(fileContent);
-                        console.log('File parsed successfully, data structure:', {
-                            hasData: !!parsed.data,
-                            dataLength: parsed.data ? parsed.data.length : 0
-                        });
-                        return parsed;
-                    } else {
-                        console.log(`File does not exist: ${fullPath}`);
-                    }
-                } catch (readError) {
-                    console.warn(`Failed to read file ${fullPath}:`, readError);
-                }
-            }
-
-            throw new Error('Unable to find or read the prefab file');
-        } catch (error) {
-            console.error('Failed to read prefab file:', error);
-            throw error;
-        }
-    }
-
-    private async tryCreateNodeWithPrefab(args: any): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('asset-db', 'query-asset-info', args.prefabPath).then((assetInfo: any) => {
-                if (!assetInfo) {
-                    throw new Error('Prefab not found');
-                }
-
-                // Method 2: use create-node with a prefab asset
-                const createNodeOptions: any = {
-                    assetUuid: assetInfo.uuid
-                };
-
-                // Set parent node
-                if (args.parentUuid) {
-                    createNodeOptions.parent = args.parentUuid;
-                }
-
-                return Editor.Message.request('scene', 'create-node', createNodeOptions);
-            }).then((nodeUuid: string | string[]) => {
-                const uuid = Array.isArray(nodeUuid) ? nodeUuid[0] : nodeUuid;
-
-                // If a position was specified, set the node position
-                if (args.position && uuid) {
-                    Editor.Message.request('scene', 'set-property', {
-                        uuid: uuid,
-                        path: 'position',
-                        dump: { value: args.position }
-                    }).then(() => {
-                        resolve({
-                            success: true,
-                            data: {
-                                nodeUuid: uuid,
-                                prefabPath: args.prefabPath,
-                                position: args.position,
-                                message: 'Prefab instantiated successfully (fallback method) and position set'
-                            }
-                        });
-                    }).catch(() => {
-                        resolve({
-                            success: true,
-                            data: {
-                                nodeUuid: uuid,
-                                prefabPath: args.prefabPath,
-                                message: 'Prefab instantiated successfully (fallback method) but position could not be set'
-                            }
-                        });
-                    });
-                } else {
-                    resolve({
-                        success: true,
-                        data: {
-                            nodeUuid: uuid,
-                            prefabPath: args.prefabPath,
-                            message: 'Prefab instantiated successfully (fallback method)'
-                        }
-                    });
-                }
-            }).catch((err: Error) => {
-                resolve({
-                    success: false,
-                    error: `Fallback prefab instantiation method also failed: ${err.message}`
-                });
-            });
-        });
-    }
-
-    private async tryAlternativeInstantiateMethods(args: any): Promise<ToolResponse> {
-        return new Promise(async (resolve) => {
-            try {
-                // Method 1: try using create-node then apply the prefab
-                const assetInfo = await this.getAssetInfo(args.prefabPath);
-                if (!assetInfo) {
-                    resolve({ success: false, error: 'Unable to get prefab asset info' });
-                    return;
-                }
-
-                // Create an empty node
-                const createResult = await this.createNode(args.parentUuid, args.position);
-                if (!createResult.success) {
-                    resolve(createResult);
-                    return;
-                }
-
-                // Try to apply the prefab to the node
-                const applyResult = await this.applyPrefabToNode(createResult.data.nodeUuid, assetInfo.uuid);
-                if (applyResult.success) {
-                    resolve({
-                        success: true,
-                        data: {
-                            nodeUuid: createResult.data.nodeUuid,
-                            name: createResult.data.name,
-                            message: 'Prefab instantiated successfully (using alternative method)'
-                        }
-                    });
-                } else {
-                    resolve({
-                        success: false,
-                        error: 'Unable to apply prefab data to node',
-                        data: {
-                            nodeUuid: createResult.data.nodeUuid,
-                            message: 'Node created, but unable to apply prefab data'
-                        }
-                    });
-                }
-
-            } catch (error) {
-                resolve({ success: false, error: `Alternative instantiation method failed: ${error}` });
-            }
-        });
-    }
-
-    private async getAssetInfo(prefabPath: string): Promise<any> {
-        return new Promise((resolve) => {
-            Editor.Message.request('asset-db', 'query-asset-info', prefabPath).then((assetInfo: any) => {
-                resolve(assetInfo);
-            }).catch(() => {
-                resolve(null);
-            });
-        });
-    }
-
-    private async createNode(parentUuid?: string, position?: any): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            const createNodeOptions: any = {
-                name: 'PrefabInstance'
-            };
-
-            // Set parent node
-            if (parentUuid) {
-                createNodeOptions.parent = parentUuid;
-            }
-
-            // Set position
-            if (position) {
-                createNodeOptions.dump = {
-                    position: position
-                };
-            }
-
-            Editor.Message.request('scene', 'create-node', createNodeOptions).then((nodeUuid: string | string[]) => {
-                const uuid = Array.isArray(nodeUuid) ? nodeUuid[0] : nodeUuid;
-                resolve({
-                    success: true,
-                    data: {
-                        nodeUuid: uuid,
-                        name: 'PrefabInstance'
-                    }
-                });
-            }).catch((error: any) => {
-                resolve({ success: false, error: error.message || 'Failed to create node' });
-            });
-        });
-    }
-
-    private async applyPrefabToNode(nodeUuid: string, prefabUuid: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            // Try multiple methods to apply prefab data
-            const methods = [
-                () => Editor.Message.request('scene', 'apply-prefab', { node: nodeUuid, prefab: prefabUuid }),
-                () => Editor.Message.request('scene', 'set-prefab', { node: nodeUuid, prefab: prefabUuid }),
-                () => Editor.Message.request('scene', 'load-prefab-to-node', { node: nodeUuid, prefab: prefabUuid })
-            ];
-
-            const tryMethod = (index: number) => {
-                if (index >= methods.length) {
-                    resolve({ success: false, error: 'Unable to apply prefab data' });
-                    return;
-                }
-
-                methods[index]().then(() => {
-                    resolve({ success: true });
-                }).catch(() => {
-                    tryMethod(index + 1);
-                });
-            };
-
-            tryMethod(0);
-        });
-    }
 
     /**
      * Create a prefab using the asset-db API.
@@ -1231,7 +876,7 @@ export class PrefabTools implements ToolExecutor {
             // source node into a linked prefab instance (unlike dragging a node to the assets
             // panel in the editor). Verify and surface that, so callers are not misled into
             // thinking the source node now tracks the asset.
-            const srcLinkage = await this.verifyPrefabLinkage(args.nodeUuid);
+            const srcLinkage = await verifyPrefabLinkage(args.nodeUuid);
             return {
                 success: true,
                 data: {

@@ -1003,6 +1003,49 @@ export const methods: { [key: string]: (...any: any) => any } = {
     },
 
     /**
+     * Whether a node is a prefab INSTANCE, answered twice: from the live node, and from what the
+     * editor's serializer emits for it.
+     *
+     * The two can disagree, and only the second one predicts the saved scene: a PrefabInfo that
+     * exists on the runtime node but is not emitted is a link that dies at save time and takes the
+     * asset tracking with it. `EditorExtends.serialize` is the call the save path runs, so a node
+     * with no `cc.PrefabInfo` in its output is a node the `.scene` file will hold as a flat copy.
+     *
+     * Serializing a node walks its parent chain and therefore the whole scene — the same work one
+     * save does. That cost is why this runs once per creation and not per query.
+     */
+    nodePrefabLinkage(nodeUuid: string) {
+        try {
+            const scene = requireActiveScene();
+            const node = findNodeByUuid(scene, nodeUuid);
+            const live = node._prefab;
+            const report: Record<string, any> = {
+                linked: !!live,
+                asset: (live && live.asset) ? live.asset._uuid : null,
+                fileId: live ? (live.fileId || null) : null,
+                instanceRoot: !!(live && live.instance),
+                persistenceChecked: false,
+                persisted: false,
+                persistedAsset: null
+            };
+            try {
+                const serialized = (globalThis as any).EditorExtends.serialize(node, { stringify: false });
+                const objects: any[] = Array.isArray(serialized) ? serialized : [serialized];
+                const ref = objects[0] && objects[0]._prefab;
+                const info = (ref && typeof ref.__id__ === 'number') ? objects[ref.__id__] : null;
+                report.persistenceChecked = true;
+                report.persisted = !!(info && info.__type__ === 'cc.PrefabInfo');
+                report.persistedAsset = (report.persisted && info.asset) ? info.asset.__uuid__ : null;
+            } catch (error: any) {
+                report.persistenceReason = error.message || String(error);
+            }
+            return { success: true, data: report };
+        } catch (error: any) {
+            return { success: false, error: error.message || String(error) };
+        }
+    },
+
+    /**
      * Assign a cc.Node / Component reference (or an array of them) on the LIVE component.
      * The editor `set-property` channel needs the owning node's uuid plus Inspector metadata to guess
      * the field's component class, and hard-errors when a custom script has none; assigning on the
