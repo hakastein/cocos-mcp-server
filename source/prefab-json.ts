@@ -140,6 +140,25 @@ function componentIdsOnNode(data: any[], node: any, cid: string): number[] {
         .filter((id: number) => id >= 0 && data[id] && data[id].__type__ === cid);
 }
 
+/**
+ * Components a prefab mounts onto a nested prefab instance, in document order.
+ *
+ * They hang off `cc.MountedComponentsInfo.components` instead of any node's `_components`, and the
+ * node they land on carries no `_name` of its own — its name comes from the nested prefab — so no
+ * path or name reaches them. Indexing them across the prefab is the only address they have.
+ */
+export function mountedComponentIds(data: any[], cid: string): number[] {
+    const ids: number[] = [];
+    for (const entry of data) {
+        if (!entry || entry.__type__ !== 'cc.MountedComponentsInfo') continue;
+        for (const ref of entry.components || []) {
+            const id = ref && typeof ref.__id__ === 'number' ? ref.__id__ : -1;
+            if (id >= 0 && data[id] && data[id].__type__ === cid) ids.push(id);
+        }
+    }
+    return ids.sort((a, b) => a - b);
+}
+
 export function addComponentToPrefabData(
     data: any[],
     selector: NodeSelector,
@@ -180,7 +199,9 @@ export function remapIds(data: any[], remap: Map<number, number>): any[] {
     const rewrite = (value: any, key?: string): any => {
         if (Array.isArray(value)) {
             const mapped = value.map((v) => rewrite(v));
-            return key === '_components'
+            // `components` is MountedComponentsInfo's own set of mounted components — a set like
+            // `_components`, not a positional list, so a dropped ref is spliced rather than nulled.
+            return key === '_components' || key === 'components'
                 ? mapped.filter((v) => v !== DROPPED)
                 : mapped.map((v) => (v === DROPPED ? null : v));
         }
@@ -205,14 +226,29 @@ export function removeComponentFromPrefabData(
     data: any[],
     selector: NodeSelector,
     cid: string,
-    occurrence = 0
+    occurrence = 0,
+    mounted = false
 ): { data: any[]; removedFileId: string | null; removedIds: number[] } {
-    const { node } = findNodeEntry(data, selector);
-    const matches = componentIdsOnNode(data, node, cid);
-    if (!matches.length) throw new Error(`Node '${node._name}' has no '${cid}' component`);
-    const componentId = matches[occurrence];
-    if (componentId === undefined) {
-        throw new Error(`Node '${node._name}' has ${matches.length} '${cid}' component(s); occurrence ${occurrence} is out of range`);
+    let componentId: number | undefined;
+    if (mounted) {
+        const matches = mountedComponentIds(data, cid);
+        if (!matches.length) throw new Error(`No '${cid}' component is mounted onto a nested prefab instance here`);
+        componentId = matches[occurrence];
+        if (componentId === undefined) {
+            throw new Error(`${matches.length} mounted '${cid}' component(s) in this prefab; occurrence ${occurrence} is out of range`);
+        }
+    } else {
+        const { node } = findNodeEntry(data, selector);
+        const matches = componentIdsOnNode(data, node, cid);
+        if (!matches.length) {
+            const alsoMounted = mountedComponentIds(data, cid).length;
+            throw new Error(`Node '${node._name}' has no '${cid}' component`
+                + (alsoMounted ? `, but ${alsoMounted} of them are mounted onto nested prefab instances — pass mounted:true to reach those` : ''));
+        }
+        componentId = matches[occurrence];
+        if (componentId === undefined) {
+            throw new Error(`Node '${node._name}' has ${matches.length} '${cid}' component(s); occurrence ${occurrence} is out of range`);
+        }
     }
 
     const component = data[componentId];

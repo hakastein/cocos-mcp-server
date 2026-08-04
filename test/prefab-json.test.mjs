@@ -237,3 +237,56 @@ test('a block given a scalar is refused rather than orphaning the referenced ent
             nestedFixture(), { nodePath: 'Root' }, 'cc.MeshRenderer', 'exit', 0.25),
         /stored by reference; it takes an object of its members/);
 });
+
+/** A prefab that mounts two same-class components onto a nested prefab instance, the way a pad
+ *  mounts its progress bar: the mount target carries no `_name` of its own. */
+function mountedFixture() {
+    return [
+        { __type__: 'cc.Prefab', _name: 'Root', data: { __id__: 1 } },
+        {
+            __type__: 'cc.Node',
+            _name: 'Root',
+            _active: true,
+            _parent: null,
+            _children: [{ __id__: 2 }],
+            _components: [],
+            _prefab: { __id__: 3 }
+        },
+        { __type__: 'cc.Node', _parent: { __id__: 1 }, _children: [], _components: [], _prefab: { __id__: 4 } },
+        { __type__: 'cc.PrefabInfo', root: { __id__: 1 }, asset: { __id__: 0 }, fileId: 'bbbbbbbbbbbbbbbbbbbbbb' },
+        { __type__: 'cc.PrefabInfo', root: { __id__: 1 }, instance: { __id__: 5 }, fileId: 'cccccccccccccccccccccc' },
+        { __type__: 'cc.PrefabInstance', fileId: 'dddddddddddddddddddddd', mountedComponents: [{ __id__: 6 }] },
+        { __type__: 'cc.MountedComponentsInfo', targetInfo: null, components: [{ __id__: 7 }, { __id__: 9 }] },
+        { __type__: CID, node: { __id__: 2 }, _enabled: true, __prefab: { __id__: 8 }, axis: 2 },
+        { __type__: 'cc.CompPrefabInfo', fileId: 'eeeeeeeeeeeeeeeeeeeeee' },
+        { __type__: CID, node: { __id__: 2 }, _enabled: true, __prefab: { __id__: 10 }, axis: 2 },
+        { __type__: 'cc.CompPrefabInfo', fileId: 'ffffffffffffffffffffff' }
+    ];
+}
+
+test('a component mounted onto a nested prefab instance is removed by occurrence', () => {
+    const result = removeComponentFromPrefabData(mountedFixture(), {}, CID, 0, true);
+    assert.equal(result.removedFileId, 'eeeeeeeeeeeeeeeeeeeeee');
+    const survivors = result.data.filter((e) => e.__type__ === CID);
+    assert.equal(survivors.length, 1);
+});
+
+test('the surviving mount list is spliced, not left holding a null', () => {
+    const result = removeComponentFromPrefabData(mountedFixture(), {}, CID, 0, true);
+    const info = result.data.find((e) => e.__type__ === 'cc.MountedComponentsInfo');
+    assert.equal(info.components.length, 1);
+    assert.equal(result.data[info.components[0].__id__].__prefab.__id__ !== undefined, true);
+    assert.equal(result.data[result.data[info.components[0].__id__].__prefab.__id__].fileId, 'ffffffffffffffffffffff');
+});
+
+test('occurrence past the end of the mounted set is refused by count', () => {
+    assert.throws(
+        () => removeComponentFromPrefabData(mountedFixture(), {}, CID, 2, true),
+        /2 mounted .* component\(s\) in this prefab; occurrence 2 is out of range/);
+});
+
+test('a node miss says the class is mounted elsewhere instead of just "no component"', () => {
+    assert.throws(
+        () => removeComponentFromPrefabData(mountedFixture(), { nodePath: 'Root' }, CID, 0),
+        /mounted onto nested prefab instances — pass mounted:true/);
+});

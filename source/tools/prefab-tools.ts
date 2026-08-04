@@ -249,7 +249,8 @@ export class PrefabTools implements ToolExecutor {
                         scriptPath: { type: 'string', description: 'db:// path of the .ts for a script component (disambiguates)' },
                         nodePath: { type: 'string', description: 'Slash path inside the prefab (default: root node)' },
                         nodeName: { type: 'string', description: 'Node name inside the prefab; must be unique' },
-                        occurrence: { type: 'number', description: 'Which one to remove when the node has several of the class (default 0)' }
+                        occurrence: { type: 'number', description: 'Which one to remove when the node has several of the class (default 0)' },
+                        mounted: { type: 'boolean', description: 'Target a component MOUNTED onto a nested prefab instance. Those hang off MountedComponentsInfo instead of a node\'s _components, and the node they land on takes its name from the nested prefab, so nodePath/nodeName cannot reach them. With this on, occurrence indexes the mounted ones across the whole prefab in document order.' }
                     },
                     required: ['prefabPath', 'componentType']
                 }
@@ -533,7 +534,7 @@ export class PrefabTools implements ToolExecutor {
         try {
             const data = await this.readPrefabArray(args.prefabPath);
             const cid = await this.resolveComponentCid(args.componentType, args.scriptPath);
-            const result = removeComponentFromPrefabData(data, this.selectorOf(args), cid, args.occurrence || 0);
+            const result = removeComponentFromPrefabData(data, this.selectorOf(args), cid, args.occurrence || 0, args.mounted === true);
             await writeAssetJson(args.prefabPath, result.data);
             await Editor.Message.request('asset-db', 'refresh-asset', args.prefabPath);
             return {
