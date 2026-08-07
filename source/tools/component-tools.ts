@@ -291,9 +291,10 @@ export class ComponentTools implements ToolExecutor {
                     'NOT set_component_property — for any field whose type is a node or a component. targetUuid accepts ' +
                     'either a NODE uuid or a COMPONENT uuid (from scene_dump / get_components); the field\'s declared ' +
                     'type decides what gets assigned, and targetComponentType picks a specific component on a target ' +
-                    'node. Assigns on the live engine object, so it works for custom scripts with no Inspector ' +
-                    'metadata and for a second component of the same class (componentIndex). Fails loudly if the ' +
-                    'value does not read back.',
+                    'node. Works for custom scripts with no Inspector metadata and for a second component of the same ' +
+                    'class (componentIndex). The reported verdict is what the field will hold after the NEXT LOAD, not ' +
+                    'what reads back now: a reference pointing into a prefab instance lives in a target override rather ' +
+                    'than in the scene file, and success:false says so when one could not be recorded.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -339,25 +340,166 @@ export class ComponentTools implements ToolExecutor {
         }
     }
 
+    /** One `execute-scene-script` round trip; a transport failure comes back as a failed response. */
+    private async sceneScript(method: string, args: any[]): Promise<any> {
+        try {
+            return await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server', method, args
+            });
+        } catch (err: any) {
+            return { success: false, error: (err && err.message) || String(err) };
+        }
+    }
+
     /**
-     * Write a node/component reference on the live component via the scene script. The editor
-     * set-property channel needs Inspector metadata to infer the field's component class and
-     * hard-errors without it, and it can only address a component by its owning node.
+     * Write a node/component reference through the editor's own set-property channel, then report
+     * what the field will hold after the NEXT LOAD rather than what the setter just returned.
+     *
+     * The channel is the fix, not a preference. A reference pointing into a prefab instance is never
+     * written into the scene file: the serializer emits null for it and the editor records a
+     * cc.TargetOverrideInfo, which is replayed after load. Assigning on the live engine object —
+     * what this tool used to do — produces no such record, so the value read back perfectly, the
+     * tool reported verified:true, and the wiring was gone the next time the scene was opened.
+     *
+     * Direct assignment survives only as the fallback for a field the channel refuses, and the
+     * response names it. Either way the verdict comes from re-reading the scene.
      */
     private async setComponentRef(args: any): Promise<ToolResponse> {
-        try {
-            const result = await Editor.Message.request('scene', 'execute-scene-script', {
-                name: 'cocos-mcp-server',
-                method: 'setComponentReference',
-                args: [args]
-            });
-            if (result && typeof result === 'object' && 'success' in result) {
-                return result as ToolResponse;
-            }
-            return { success: true, data: result };
-        } catch (err: any) {
-            return { success: false, error: err.message || String(err) };
+        const componentType: string = args.componentType;
+        const plan = await this.sceneScript('resolveComponentReference', [args]);
+        if (!plan || plan.success !== true || !plan.data) {
+            return { success: false, error: (plan && plan.error) || 'the scene script did not answer' };
         }
+        const { componentIndex, property, isArray, dumpType, uuids, expected, assignedNames } = plan.data;
+        const path = `__comps__.${componentIndex}.${property}`;
+        const element = (uuid: string) => ({ type: dumpType, value: { uuid } });
+        const dump = isArray
+            ? { type: dumpType, isArray: true, value: (uuids as string[]).map(element) }
+            : element(uuids[0] || '');
+
+        let wroteVia = 'editor set-property';
+        try {
+            await Editor.Message.request('scene', 'set-property', { uuid: args.nodeUuid, path, dump });
+        } catch (err: any) {
+            const refusal = (err && err.message) || String(err);
+            const direct = await this.sceneScript('applyComponentReference', [args]);
+            if (!direct || direct.success !== true) {
+                return {
+                    success: false,
+                    error: `set-property refused '${path}' (${refusal}), and assigning on the live component failed too: `
+                        + `${(direct && direct.error) || 'the scene script did not answer'}`
+                };
+            }
+            wroteVia = `live assignment — set-property refused '${path}': ${refusal}`;
+        }
+
+        const pruned = await this.sceneScript('pruneComponentReferenceOverrides', [args.nodeUuid, componentIndex, property]);
+        const outcome = await this.sceneScript('componentReferenceOutcome', [args.nodeUuid, componentIndex, property]);
+        if (!outcome || outcome.success !== true || !outcome.data) {
+            return {
+                success: false,
+                error: `${componentType}.${property} was written but the scene could not be re-read to check it: `
+                    + `${(outcome && outcome.error) || 'the scene script did not answer'}. Treat the write as unproven.`
+            };
+        }
+        return this.reportReferenceWrite(componentType, plan.data, outcome.data, pruned, wroteVia, expected, assignedNames);
+    }
+
+    /**
+     * The verdict on a reference write: the live component first, then the value the next load
+     * builds. A live match with a projection mismatch is the whole reason this tool exists — the
+     * assignment happened and the link is not in anything that gets saved.
+     */
+    private reportReferenceWrite(
+        componentType: string,
+        plan: any,
+        outcome: any,
+        pruned: any,
+        wroteVia: string,
+        expected: Array<string | null>,
+        assignedNames: string[]
+    ): ToolResponse {
+        const { property, isArray } = plan;
+        const live: Array<string | null> = outcome.live;
+        const projected: Array<string | null> = outcome.projected;
+        const same = (a: Array<string | null>, b: Array<string | null>) =>
+            a.length === b.length && a.every((value, index) => value === b[index]);
+        const slot = (index: number) => (isArray ? `${property}.${index}` : property);
+        const label = (uuid: string | null, name?: string) =>
+            uuid ? `${uuid}${name ? ` (${name})` : ''}` : 'nothing';
+
+        if (!same(live, expected)) {
+            return {
+                success: false,
+                error: `${componentType}.${property} did not take the write: asked for `
+                    + `[${expected.map((u, i) => label(u, assignedNames[i])).join(', ')}], the component holds `
+                    + `[${live.map((u) => label(u)).join(', ')}].`,
+                data: { property, requested: expected, live, wroteVia }
+            };
+        }
+
+        // Neither the scene file nor the prefab asset could answer, so there is no verdict to give.
+        // Reporting a failure here would invent one; reporting success would hide that nobody looked.
+        if (outcome.projectionChecked === false) {
+            return {
+                success: true,
+                message: `Set ${componentType}.${property} (${expected.filter(Boolean).length} reference(s))`,
+                warning: `Whether ${componentType}.${property} survives a save was NOT established: the component is `
+                    + `inside a prefab instance whose asset could not be read, so what the next load rebuilds it from `
+                    + `is unknown. The live component holds what was asked for.`,
+                data: {
+                    property, assigned: expected, assignedKind: plan.assignedKind,
+                    wroteVia, verified: true, survivesReload: null
+                }
+            };
+        }
+
+        const differing: string[] = [];
+        for (let index = 0; index < Math.max(expected.length, projected.length); index++) {
+            if (expected[index] === projected[index]) continue;
+            differing.push(`${slot(index)}: assigned ${label(expected[index], assignedNames[index])}, `
+                + `the next load builds ${label(projected[index])}`);
+        }
+        if (differing.length) {
+            return {
+                success: false,
+                error: `${componentType}.${property} was assigned on the live component but will NOT survive a save. `
+                    + `${differing.join('; ')}. `
+                    + (outcome.componentInSceneGraph === false
+                        ? `'${componentType}' is on a node inside a prefab instance, so the scene file carries none of `
+                          + `its properties directly — a value there persists only as a prefab property override, which `
+                          + `this tool does not write. Set it in the Inspector, or on the prefab asset.`
+                        : `A reference into a prefab instance is carried by a target override, and none was recorded for `
+                          + `the slot(s) above, so the link exists on the live object only.`),
+                data: {
+                    property, requested: expected, live,
+                    serialized: outcome.serialized, projected,
+                    targetOverrides: outcome.overrides,
+                    componentInSceneGraph: outcome.componentInSceneGraph,
+                    wroteVia, verified: false, survivesReload: false
+                }
+            };
+        }
+
+        return {
+            success: true,
+            message: `Set ${componentType}.${property} (${expected.filter(Boolean).length} reference(s))`,
+            data: {
+                property,
+                assigned: expected,
+                assignedKind: plan.assignedKind,
+                assignedTypes: plan.assignedTypes,
+                declaredType: plan.declaredType,
+                inferredType: plan.inferredType,
+                warning: plan.warning,
+                wroteVia,
+                serialized: outcome.serialized,
+                targetOverrides: outcome.overrides,
+                prunedOverrides: (pruned && pruned.data && pruned.data.paths) || [],
+                verified: true,
+                survivesReload: true
+            }
+        };
     }
 
     /**
