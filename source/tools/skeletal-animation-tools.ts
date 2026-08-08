@@ -14,9 +14,10 @@ export class SkeletalAnimationTools implements ToolExecutor {
             {
                 name: 'add_socket',
                 description: 'Attach a SkeletalAnimation socket to a bone (keeps useBakedAnimation working). ' +
-                    'Creates the socket and its editor-managed target node (named "<lastBone> Socket", parented ' +
-                    'under the SkeletalAnimation node) and returns the target node uuid — parent a weapon/model ' +
-                    'under it so it follows the bone. Idempotent: reuses an existing socket for the same bone path.',
+                    'Creates the socket and its editor-managed target node (parented under the SkeletalAnimation ' +
+                    'node, named by targetName or else "<lastBone> Socket") and returns the target node uuid — ' +
+                    'parent a weapon/model under it so it follows the bone. Idempotent: reuses an existing socket ' +
+                    'for the same bone path, and renames its target when targetName asks for a different name.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -27,7 +28,13 @@ export class SkeletalAnimationTools implements ToolExecutor {
                         bonePath: {
                             type: 'string',
                             description: 'Full bone path from the SkeletalAnimation node, slash-separated by bone node ' +
-                                'names, e.g. "mixamorig_Hips/mixamorig_Spine/.../mixamorig_RightHand".'
+                                'names, e.g. "mixamorig_Hips/mixamorig_Spine/.../mixamorig_RightHand".',
+                            'x-aliases': ['path', 'bone', 'socketPath']
+                        },
+                        targetName: {
+                            type: 'string',
+                            description: 'Name for the created socket node. Omitted, it is "<lastBone> Socket" — the ' +
+                                'editor\'s own spelling, which a scene then refers to by a name nobody chose.'
                         }
                     },
                     required: ['nodeUuid', 'bonePath']
@@ -71,7 +78,7 @@ export class SkeletalAnimationTools implements ToolExecutor {
     async execute(toolName: string, args: any): Promise<ToolResponse> {
         switch (toolName) {
             case 'add_socket':
-                return await this.runSceneMethod('addSkeletalSocket', [args.nodeUuid, args.bonePath]);
+                return await this.runSceneMethod('addSkeletalSocket', [args.nodeUuid, args.bonePath, args.targetName]);
             case 'list_sockets':
                 return await this.runSceneMethod('listSkeletalSockets', [args.nodeUuid]);
             case 'remove_socket':

@@ -6,8 +6,12 @@ import {
     dumpPrefabTree,
     addComponentToPrefabData,
     removeComponentFromPrefabData,
-    setComponentPropertyInPrefabData
+    setComponentPropertyInPrefabData,
+    getComponentPropertyInPrefabData,
+    nodeRefInPrefabData,
+    componentRefInPrefabData
 } from '../prefab-json';
+import { DeclaredProperty, planPrefabValue } from '../prefab-value';
 import { applyLinkageOptions, linkageVerdict, queryAssetType, verifyPrefabLinkage } from '../prefab-linkage';
 
 export class PrefabTools implements ToolExecutor {
@@ -259,7 +263,12 @@ export class PrefabTools implements ToolExecutor {
                 name: 'set_component_property',
                 description: 'Write one serialized property on a component inside a .prefab ASSET on disk. Values go in ' +
                     'raw serialized form: scalars as-is, asset refs as {"__uuid__":"<uuid>"}, in-prefab node refs as ' +
-                    '{"__id__":<entry index>}. Returns the previous value.',
+                    '{"__id__":<entry index>}. Returns the previous value. A value that arrives as TEXT is read ' +
+                    'against the property\'s declared type instead of being stored verbatim: "true" on a boolean ' +
+                    'becomes true, "null" on a reference becomes null, a bare uuid on an asset field becomes ' +
+                    '{"__uuid__":…}, and a NODE PATH inside this prefab (e.g. "char_hero/mixamorig_Spine Socket") is ' +
+                    'resolved to the entry it names — which is how a node or component reference is set here. Text ' +
+                    'that cannot be read as the declared type is refused and nothing is written.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -270,6 +279,27 @@ export class PrefabTools implements ToolExecutor {
                         nodeName: { type: 'string', description: 'Node name inside the prefab; must be unique' },
                         property: { type: 'string', description: 'Serialized property name (e.g. _shadowCastingMode, damage)' },
                         value: { type: ANY_VALUE_TYPE, description: 'Serialized value to write' },
+                        occurrence: { type: 'number', description: 'Which component when the node has several of the class (default 0)' }
+                    },
+                    required: ['prefabPath', 'componentType', 'property']
+                }
+            },
+            {
+                name: 'get_component_property',
+                description: 'Read one serialized property off a component inside a .prefab ASSET on disk, as the ' +
+                    'file holds it — the counterpart of set_component_property, and the way to check a write ' +
+                    'landed with the type it was meant to have (a boolean stored as the string "true" is visible ' +
+                    'here and nowhere else). A `{"__id__"}` reference is reported with the node path and class it ' +
+                    'names, so a node reference reads as an address rather than an array index.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        prefabPath: { type: 'string', description: 'db:// path of the .prefab asset' },
+                        componentType: { type: 'string', description: 'Builtin type (cc.X) or script class name' },
+                        scriptPath: { type: 'string', description: 'db:// path of the .ts for a script component (disambiguates)' },
+                        nodePath: { type: 'string', description: 'Slash path inside the prefab (default: root node)' },
+                        nodeName: { type: 'string', description: 'Node name inside the prefab; must be unique' },
+                        property: { type: 'string', description: 'Serialized property name (e.g. _shadowCastingMode, damage)' },
                         occurrence: { type: 'number', description: 'Which component when the node has several of the class (default 0)' }
                     },
                     required: ['prefabPath', 'componentType', 'property']
@@ -359,6 +389,8 @@ export class PrefabTools implements ToolExecutor {
                 return await this.removeComponentFromAsset(args);
             case 'set_component_property':
                 return await this.setComponentPropertyOnAsset(args);
+            case 'get_component_property':
+                return await this.getComponentPropertyOnAsset(args);
             case 'list_overrides':
                 return await this.listOverrides(args.nodeUuid);
             case 'remove_override':
@@ -561,9 +593,33 @@ export class PrefabTools implements ToolExecutor {
             if (!('value' in args)) {
                 return { success: false, error: 'value is required — omitting it would delete the property from the prefab' };
             }
-            const { value, coerced } = coerceJsonArg(args.value);
+            const { value: given, coerced } = coerceJsonArg(args.value);
             const data = await this.readPrefabArray(args.prefabPath);
             const cid = await this.resolveComponentCid(args.componentType, args.scriptPath);
+
+            // What the property is has to be settled before the write: text that arrived for a
+            // boolean, a reference or an asset is not the value, and storing it would be a wrong
+            // write the tool could only report as a success.
+            const previous = getComponentPropertyInPrefabData(
+                data, this.selectorOf(args), cid, args.property, args.occurrence || 0
+            );
+            const declared = args.property.includes('.')
+                ? null
+                : await this.declaredProperty(args.componentType, args.property);
+            const plan = planPrefabValue(given, declared, previous, args.property);
+            if (plan.kind === 'error') return { success: false, error: plan.error };
+
+            let value: any;
+            let resolvedFrom: string | undefined;
+            if (plan.kind === 'reference') {
+                value = plan.expects === 'component' && plan.componentType
+                    ? componentRefInPrefabData(data, plan.nodePath, await this.resolveComponentCid(plan.componentType))
+                    : nodeRefInPrefabData(data, plan.nodePath);
+                resolvedFrom = plan.nodePath;
+            } else {
+                value = plan.value;
+            }
+
             const result = setComponentPropertyInPrefabData(
                 data, this.selectorOf(args), cid, args.property, value, args.occurrence || 0
             );
@@ -578,12 +634,70 @@ export class PrefabTools implements ToolExecutor {
                     previous: result.previous,
                     value,
                     componentId: result.componentId,
+                    declaredType: declared && declared.found ? (declared.ctorName || declared.scalar) : null,
+                    ...(resolvedFrom ? { resolvedFromPath: resolvedFrom } : {}),
+                    ...(plan.kind === 'value' && plan.coercedFrom
+                        ? { typedFrom: declared && declared.found ? 'the declared type' : 'the value already in the prefab' }
+                        : {}),
                     ...(coerced ? { valueParsedFromString: true } : {})
                 }
             };
         } catch (error: any) {
             return { success: false, error: error.message || String(error) };
         }
+    }
+
+    private async getComponentPropertyOnAsset(args: any): Promise<ToolResponse> {
+        try {
+            const data = await this.readPrefabArray(args.prefabPath);
+            const cid = await this.resolveComponentCid(args.componentType, args.scriptPath);
+            const value = getComponentPropertyInPrefabData(
+                data, this.selectorOf(args), cid, args.property, args.occurrence || 0
+            );
+            const declared = args.property.includes('.')
+                ? null
+                : await this.declaredProperty(args.componentType, args.property);
+            return {
+                success: true,
+                data: {
+                    prefabPath: args.prefabPath,
+                    componentType: args.componentType,
+                    property: args.property,
+                    exists: value !== undefined,
+                    value: value === undefined ? null : value,
+                    valueType: value === null ? 'null' : (Array.isArray(value) ? 'array' : typeof value),
+                    ...(this.describeRef(data, value) || {}),
+                    declaredType: declared && declared.found ? (declared.ctorName || declared.scalar) : null
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message || String(error) };
+        }
+    }
+
+    /** A `{__id__}` reference spelled as the node path and class it names, rather than an index. */
+    private describeRef(data: any[], value: any): { references: any } | null {
+        if (!value || typeof value !== 'object' || typeof value.__id__ !== 'number') return null;
+        const entry = data[value.__id__];
+        if (!entry) return { references: { entry: value.__id__, resolves: false } };
+        const node = dumpPrefabTree(data).find(
+            (n) => n.id === value.__id__ || n.components.some((comp) => comp.id === value.__id__)
+        );
+        const component = node && node.components.find((comp) => comp.id === value.__id__);
+        return {
+            references: {
+                entry: value.__id__,
+                type: entry.__type__,
+                nodePath: node ? node.path : null,
+                component: component ? component.type : null
+            }
+        };
+    }
+
+    /** The property's declared type from the scene process; null when it could not be asked. */
+    private async declaredProperty(componentType: string, property: string): Promise<DeclaredProperty | null> {
+        const res = await this.runSceneMethod('declaredComponentProperty', [componentType, property]);
+        return (res && res.success && res.data) ? (res.data as DeclaredProperty) : null;
     }
 
     private async getPrefabList(folder: string = 'db://assets'): Promise<ToolResponse> {

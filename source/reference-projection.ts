@@ -12,6 +12,49 @@
  * contradict.
  */
 
+/** A live node, reduced to what pairing it with its serialized entry needs. */
+export interface LiveNodeShape {
+    uuid: string;
+    children?: LiveNodeShape[];
+}
+
+/**
+ * Serialized entry index -> the live node it was written from.
+ *
+ * Most node entries carry `_id`, which IS the uuid, and need none of this. A prefab instance ROOT
+ * does not: its identity is the prefab plus the instance record, so the entry holds no uuid at all.
+ * A reference pointing at such a root is an ordinary `{__id__}` that survives a save perfectly,
+ * while a reader looking for a uuid finds none — which is how a write that worked was reported as
+ * "will NOT survive a save", for every reference into a prefab instance in the scene.
+ *
+ * The pairing is positional over `_children`, and self-checking: an entry that does carry an `_id`
+ * must equal the uuid of the node it was paired with, and a branch where the two disagree is
+ * abandoned. An index left unmapped means "not established", never "points at nothing".
+ */
+export function liveNodesBySerializedIndex(
+    objects: any[],
+    sceneIndex: number,
+    scene: LiveNodeShape
+): Map<number, LiveNodeShape> {
+    const map = new Map<number, LiveNodeShape>();
+    if (!objects[sceneIndex] || !scene) return map;
+
+    const walk = (index: number, live: LiveNodeShape) => {
+        const entry = objects[index];
+        if (!entry || !live) return;
+        if (typeof entry._id === 'string' && entry._id !== live.uuid) return;
+        map.set(index, live);
+        const children = entry._children || [];
+        const liveChildren = live.children || [];
+        for (let i = 0; i < children.length && i < liveChildren.length; i++) {
+            const ref = children[i];
+            if (ref && typeof ref.__id__ === 'number') walk(ref.__id__, liveChildren[i]);
+        }
+    };
+    walk(sceneIndex, scene);
+    return map;
+}
+
 /** One `cc.TargetOverrideInfo`, reduced to what decides the outcome. */
 export interface ReferenceOverride {
     /** Array index it writes; null for a single-reference field. */

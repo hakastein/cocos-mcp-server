@@ -16,7 +16,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { projectAfterReload, contradictedOverrides } from '../dist/reference-projection.js';
+import {
+    projectAfterReload, contradictedOverrides, liveNodesBySerializedIndex
+} from '../dist/reference-projection.js';
 
 const CARD_LEFT = 'f0rQc7yj9Gpqltg+gTq5ZA';      // inside the Packshot_v3 prefab instance
 const PACKSHOT_BUTTON = 'ebC5PeFPVI1oNkWKN6VSm1'; // inside the Packshot_v3 prefab instance
@@ -86,4 +88,60 @@ test('pruning what the field contradicts makes the projection agree with the fie
     assert.deepEqual([...doomed], [2, 3]);
     const kept = overrides.filter((_, position) => !doomed.has(position));
     assert.deepEqual(projectAfterReload(serialized, kept), live);
+});
+
+// ----- pairing serialized entries with the live nodes they came from ---------------------
+
+/**
+ * The scene as the serializer writes it: ordinary nodes carry `_id`, a prefab instance ROOT is a
+ * stub with none, and its subtree is not in the file at all. Shapes taken from the real scene where
+ * `WeedFlow.padCashShop` pointed at the `CashPad_Shop` instance root and was reported lost.
+ */
+function sceneObjects() {
+    return [
+        { __type__: 'cc.Scene', _id: 'scene-uuid', _children: [{ __id__: 1 }] },
+        { __type__: 'cc.Node', _id: 'points-uuid', _name: 'InteractivePoints', _children: [{ __id__: 2 }, { __id__: 3 }] },
+        { __type__: 'cc.Node', _id: 'plain-uuid', _name: 'Plain', _children: [] },
+        // the instance root: no _id, no _name, no _children — identity lives in _prefab
+        { __type__: 'cc.Node', _parent: { __id__: 1 }, _prefab: { __id__: 4 }, __editorExtras__: {} },
+        { __type__: 'cc.PrefabInfo', fileId: '338ErnAkRKXL/BWr6q9Lzw', instance: { __id__: 5 } },
+        { __type__: 'cc.PrefabInstance', fileId: 'b3OpleIppKkJ/NHDxzqUe+' }
+    ];
+}
+
+const liveScene = () => ({
+    uuid: 'scene-uuid',
+    children: [{
+        uuid: 'points-uuid',
+        children: [
+            { uuid: 'plain-uuid', children: [] },
+            { uuid: 'cashpad-uuid', children: [{ uuid: 'inside-the-instance', children: [] }] }
+        ]
+    }]
+});
+
+test('a prefab instance root, which serializes without a uuid, is still named', () => {
+    const map = liveNodesBySerializedIndex(sceneObjects(), 0, liveScene());
+    assert.equal(map.get(3).uuid, 'cashpad-uuid');
+    assert.equal(map.get(2).uuid, 'plain-uuid');
+    assert.equal(map.get(1).uuid, 'points-uuid');
+});
+
+test('nothing inside the instance is claimed — the file does not carry it', () => {
+    const map = liveNodesBySerializedIndex(sceneObjects(), 0, liveScene());
+    assert.equal([...map.values()].some(node => node.uuid === 'inside-the-instance'), false);
+});
+
+test('a branch whose _id disagrees with the node it paired with is abandoned', () => {
+    const objects = sceneObjects();
+    objects[2]._id = 'somebody-else';
+    const map = liveNodesBySerializedIndex(objects, 0, liveScene());
+    assert.equal(map.has(2), false);
+    // the sibling stub is unaffected: the walk drops the disagreeing branch, not the level
+    assert.equal(map.get(3).uuid, 'cashpad-uuid');
+});
+
+test('no scene entry, or no live scene, yields an empty map rather than a guess', () => {
+    assert.equal(liveNodesBySerializedIndex(sceneObjects(), -1, liveScene()).size, 0);
+    assert.equal(liveNodesBySerializedIndex(sceneObjects(), 0, null).size, 0);
 });

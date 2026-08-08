@@ -1,23 +1,7 @@
 import * as http from 'http';
 import * as url from 'url';
 import { MCPServerSettings, ServerStatus, ToolDefinition } from './types';
-import { SceneTools } from './tools/scene-tools';
-import { NodeTools } from './tools/node-tools';
-import { ComponentTools } from './tools/component-tools';
-import { PrefabTools } from './tools/prefab-tools';
-import { ProjectTools } from './tools/project-tools';
-import { DebugTools } from './tools/debug-tools';
-import { PreferencesTools } from './tools/preferences-tools';
-import { ServerTools } from './tools/server-tools';
-import { BroadcastTools } from './tools/broadcast-tools';
-import { SceneAdvancedTools } from './tools/scene-advanced-tools';
-import { SceneViewTools } from './tools/scene-view-tools';
-import { ReferenceImageTools } from './tools/reference-image-tools';
-import { AssetAdvancedTools } from './tools/asset-advanced-tools';
-import { ValidationTools } from './tools/validation-tools';
-import { SkeletalAnimationTools } from './tools/skeletal-animation-tools';
-import { BatchTools } from './tools/batch-tools';
-import { EcsTools } from './tools/ecs-tools';
+import { createToolInstances } from './tool-registry';
 import { normalizeToolArgs } from './tool-args';
 import { augmentToolDefinition, applyResolvedPaths, requestedPaths, PathResolution } from './node-path';
 import { previewLogStore } from './preview-log-store';
@@ -44,23 +28,7 @@ export class MCPServer {
 
     private initializeTools(): void {
         try {
-            this.tools.scene = new SceneTools();
-            this.tools.node = new NodeTools();
-            this.tools.component = new ComponentTools();
-            this.tools.prefab = new PrefabTools();
-            this.tools.project = new ProjectTools();
-            this.tools.debug = new DebugTools();
-            this.tools.preferences = new PreferencesTools();
-            this.tools.server = new ServerTools();
-            this.tools.broadcast = new BroadcastTools();
-            this.tools.sceneAdvanced = new SceneAdvancedTools();
-            this.tools.sceneView = new SceneViewTools();
-            this.tools.referenceImage = new ReferenceImageTools();
-            this.tools.assetAdvanced = new AssetAdvancedTools();
-            this.tools.validation = new ValidationTools();
-            this.tools.skeletalAnimation = new SkeletalAnimationTools();
-            this.tools.ecs = new EcsTools();
-            this.tools.batch = new BatchTools((toolName, args) => this.executeToolCall(toolName, args));
+            this.tools = createToolInstances((toolName, args) => this.executeToolCall(toolName, args));
         } catch (error) {
             console.error('[MCPServer] Failed to initialize tools:', error);
             throw error;

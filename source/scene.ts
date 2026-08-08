@@ -1,6 +1,8 @@
 import { join } from 'path';
 import { buildPathIndex, resolvePathInIndex, siblingLabels } from './node-path';
-import { ReferenceOverride, projectAfterReload, contradictedOverrides } from './reference-projection';
+import {
+    ReferenceOverride, projectAfterReload, contradictedOverrides, liveNodesBySerializedIndex
+} from './reference-projection';
 module.paths.push(join(Editor.App.path, 'node_modules'));
 
 // `cce` is the editor-side engine facade available in the scene process (it exposes
@@ -254,7 +256,7 @@ function prefabInstanceReferenceSlots(
 /**
  * A reference field as the next load builds it before target overrides are replayed: from the scene
  * file for an ordinary component, from the prefab asset plus its property overrides for one inside
- * an instance. `checked:false` means neither source could answer, and nothing is claimed.
+ * an instance. `checked:false` means a slot could not be read, and nothing is claimed about it.
  */
 function serializedReferenceSlots(
     scene: any, owner: any, property: string
@@ -268,14 +270,22 @@ function serializedReferenceSlots(
         const fromPrefab = prefabInstanceReferenceSlots(instanceRoot, owner, property);
         return { inSceneGraph: false, checked: fromPrefab.known, slots: fromPrefab.slots };
     }
-    const uuidOf = (value: any): string | null =>
-        (value && typeof value.__id__ === 'number') ? serializedEntityUuid(objects[value.__id__]) : null;
-    const raw = componentObject[property];
-    return {
-        inSceneGraph: true,
-        checked: true,
-        slots: Array.isArray(raw) ? raw.map(uuidOf) : [uuidOf(raw)]
+
+    const sceneIndex = objects.findIndex((entry) => entry && entry.__type__ === 'cc.Scene');
+    const nodeIndex = liveNodesBySerializedIndex(objects, sceneIndex, scene);
+    let unresolved = false;
+    const uuidOf = (value: any): string | null => {
+        if (!value || typeof value.__id__ !== 'number') return null;   // the field genuinely holds nothing
+        const direct = serializedEntityUuid(objects[value.__id__]);
+        if (direct) return direct;
+        const live = nodeIndex.get(value.__id__);
+        if (live) return live.uuid;
+        unresolved = true;
+        return null;
     };
+    const raw = componentObject[property];
+    const slots = Array.isArray(raw) ? raw.map(uuidOf) : [uuidOf(raw)];
+    return { inSceneGraph: true, checked: !unresolved, slots };
 }
 
 /**
@@ -543,6 +553,54 @@ function componentClassName(comp: any): string {
 }
 
 export const methods: { [key: string]: (...any: any) => any } = {
+    /**
+     * A component property's DECLARED type, read off the registered CCClass.
+     *
+     * The prefab tools rewrite a `.prefab` as JSON in the main process, where no class is loaded
+     * and the only clue to a property's type is the value already sitting in the file. That is
+     * enough to keep an existing boolean a boolean and no help at all for an unset reference, so
+     * this answers from the class itself. `found:false` for a class or property the registry does
+     * not know is a normal answer, not an error — plenty of fields carry no CCClass metadata.
+     */
+    declaredComponentProperty(componentType: string, property: string) {
+        const absent = { success: true, data: { found: false } };
+        try {
+            const cc = require('cc');
+            const klass = cc.js.getClassByName(componentType);
+            const attrOf = (cc.CCClass && cc.CCClass.attr) || (cc.Class && cc.Class.attr);
+            if (!klass || typeof attrOf !== 'function') return absent;
+            const attr = attrOf(klass, property);
+            if (!attr || !Object.keys(attr).length) return absent;
+
+            // The default is a factory for anything that is not a shared immutable — an array, a
+            // Vec3, a colour — so it has to be built to be read. Building it is what the engine
+            // itself does at instantiation.
+            let value = attr.default;
+            if (typeof value === 'function') {
+                try { value = value(); } catch { value = undefined; }
+            }
+            const ctor = attr.ctor || null;
+            const isArray = Array.isArray(value);
+            const scalar = (!ctor && !isArray && (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string'))
+                ? typeof value
+                : (attr.enumList ? 'number' : null);
+            return {
+                success: true,
+                data: {
+                    found: true,
+                    ctorName: ctor ? cc.js.getClassName(ctor) : null,
+                    isNode: ctorIsA(ctor, cc.Node),
+                    isComponent: ctorIsA(ctor, cc.Component),
+                    isAsset: ctorIsA(ctor, cc.Asset),
+                    isArray,
+                    scalar
+                }
+            };
+        } catch {
+            return absent;
+        }
+    },
+
     createNewScene() {
         try {
             const { director, Scene } = require('cc');
@@ -1105,7 +1163,7 @@ export const methods: { [key: string]: (...any: any) => any } = {
      * so it serialises them on the next scene/prefab save. Parent a weapon model under the returned
      * target uuid to hang it off the bone. Idempotent: an existing socket for `bonePath` is reused.
      */
-    addSkeletalSocket(nodeUuid: string, bonePath: string) {
+    addSkeletalSocket(nodeUuid: string, bonePath: string, targetName?: string) {
         try {
             const scene = requireActiveScene();
             const node = findNodeByUuid(scene, nodeUuid);
@@ -1117,10 +1175,13 @@ export const methods: { [key: string]: (...any: any) => any } = {
             if (!bonePath || typeof bonePath !== 'string') {
                 return { success: false, error: 'bonePath must be a non-empty bone path string (e.g. "mixamorig_Hips/.../mixamorig_RightHand")' };
             }
+            const wantedName = typeof targetName === 'string' && targetName.trim() ? targetName.trim() : null;
             // Reuse an existing socket for the same bone rather than stacking duplicates.
             const existing = (sk.sockets || []).find((s: any) => s && s.path === bonePath);
             if (existing && existing.target) {
-                return { success: true, data: { targetUuid: existing.target.uuid, targetName: existing.target.name, bonePath, created: false, socketCount: sk.sockets.length } };
+                const renamed = !!wantedName && existing.target.name !== wantedName;
+                if (renamed) existing.target.name = wantedName;
+                return { success: true, data: { targetUuid: existing.target.uuid, targetName: existing.target.name, bonePath, created: false, renamed, socketCount: sk.sockets.length } };
             }
             // Fail loudly if the bone path does not resolve to a joint under this node — otherwise
             // createSocket would silently make a dead target stuck at the node origin.
@@ -1130,7 +1191,8 @@ export const methods: { [key: string]: (...any: any) => any } = {
             }
             const target = sk.createSocket(bonePath);
             if (!target) return { success: false, error: `createSocket returned null for bone path '${bonePath}'` };
-            return { success: true, data: { targetUuid: target.uuid, targetName: target.name, bonePath, created: true, socketCount: sk.sockets.length } };
+            if (wantedName) target.name = wantedName;
+            return { success: true, data: { targetUuid: target.uuid, targetName: target.name, bonePath, created: true, renamed: !!wantedName, socketCount: sk.sockets.length } };
         } catch (error: any) {
             return { success: false, error: error.message };
         }

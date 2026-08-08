@@ -159,6 +159,24 @@ export function mountedComponentIds(data: any[], cid: string): number[] {
     return ids.sort((a, b) => a - b);
 }
 
+/**
+ * The entry a node reference must point at: a node inside this prefab, addressed by its path.
+ *
+ * A node reference cannot leave the prefab it is written in, so the path is resolved here rather
+ * than against the scene. `findNodeEntry` names the paths that do exist when one does not.
+ */
+export function nodeRefInPrefabData(data: any[], nodePath: string): { __id__: number } {
+    return { __id__: findNodeEntry(data, { nodePath }).id };
+}
+
+/** The entry a component reference must point at: one component of `cid` on the node at `nodePath`. */
+export function componentRefInPrefabData(data: any[], nodePath: string, cid: string): { __id__: number } {
+    const { node } = findNodeEntry(data, { nodePath });
+    const matches = componentIdsOnNode(data, node, cid);
+    if (!matches.length) throw new Error(`Node '${nodePath}' has no '${cid}' component in this prefab`);
+    return { __id__: matches[0] };
+}
+
 export function addComponentToPrefabData(
     data: any[],
     selector: NodeSelector,
@@ -272,6 +290,36 @@ export function removeComponentFromPrefabData(
     };
 }
 
+/**
+ * The value a property already holds, read without any of the write-time checks.
+ *
+ * The setter refuses several shapes outright — a dotted path through a scalar, a plain object over
+ * a nested block — so it cannot be used to look before writing, which is exactly what deciding a
+ * value's type needs. `undefined` means the property is not in the prefab.
+ */
+export function getComponentPropertyInPrefabData(
+    data: any[],
+    selector: NodeSelector,
+    cid: string,
+    property: string,
+    occurrence = 0
+): any {
+    const { node } = findNodeEntry(data, selector);
+    const matches = componentIdsOnNode(data, node, cid);
+    const componentId = matches[occurrence];
+    if (componentId === undefined) return undefined;
+
+    let owner: any = data[componentId];
+    const segments = property.split('.');
+    for (let i = 0; i < segments.length - 1; i++) {
+        const step = owner[segments[i]];
+        if (!isSerializedRef(step)) return undefined;
+        owner = data[step.__id__];
+        if (!owner) return undefined;
+    }
+    return owner[segments[segments.length - 1]];
+}
+
 export function setComponentPropertyInPrefabData(
     data: any[],
     selector: NodeSelector,
@@ -313,7 +361,11 @@ export function setComponentPropertyInPrefabData(
     // An inline @ccclass lives in its own entry and is referenced by `{__id__}`. Overwriting the
     // reference with the plain object would orphan that entry and leave a prefab the engine
     // cannot load, so a block is patched member by member instead.
-    if (isSerializedRef(previous)) {
+    //
+    // A node or component reference is stored the same way and is NOT that: repointing it, or
+    // clearing it to null, is an ordinary assignment. Which of the two `{__id__}` means is decided
+    // by the entry it names, never by the shape of the incoming value.
+    if (isSerializedRef(previous) && isInlineBlock(out[previous.__id__])) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) {
             throw new Error(
                 `'${property}' is a nested block stored by reference; it takes an object of its members, `
@@ -348,4 +400,17 @@ export function setComponentPropertyInPrefabData(
 /** `{"__id__": 12}` — how the serializer stores a nested object, an inline @ccclass included. */
 function isSerializedRef(value: any): value is { __id__: number } {
     return !!value && typeof value === 'object' && typeof value.__id__ === 'number';
+}
+
+/**
+ * An entry that is a VALUE the property owns, rather than something it points at.
+ *
+ * Nodes announce themselves by `__type__`; a component is anything carrying a `node` back-link,
+ * which is the same test the scene side uses. Everything else stored in its own entry is an inline
+ * serializable @ccclass — the block that must be patched member by member instead of replaced.
+ */
+function isInlineBlock(entry: any): boolean {
+    if (!entry || typeof entry !== 'object') return false;
+    if (entry.__type__ === 'cc.Node') return false;
+    return !Object.prototype.hasOwnProperty.call(entry, 'node');
 }

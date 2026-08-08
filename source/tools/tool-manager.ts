@@ -1,45 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { ToolConfig, ToolConfiguration, ToolManagerSettings } from '../types';
 import { readToolManagerSettings, saveToolManagerSettings, exportToolConfiguration, importToolConfiguration } from '../settings';
-import { SceneTools } from './scene-tools';
-import { NodeTools } from './node-tools';
-import { ComponentTools } from './component-tools';
-import { PrefabTools } from './prefab-tools';
-import { ProjectTools } from './project-tools';
-import { DebugTools } from './debug-tools';
-import { PreferencesTools } from './preferences-tools';
-import { ServerTools } from './server-tools';
-import { BroadcastTools } from './broadcast-tools';
-import { SceneAdvancedTools } from './scene-advanced-tools';
-import { SceneViewTools } from './scene-view-tools';
-import { ReferenceImageTools } from './reference-image-tools';
-import { AssetAdvancedTools } from './asset-advanced-tools';
-import { ValidationTools } from './validation-tools';
-import { SkeletalAnimationTools } from './skeletal-animation-tools';
-import { BatchTools } from './batch-tools';
-
-// Every category MCPServer registers must be listed here too: discoverTools() only sees these,
-// and a tool missing from a saved configuration is never advertised over MCP.
-function createToolInstances(): Record<string, any> {
-    return {
-        scene: new SceneTools(),
-        node: new NodeTools(),
-        component: new ComponentTools(),
-        prefab: new PrefabTools(),
-        project: new ProjectTools(),
-        debug: new DebugTools(),
-        preferences: new PreferencesTools(),
-        server: new ServerTools(),
-        broadcast: new BroadcastTools(),
-        sceneAdvanced: new SceneAdvancedTools(),
-        sceneView: new SceneViewTools(),
-        referenceImage: new ReferenceImageTools(),
-        assetAdvanced: new AssetAdvancedTools(),
-        validation: new ValidationTools(),
-        skeletalAnimation: new SkeletalAnimationTools(),
-        batch: new BatchTools()
-    };
-}
+import { createToolInstances } from '../tool-registry';
 
 export class ToolManager {
     private settings: ToolManagerSettings;
