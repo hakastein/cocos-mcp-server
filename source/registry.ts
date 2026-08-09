@@ -1,5 +1,6 @@
 import { fail, ToolResult } from './result';
 import { augmentToolDefinition, applyResolvedPaths, requestedPaths, PathResolution } from './node-path';
+import { closestSpelling } from './tool-args';
 import type { RegisteredTool } from './tool';
 import type { ToolContext } from './context';
 
@@ -18,6 +19,18 @@ function textOf(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+function advertise(tool: RegisteredTool): AdvertisedTool {
+    const declared = { name: tool.name, description: tool.description, inputSchema: tool.inputSchema };
+    const augmented = augmentToolDefinition(declared);
+    if (augmented !== declared) return augmented;
+
+    const underscore = tool.name.indexOf('_');
+    if (underscore === -1) return declared;
+    const bare = { ...declared, name: tool.name.slice(underscore + 1) };
+    const augmentedBare = augmentToolDefinition(bare);
+    return augmentedBare === bare ? declared : { ...augmentedBare, name: tool.name };
+}
+
 export class ToolRegistry {
     private readonly entries = new Map<string, RegistryEntry>();
 
@@ -26,26 +39,20 @@ export class ToolRegistry {
             if (this.entries.has(tool.name)) {
                 throw new Error(`ToolRegistry: duplicate tool name '${tool.name}'`);
             }
-            this.entries.set(tool.name, {
-                tool,
-                definition: augmentToolDefinition({
-                    name: tool.name,
-                    description: tool.description,
-                    inputSchema: tool.inputSchema
-                })
-            });
+            this.entries.set(tool.name, { tool, definition: advertise(tool) });
         }
     }
 
     list(): AdvertisedTool[] {
-        return Array.from(this.entries.values(), entry => entry.definition);
+        return Array.from(this.entries.values(), entry => ({ ...entry.definition }));
     }
 
     async invoke(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
         const entry = this.entries.get(name);
         if (!entry) {
+            const suggestion = closestSpelling(name, Array.from(this.entries.keys()));
             return fail('unknown_tool', `unknown tool '${name}'`,
-                `Known tools: ${Array.from(this.entries.keys()).join(', ')}`);
+                `${suggestion ? `Did you mean '${suggestion}'? ` : ''}Call tools/list for the tools this bridge offers.`);
         }
 
         const schema = entry.definition.inputSchema;

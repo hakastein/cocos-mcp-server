@@ -37,7 +37,8 @@ function applyAliases(
 }
 
 /** Called with its own signature from a function generic over the shape, tsc reports TS2589. */
-const toJsonSchema = zodToJsonSchema as unknown as (schema: unknown, options?: unknown) => object;
+const toJsonSchema = zodToJsonSchema as unknown as
+    (schema: z.ZodTypeAny, options?: { $refStrategy?: string }) => object;
 
 function jsonSchemaOf(schema: z.ZodTypeAny): object {
     return toJsonSchema(schema, { $refStrategy: 'none' });

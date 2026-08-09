@@ -65,13 +65,7 @@ function tokens(name: string): string[] {
         .filter(Boolean).map(t => t.toLowerCase());
 }
 
-/**
- * Closest declared parameter to `name`, if one is near enough to be worth suggesting.
- * Three ways to be near, in order of confidence: one name contains the other
- * (assetPath -> path), a component word nearly matches (assetUri -> url, via uri~url),
- * or the whole names are within a small edit distance.
- */
-function closest(name: string, candidates: string[]): string | undefined {
+export function closestSpelling(name: string, candidates: string[]): string | undefined {
     const lower = name.toLowerCase();
     const nameTokens = tokens(name);
     let best: string | undefined;
@@ -192,7 +186,7 @@ export function normalizeToolArgs(toolName: string, schema: any, raw: any): ArgR
         const unknown = Object.keys(args).filter(k => !declared.includes(k));
         const hints: string[] = [];
         for (const u of unknown) {
-            const suggestion = closest(u, absent);
+            const suggestion = closestSpelling(u, absent);
             if (suggestion) hints.push(`Did you mean '${suggestion}' instead of '${u}'?`);
         }
         const received = unknown.length

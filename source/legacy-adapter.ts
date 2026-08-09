@@ -21,20 +21,33 @@ function textOf(value: unknown): string | undefined {
     return JSON.stringify(value);
 }
 
-function toToolResult(raw: unknown): ToolResult {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ok(raw);
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
 
-    const record = raw as Record<string, unknown>;
-    if (record.success === false) {
-        return fail('legacy', textOf(record.error) ?? textOf(record.message)
-            ?? 'the tool reported a failure without naming it');
-    }
-    if (record.success !== true) return ok(raw);
+function legacyFailure(record: Record<string, unknown>): ToolResult {
+    const error = textOf(record.error);
+    const message = textOf(record.message);
+    const spelled = [error, message === error ? undefined : message].filter(Boolean).join(' — ');
+    return fail('legacy', spelled || 'the tool reported a failure without naming it',
+        textOf(record.instruction));
+}
 
+function legacySuccess(record: Record<string, unknown>): ToolResult {
     const { success, message, ...rest } = record;
-    const keys = Object.keys(rest);
-    const data = keys.length === 1 && keys[0] === 'data' ? rest.data : rest;
-    return typeof message === 'string' ? ok(data, message) : ok(data);
+    const { data, ...siblings } = rest;
+    const siblingCount = Object.keys(siblings).length;
+    const payload = isPlainObject(data) && siblingCount
+        ? { ...data, ...siblings }
+        : (siblingCount === 0 && 'data' in rest ? data : rest);
+    return typeof message === 'string' ? ok(payload, message) : ok(payload);
+}
+
+function toToolResult(raw: unknown): ToolResult {
+    if (!isPlainObject(raw)) return ok(raw);
+    if (raw.success === false) return legacyFailure(raw);
+    if (raw.success !== true) return ok(raw);
+    return legacySuccess(raw);
 }
 
 export function legacyTools(category: string, executor: LegacyExecutor): RegisteredTool[] {
