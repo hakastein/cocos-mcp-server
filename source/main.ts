@@ -6,6 +6,7 @@ import { PreviewLogStore } from './preview-log-store';
 import { ToolRegistry } from './registry';
 import { legacyTools } from './legacy-adapter';
 import { createToolInstances } from './tool-registry';
+import { sceneTools } from './tools-v2/scene';
 import { BridgeServer } from './server';
 import type { ToolContext } from './context';
 
@@ -31,9 +32,10 @@ function compose(settings: MCPServerSettings): BridgeServer {
         dispatch: (name, args) => registry.invoke(name, args, ctx),
         logs: previewLogs
     });
-    registry = new ToolRegistry(
-        Object.entries(executors).flatMap(([category, executor]) => legacyTools(category, executor))
-    );
+    registry = new ToolRegistry([
+        ...sceneTools,
+        ...Object.entries(executors).flatMap(([category, executor]) => legacyTools(category, executor))
+    ]);
 
     return new BridgeServer(registry, ctx, settings);
 }

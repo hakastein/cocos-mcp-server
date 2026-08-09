@@ -48,12 +48,6 @@ export interface ComponentInfo {
     properties?: Record<string, any>;
 }
 
-export interface SceneInfo {
-    name: string;
-    uuid: string;
-    path: string;
-}
-
 export interface PrefabInfo {
     name: string;
     uuid: string;

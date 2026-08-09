@@ -25,6 +25,15 @@ export class EditorRequestError extends Error {
     }
 }
 
+/** What `scene:query-node-tree` actually answers; the message map types it as the dump-shaped INode. */
+export interface SceneNodeTree {
+    uuid: string;
+    name?: string;
+    type?: string;
+    active?: boolean;
+    children?: SceneNodeTree[];
+}
+
 export class EditorApi {
     readonly scene = {
         querySceneReady: (): Promise<boolean> =>
@@ -33,8 +42,14 @@ export class EditorApi {
         queryDirty: (): Promise<boolean> =>
             this.request('scene', 'query-dirty'),
 
+        queryNodeTree: (): Promise<SceneNodeTree | null> =>
+            this.request('scene', 'query-node-tree') as unknown as Promise<SceneNodeTree | null>,
+
         openScene: (uuid: string): Promise<void> =>
             this.request('scene', 'open-scene', uuid),
+
+        softReload: (): Promise<void> =>
+            this.request('scene', 'soft-reload'),
 
         saveScene: (): Promise<string | undefined> =>
             this.request('scene', 'save-scene'),
@@ -64,6 +79,9 @@ export class EditorApi {
 
         queryPath: (uuidOrUrl: string): Promise<string | null> =>
             this.request('asset-db', 'query-path', uuidOrUrl),
+
+        queryUrl: (uuid: string): Promise<string | null> =>
+            this.request('asset-db', 'query-url', uuid),
 
         queryAssets: (pattern: string): Promise<EditorAssetInfo[]> =>
             this.request('asset-db', 'query-assets', { pattern }),

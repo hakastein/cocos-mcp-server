@@ -12,7 +12,7 @@ import { ProjectTools } from '../dist/tools/project-tools.js';
 import { NodeTools } from '../dist/tools/node-tools.js';
 import { ComponentTools } from '../dist/tools/component-tools.js';
 import { PrefabTools } from '../dist/tools/prefab-tools.js';
-import { SceneTools } from '../dist/tools/scene-tools.js';
+import { sceneTools } from '../dist/tools-v2/scene.js';
 
 const { normalizeToolArgs } = ta;
 
@@ -56,20 +56,35 @@ test('Bug 2: a genuinely wrong argument name is a validation error naming the ex
     assert.doesNotMatch(r.error, /startsWith/);
 });
 
-test('find_component_owners accepts the class name under the spellings a caller will guess', () => {
-    const schema = schemaOf(new SceneTools(), 'find_component_owners');
-    for (const spelling of ['className', 'componentType', 'component', 'type', 'name']) {
-        const r = normalizeToolArgs('scene_find_component_owners', schema, { [spelling]: 'CharacterAnimator' });
-        assert.equal(r.ok, true, `${spelling}: ${r.error}`);
-        assert.equal(r.args.className, 'CharacterAnimator');
+const sceneToolNamed = (name) => {
+    const tool = sceneTools.find(t => t.name === name);
+    assert.ok(tool, `tool ${name} not found`);
+    return tool;
+};
+
+const recordingSceneScript = () => ({
+    calls: [],
+    call(method, options) {
+        this.calls.push({ method, options });
+        return Promise.resolve({ success: true, data: { owners: [] } });
     }
 });
 
-test('find_component_owners without a class name is a clear validation error', () => {
-    const schema = schemaOf(new SceneTools(), 'find_component_owners');
-    const r = normalizeToolArgs('scene_find_component_owners', schema, {});
-    assert.equal(r.ok, false);
-    assert.match(r.error, /className/);
+test('find_component_owners accepts the class name under the spellings a caller will guess', async () => {
+    const tool = sceneToolNamed('scene_find_component_owners');
+    for (const spelling of ['className', 'componentType', 'component', 'type', 'name']) {
+        const sceneScript = recordingSceneScript();
+        const result = await tool.invoke({ [spelling]: 'CharacterAnimator' }, { sceneScript });
+        assert.equal(result.success, true, `${spelling}: ${JSON.stringify(result.error)}`);
+        assert.equal(sceneScript.calls[0].options.className, 'CharacterAnimator');
+    }
+});
+
+test('find_component_owners without a class name is a clear validation error', async () => {
+    const result = await sceneToolNamed('scene_find_component_owners').invoke({}, {});
+    assert.equal(result.success, false);
+    assert.equal(result.error.code, 'invalid_args');
+    assert.match(result.error.message, /className/);
 });
 
 test('every declared required argument is actually reachable under its own name', () => {
@@ -79,8 +94,7 @@ test('every declared required argument is actually reachable under its own name'
         project: new ProjectTools(),
         node: new NodeTools(),
         component: new ComponentTools(),
-        prefab: new PrefabTools(),
-        scene: new SceneTools()
+        prefab: new PrefabTools()
     };
     for (const [category, ex] of Object.entries(executors)) {
         for (const tool of ex.getTools()) {
@@ -105,7 +119,7 @@ test('every declared required argument is actually reachable under its own name'
 
 test('no two aliases on one tool collide with a different declared parameter', () => {
     const executors = [new DebugTools(), new ProjectTools(),
-                       new NodeTools(), new ComponentTools(), new PrefabTools(), new SceneTools()];
+                       new NodeTools(), new ComponentTools(), new PrefabTools()];
     for (const ex of executors) {
         for (const tool of ex.getTools()) {
             const props = (tool.inputSchema || {}).properties || {};

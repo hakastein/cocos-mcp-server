@@ -50,6 +50,13 @@ function describeIssues(error: z.ZodError): string {
         .join('; ');
 }
 
+/** `z.coerce.boolean()` is `Boolean(value)`, so a REST client's 'false' would arrive as true. */
+export const booleanArg = z.preprocess(value => {
+    if (value === 'true' || value === '1') return true;
+    if (value === 'false' || value === '0') return false;
+    return value;
+}, z.boolean());
+
 export function defineTool<S extends z.ZodRawShape>(def: ToolDefinition<S>): RegisteredTool {
     return {
         name: def.name,
@@ -60,7 +67,11 @@ export function defineTool<S extends z.ZodRawShape>(def: ToolDefinition<S>): Reg
             if (!parsed.success) {
                 return fail('invalid_args', `${def.name}: ${describeIssues(parsed.error)}`);
             }
-            return def.handler(parsed.data, ctx);
+            try {
+                return await def.handler(parsed.data, ctx);
+            } catch (error) {
+                return fail('tool_throw', error instanceof Error ? error.message : String(error));
+            }
         }
     };
 }

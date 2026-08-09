@@ -5,7 +5,7 @@ import { createToolInstances } from '../dist/tool-registry.js';
 
 test('the registry is the only category list, and it carries ecs', () => {
     const categories = Object.keys(createToolInstances());
-    const expected = ['scene', 'node', 'component', 'prefab', 'project', 'assetAdvanced', 'sceneAdvanced', 'skeletalAnimation', 'debug', 'ecs', 'batch'];
+    const expected = ['node', 'component', 'prefab', 'project', 'assetAdvanced', 'sceneAdvanced', 'skeletalAnimation', 'debug', 'ecs', 'batch'];
     assert.deepEqual(categories.sort(), expected.slice().sort());
 });
 

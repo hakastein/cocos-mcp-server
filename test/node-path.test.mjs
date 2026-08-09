@@ -12,7 +12,7 @@ import np from '../dist/node-path.js';
 import { ComponentTools } from '../dist/tools/component-tools.js';
 import { NodeTools } from '../dist/tools/node-tools.js';
 import { PrefabTools } from '../dist/tools/prefab-tools.js';
-import { SceneTools } from '../dist/tools/scene-tools.js';
+import { sceneTools } from '../dist/tools-v2/scene.js';
 
 const {
     augmentToolDefinition, applyResolvedPaths, requestedPaths, pairsOf,
@@ -164,25 +164,24 @@ test('a uuid that was optional stays optional', () => {
 });
 
 test('augmenting a tool with no node arguments changes nothing', () => {
-    const original = toolNamed(new SceneTools(), 'get_current_scene');
+    const original = sceneTools.find(tool => tool.name === 'scene_get_current_scene');
     assert.equal(augmentToolDefinition(original), original);
 });
 
 test('every tool taking a node uuid gains the matching path, across all categories', () => {
-    const executors = [new ComponentTools(), new NodeTools(), new PrefabTools(), new SceneTools()];
+    const executors = [new ComponentTools(), new NodeTools(), new PrefabTools()];
+    const surveyed = [...executors.flatMap(executor => executor.getTools()), ...sceneTools];
     let covered = 0;
-    for (const executor of executors) {
-        for (const tool of executor.getTools()) {
-            const uuidParams = Object.keys(tool.inputSchema?.properties || {})
-                .filter(n => ['nodeUuid', 'targetUuid', 'targetUuids', 'parentUuid', 'rootUuid'].includes(n));
-            if (!uuidParams.length) continue;
-            const augmented = augmentToolDefinition(tool);
-            for (const uuidParam of uuidParams) {
-                const pair = pairsOf(augmented.inputSchema).find(p => p.uuid === uuidParam);
-                assert.ok(pair, `${tool.name}: ${uuidParam} got no path spelling`);
-                assert.ok(augmented.inputSchema.properties[pair.path], `${tool.name}: ${pair.path} not declared`);
-                covered++;
-            }
+    for (const tool of surveyed) {
+        const uuidParams = Object.keys(tool.inputSchema?.properties || {})
+            .filter(n => ['nodeUuid', 'targetUuid', 'targetUuids', 'parentUuid', 'rootUuid'].includes(n));
+        if (!uuidParams.length) continue;
+        const augmented = augmentToolDefinition(tool);
+        for (const uuidParam of uuidParams) {
+            const pair = pairsOf(augmented.inputSchema).find(p => p.uuid === uuidParam);
+            assert.ok(pair, `${tool.name}: ${uuidParam} got no path spelling`);
+            assert.ok(augmented.inputSchema.properties[pair.path], `${tool.name}: ${pair.path} not declared`);
+            covered++;
         }
     }
     assert.ok(covered > 15, `the loop found almost nothing to cover (${covered}) — the survey is broken, not the feature`);

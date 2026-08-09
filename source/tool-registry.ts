@@ -1,4 +1,3 @@
-import { SceneTools } from './tools/scene-tools';
 import { NodeTools } from './tools/node-tools';
 import { ComponentTools } from './tools/component-tools';
 import { PrefabTools } from './tools/prefab-tools';
@@ -20,7 +19,6 @@ export interface ToolInstanceDeps {
 
 export function createToolInstances(deps: ToolInstanceDeps = {}): Record<string, any> {
     return {
-        scene: new SceneTools(),
         node: new NodeTools(),
         component: new ComponentTools(),
         prefab: new PrefabTools(),
