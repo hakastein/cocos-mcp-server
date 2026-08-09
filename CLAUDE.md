@@ -38,7 +38,7 @@ scene.ts (scene script context)    ← direct access to cc.* engine APIs
 |------|------|
 | `source/main.ts` | Extension entry: `load`/`unload` lifecycle, message handler registration |
 | `source/mcp-server.ts` | HTTP server, JSON-RPC 2.0 protocol, tool routing (~1200 lines) |
-| `source/scene.ts` | Scene script: engine API calls, node/component manipulation |
+| `source/scene/` | Scene script: engine API calls, node/component manipulation; `index.ts` assembles `SceneMethods` |
 | `source/settings.ts` | JSON settings persistence to `{project}/settings/` |
 | `source/types/index.ts` | Shared TypeScript interfaces (`ToolDefinition`, `ToolResponse`, `ToolExecutor`) |
 | `source/tools/tool-manager.ts` | Per-tool enable/disable configuration |

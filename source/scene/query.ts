@@ -183,6 +183,8 @@ export const evalInScene: SceneMethods['evalInScene'] = async (code, timeoutMs =
     }
 };
 
+// Save writes exactly the output of `EditorExtends.serialize`, so whatever this call omits is
+// absent from the `.scene` file too — the Inspector dump can still show it.
 export const serializedComponentValue: SceneMethods['serializedComponentValue'] = (nodeUuid, cid, property) => {
     try {
         const cc = require('cc');

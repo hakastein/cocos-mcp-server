@@ -1,6 +1,3 @@
-import { join } from 'path';
-module.paths.push(join(Editor.App.path, 'node_modules'));
-
 // Helpers shared across scene script methods
 export function getScene(): any {
     const { director } = require('cc');
