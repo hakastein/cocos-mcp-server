@@ -4,10 +4,12 @@ import * as path from 'path';
 import { searchLines } from '../log-search';
 import { ALIAS_KEY } from '../tool-args';
 import { groupLogLines, filterEntries, parseSince, ProjectLogEntry } from '../project-log';
-import { previewLogStore } from '../preview-log-store';
+import type { PreviewLogStore } from '../preview-log-store';
 import { DEFAULT_PORT } from '../settings';
 
 export class DebugTools implements ToolExecutor {
+    constructor(private readonly logs?: PreviewLogStore) {}
+
     getTools(): ToolDefinition[] {
         return [
             {
@@ -190,6 +192,8 @@ export class DebugTools implements ToolExecutor {
     }
 
     private getPreviewLogs(args: any = {}): ToolResponse {
+        if (!this.logs) return { success: false, error: 'Preview log buffer is unavailable in this context' };
+
         let sinceMs: number | undefined;
         try {
             if (args.since !== undefined && args.since !== null && args.since !== '') {
@@ -199,7 +203,7 @@ export class DebugTools implements ToolExecutor {
             return { success: false, error: err.message };
         }
 
-        const result = previewLogStore.query({
+        const result = this.logs.query({
             limit: args.limit,
             minLevel: args.minLevel,
             level: args.level,
@@ -208,7 +212,7 @@ export class DebugTools implements ToolExecutor {
             contains: args.contains,
             session: args.session
         });
-        const stats = previewLogStore.stats();
+        const stats = this.logs.stats();
 
         // Empty with nothing ever received is the one case a caller must not read as "the game
         // logged nothing" — it almost always means the page never loaded the forwarding script.
@@ -235,7 +239,8 @@ export class DebugTools implements ToolExecutor {
     }
 
     private clearPreviewLogs(): ToolResponse {
-        previewLogStore.clear();
+        if (!this.logs) return { success: false, error: 'Preview log buffer is unavailable in this context' };
+        this.logs.clear();
         return { success: true, message: 'Preview log buffer cleared' };
     }
 

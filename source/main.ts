@@ -1,8 +1,42 @@
-import { MCPServer } from './mcp-server';
 import { readSettings, saveSettings } from './settings';
 import { MCPServerSettings } from './types';
+import { EditorApi } from './editor-api';
+import { SceneScriptClient } from './scene-script-client';
+import { PreviewLogStore } from './preview-log-store';
+import { ToolRegistry } from './registry';
+import { legacyTools } from './legacy-adapter';
+import { createToolInstances } from './tool-registry';
+import { BridgeServer } from './server';
+import type { ToolContext } from './context';
 
-let mcpServer: MCPServer | null = null;
+/** Outlives every server instance, so a settings change does not discard buffered preview output. */
+const previewLogs = new PreviewLogStore();
+
+let settings: MCPServerSettings = readSettings();
+let server: BridgeServer | null = null;
+
+function compose(settings: MCPServerSettings): BridgeServer {
+    const editor = new EditorApi();
+    const ctx: ToolContext = {
+        editor,
+        sceneScript: new SceneScriptClient(editor),
+        logs: previewLogs,
+        settings
+    };
+
+    // The batch tool dispatches back into the registry that owns it. Nothing calls the
+    // dispatcher before `registry` is assigned, two lines down.
+    let registry: ToolRegistry;
+    const executors = createToolInstances({
+        dispatch: (name, args) => registry.invoke(name, args, ctx),
+        logs: previewLogs
+    });
+    registry = new ToolRegistry(
+        Object.entries(executors).flatMap(([category, executor]) => legacyTools(category, executor))
+    );
+
+    return new BridgeServer(registry, ctx, settings);
+}
 
 export const methods: { [key: string]: (...any: any) => any } = {
     openPanel() {
@@ -10,53 +44,53 @@ export const methods: { [key: string]: (...any: any) => any } = {
     },
 
     async startServer() {
-        if (!mcpServer) {
-            console.warn('[MCP] mcpServer is not initialized');
+        if (!server) {
+            console.warn('[MCP] server is not initialized');
             return;
         }
-        await mcpServer.start();
+        await server.start();
     },
 
     async stopServer() {
-        if (!mcpServer) {
-            console.warn('[MCP] mcpServer is not initialized');
+        if (!server) {
+            console.warn('[MCP] server is not initialized');
             return;
         }
-        mcpServer.stop();
+        await server.stop();
     },
 
     getServerStatus() {
-        const status = mcpServer ? mcpServer.getStatus() : { running: false, port: 0, clients: 0 };
-        const settings = mcpServer ? mcpServer.getSettings() : readSettings();
+        const status = server ? server.getStatus() : { running: false, port: settings.port, clients: 0 };
         return { ...status, settings };
     },
 
-    updateSettings(settings: MCPServerSettings) {
-        saveSettings(settings);
-        if (mcpServer) {
-            mcpServer.stop();
+    async updateSettings(next: MCPServerSettings) {
+        saveSettings(next);
+        settings = next;
+        if (server) {
+            await server.stop();
         }
-        mcpServer = new MCPServer(settings);
-        mcpServer.start();
+        server = compose(next);
+        await server.start();
     }
 };
 
 export function load() {
     console.log('[MCP] Extension loaded');
 
-    const settings = readSettings();
-    mcpServer = new MCPServer(settings);
+    settings = readSettings();
+    server = compose(settings);
 
     if (settings.autoStart) {
-        mcpServer.start().catch(err => {
+        server.start().catch(err => {
             console.error('[MCP] Auto-start failed:', err);
         });
     }
 }
 
-export function unload() {
-    if (mcpServer) {
-        mcpServer.stop();
-        mcpServer = null;
+export async function unload() {
+    if (server) {
+        await server.stop();
+        server = null;
     }
 }

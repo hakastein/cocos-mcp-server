@@ -14,21 +14,27 @@ npm run build        # Compile TypeScript → dist/
 npm run watch        # Watch mode (auto-recompile on changes)
 ```
 
-There is no test framework. Manual testing is done by installing the extension in Cocos Creator and connecting to `http://127.0.0.1:3000/mcp`. The `GET /api/tools` endpoint lists all available tools with curl examples.
+`npm test` compiles and runs `node --test` over `test/` — pure functions only. Everything that
+touches the editor is verified by installing the extension in Cocos Creator and driving
+`http://127.0.0.1:4000/mcp`.
 
 ## Architecture
 
 The system has four distinct execution contexts that communicate via Cocos Creator's IPC:
 
 ```
-AI Client (HTTP JSON-RPC 2.0)
+AI Client (MCP Streamable HTTP)
     ↓ POST /mcp
-MCPServer (mcp-server.ts)          ← runs in extension process
-    ↓ Editor.Message IPC
-main.ts (extension main process)   ← handles lifecycle & settings
-    ↓ execute-scene-script
-scene.ts (scene script context)    ← direct access to cc.* engine APIs
+BridgeServer (server.ts)           ← @modelcontextprotocol/sdk Server + transport
+    ↓ ToolRegistry.invoke(name, args, ctx)
+tool executors                     ← run in extension process
+    ↓ Editor.Message IPC (EditorApi / SceneScriptClient)
+scene/ (scene script context)      ← direct access to cc.* engine APIs
 ```
+
+`main.ts` is the composition root and the only place that constructs anything: settings →
+`EditorApi` → `SceneScriptClient` → `PreviewLogStore` → `ToolContext` → `ToolRegistry` →
+`BridgeServer`.
 
 **Key constraint:** Engine APIs (`cc.*`) can only be called from `scene.ts` (the scene script context). Everything else runs in the extension process. Tools that need engine access must route through `Editor.Message` → `execute-scene-script`.
 
@@ -36,8 +42,11 @@ scene.ts (scene script context)    ← direct access to cc.* engine APIs
 
 | File | Role |
 |------|------|
-| `source/main.ts` | Extension entry: `load`/`unload` lifecycle, message handler registration |
-| `source/mcp-server.ts` | HTTP server, JSON-RPC 2.0 protocol, tool routing (~1200 lines) |
+| `source/main.ts` | Extension entry: composition root, `load`/`unload` lifecycle, panel IPC |
+| `source/server.ts` | `BridgeServer`: SDK transport on `/mcp`, plus `/preview-log` and `/preview-console.js` |
+| `source/registry.ts` | `ToolRegistry`: advertises tools, resolves node paths, invokes |
+| `source/legacy-adapter.ts` | Wraps a `ToolExecutor` category as registry tools |
+| `source/tool-registry.ts` | Instantiates the legacy executor categories |
 | `source/scene/` | Scene script: engine API calls, node/component manipulation; `index.ts` assembles `SceneMethods` |
 | `source/settings.ts` | JSON settings persistence to `{project}/settings/` |
 | `source/types/index.ts` | Shared TypeScript interfaces (`ToolDefinition`, `ToolResponse`, `ToolExecutor`) |
@@ -55,22 +64,23 @@ interface ToolExecutor {
 }
 ```
 
-The 14 tool categories in `source/tools/` are instantiated once in the `MCPServer` constructor and registered by calling `getTools()` on each. When `tools/call` arrives, `MCPServer.executeToolCall()` routes to the appropriate category's `execute()` method.
+The categories in `source/tools/` are instantiated in `createToolInstances()` and wrapped by
+`legacyTools(category, executor)` into `ToolRegistry` entries named `{category}_{tool}`. A
+`tools/call` reaches `ToolRegistry.invoke`, which validates arguments, turns `nodePath` arguments
+into uuids and dispatches to the category's `execute()`.
 
-**Tool categories:** `scene-tools`, `node-tools`, `component-tools`, `prefab-tools`, `project-tools`, `debug-tools`, `preferences-tools`, `server-tools`, `broadcast-tools`, `scene-advanced-tools`, `scene-view-tools`, `reference-image-tools`, `asset-advanced-tools`, `validation-tools`.
+**Tool categories:** `scene`, `node`, `component`, `prefab`, `project`, `debug`, `sceneAdvanced`, `assetAdvanced`, `skeletalAnimation`, `ecs`, `batch`.
 
 ## HTTP Endpoints
 
-- `POST /mcp` — MCP JSON-RPC 2.0 (primary interface)
-- `GET /health` — Health check
-- `POST /api/{category}/{tool}` — Simplified REST API
-- `GET /api/tools` — List all tools with curl examples
+- `POST /mcp` — MCP Streamable HTTP (primary interface); other methods answer 405
+- `POST /preview-log` — console batches forwarded from a running preview page
+- `GET /preview-console.js` — the script that preview pages inject to do the forwarding
 
 ## Settings
 
-Stored as JSON in `{project}/settings/`:
-- `mcp-server.json` — port (default: 3000), autoStart, enableDebugLog, maxConnections, allowedOrigins
-- `tool-manager.json` — named configurations with per-tool enable/disable toggles
+Stored as JSON in `{project}/settings/mcp-server.json` — port (default: 4000), autoStart,
+enableDebugLog, maxConnections. Every tool is always on.
 
 ## TypeScript Configuration
 
@@ -80,6 +90,5 @@ Stored as JSON in `{project}/settings/`:
 
 1. Add the tool definition to an existing category file's `getTools()` return array, or create a new `ToolExecutor` class.
 2. Add the `execute()` case for the tool name.
-3. If the tool needs engine access, add a message handler in `main.ts` and a corresponding function in `scene.ts`.
-4. Register a new category class in the `MCPServer` constructor (if creating a new category).
-5. Add the tool to `package.json` under `contributions.messages` if it needs IPC.
+3. If the tool needs engine access, add the method to `source/scene/` and declare it in `package.json` under `contributions.scene.methods`.
+4. Register a new category class in `createToolInstances()` (if creating a new category).

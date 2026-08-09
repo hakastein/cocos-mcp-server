@@ -158,8 +158,4 @@ export class PreviewLogStore {
     }
 }
 
-/** One buffer per editor process; the HTTP route writes it and the debug tools read it. */
-export const previewLogStore = new PreviewLogStore();
-
-// re-exported so debug-tools has a single import site for log filtering helpers
 export { filterEntries, ProjectLogEntry };
