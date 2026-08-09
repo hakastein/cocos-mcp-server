@@ -128,26 +128,45 @@ test('an untouched reference is stripped from the dump and not written, so it is
     assert.equal('clip' in built.expected, false);
 });
 
-test('persistence is reported separately from the live read-back, and never implied', () => {
-    const live = { found: true, actual: 0.25, mismatches: [] };
+test('the serializer verdict is reported separately from the live read-back, and never implied', () => {
+    const live = { found: true, actual: 0.25, mismatches: [], sceneNeedsSave: true };
 
-    const unchecked = call('persistenceReport',
+    const unchecked = call('serializerReport',
         { ...live, persistence: { checked: false, found: false, actual: undefined, mismatches: [], reason: 'no scene' } },
         'exit.duration');
-    assert.equal(unchecked.persistenceVerified, false);
-    assert.match(unchecked.persistenceNote, /NOT verified against the saved form/);
-    assert.match(unchecked.persistenceNote, /no scene/);
+    assert.equal(unchecked.serializerVerified, false);
+    assert.match(unchecked.serializerNote, /NOT verified against the serialized form/);
+    assert.match(unchecked.serializerNote, /no scene/);
 
-    const missing = call('persistenceReport',
+    const missing = call('serializerReport',
         { ...live, persistence: { checked: true, found: false, actual: undefined, mismatches: [] } },
         'exit.duration');
-    assert.equal(missing.persistenceVerified, false);
-    assert.match(missing.persistenceNote, /does not emit 'exit\.duration'/);
+    assert.equal(missing.serializerVerified, false);
+    assert.match(missing.serializerNote, /does not emit 'exit\.duration'/);
 
-    const good = call('persistenceReport',
+    const good = call('serializerReport',
         { ...live, persistence: { checked: true, found: true, actual: 0.25, mismatches: [] } },
         'exit.duration');
-    assert.deepEqual(good, { persistenceVerified: true, persistedValue: 0.25 });
+    assert.deepEqual(good, { serializerVerified: true, serializedValue: 0.25, sceneNeedsSave: true });
+});
+
+// A write that restores the value the file already holds leaves nothing to save, so this is
+// carried through from the disk comparison rather than asserted on every write.
+test('whether the scene needs saving is reported on every branch, including the unproven ones', () => {
+    const live = { found: true, actual: 0.25, mismatches: [] };
+    const branches = [
+        { checked: false, found: false, actual: undefined, mismatches: [], reason: 'no scene' },
+        { checked: true, found: false, actual: undefined, mismatches: [] },
+        { checked: true, found: true, actual: 0.25, mismatches: [] }
+    ];
+    for (const persistence of branches) {
+        for (const sceneNeedsSave of [true, false, null]) {
+            assert.equal(
+                call('serializerReport', { ...live, persistence, sceneNeedsSave }, 'exit.duration').sceneNeedsSave,
+                sceneNeedsSave
+            );
+        }
+    }
 });
 
 test('a value the save would drop is a mismatch even when the live component agrees', () => {

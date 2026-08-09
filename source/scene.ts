@@ -3,6 +3,7 @@ import { buildPathIndex, resolvePathInIndex, siblingLabels } from './node-path';
 import {
     ReferenceOverride, projectAfterReload, contradictedOverrides, liveNodesBySerializedIndex
 } from './reference-projection';
+import { diffSerialized } from './serialized-diff';
 module.paths.push(join(Editor.App.path, 'node_modules'));
 
 // `cce` is the editor-side engine facade available in the scene process (it exposes
@@ -552,6 +553,34 @@ function componentClassName(comp: any): string {
     return comp.constructor ? comp.constructor.name : 'Unknown';
 }
 
+/**
+ * Whether a SyntaxError out of `eval(code)` came from parsing the script rather than from running
+ * it. `JSON.parse('{')` and `new RegExp('[')` also throw SyntaxError, and re-running a script that
+ * already executed would apply its writes twice — so the retry is gated on this.
+ *
+ * Parsing is not lazy for syntax: `if (false) { … }` reports every parse error the bare script
+ * would, and executes none of it.
+ */
+function failedToParse(code: string): boolean {
+    try {
+        // eslint-disable-next-line no-eval
+        eval(`if (false) {\n${code}\n}`);
+        return false;
+    } catch (err: any) {
+        return err instanceof SyntaxError;
+    }
+}
+
+/** Whether the script is legal inside a plain function — false is how a top-level `await` shows up. */
+function compilesAsFunctionBody(code: string): boolean {
+    try {
+        new Function(code);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 export const methods: { [key: string]: (...any: any) => any } = {
     /**
      * A component property's DECLARED type, read off the registered CCClass.
@@ -837,30 +866,22 @@ export const methods: { [key: string]: (...any: any) => any } = {
                 // Neither a top-level `return` nor a top-level `await` is legal in plain eval.
                 // Both fail at parse time, before any statement runs, so re-running the script
                 // inside a wrapper that permits them cannot execute anything twice.
-                const message = err instanceof SyntaxError ? (err.message || '') : '';
-                if (/await is only valid/i.test(message)) {
+                //
+                // Which wrapper is needed cannot be read off the message. V8 only says "await is
+                // only valid in async functions" where `await` opens a statement; in any other
+                // position it parses `await` as an identifier and reports whatever breaks next —
+                // `{ k: await f() }` gives "Unexpected identifier 'f'", `g(await f())` gives
+                // "missing ) after argument list". Matching those phrasings rejected valid scripts
+                // as syntax errors, so the decision is made by compiling instead of by reading.
+                if (!(err instanceof SyntaxError) || !failedToParse(code)) throw err;
+                if (compilesAsFunctionBody(code)) {
+                    functionWrapper = true;
+                    // eslint-disable-next-line no-eval
+                    result = eval(`(function () {\n${code}\n})()`);
+                } else {
                     asyncWrapper = true;
                     // eslint-disable-next-line no-eval
                     result = eval(`(async () => {\n${code}\n})()`);
-                } else if (/illegal return/i.test(message)) {
-                    try {
-                        functionWrapper = true;
-                        // eslint-disable-next-line no-eval
-                        result = eval(`(function () {\n${code}\n})()`);
-                    } catch (inner: any) {
-                        // A script using both `return` and `await`: V8 reports only the first
-                        // parse error, so the sync wrapper can still fail on the await.
-                        if (inner instanceof SyntaxError && /await is only valid/i.test(inner.message || '')) {
-                            functionWrapper = false;
-                            asyncWrapper = true;
-                            // eslint-disable-next-line no-eval
-                            result = eval(`(async () => {\n${code}\n})()`);
-                        } else {
-                            throw inner;
-                        }
-                    }
-                } else {
-                    throw err;
                 }
             }
 
@@ -1767,6 +1788,61 @@ export const methods: { [key: string]: (...any: any) => any } = {
                     owners
                 }
             };
+        } catch (error: any) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Whether the open scene differs from its own file, decided by serializing the scene the way
+     * the save path does and diffing that against the file's contents.
+     *
+     * The editor's own `query-dirty` cannot answer this. It reports `_undoMgr.isDirty()` — the undo
+     * cursor's distance from the last save — and a `set-property` issued outside a
+     * begin-recording/end-recording pair moves the scene without moving that cursor. Every write
+     * this bridge makes is such a write, so the editor calls the scene clean while it holds changes
+     * the file does not have.
+     *
+     * `querySceneSerializedData` is the facade call whose output `save()` writes verbatim, so its
+     * result and the file agree entry for entry on a saved scene — except for the SceneAsset's
+     * `_name`, which the serializer leaves empty and the asset database fills in from the filename
+     * on import. That one path is ignored; nothing else is.
+     */
+    sceneDirtyAgainstDisk() {
+        try {
+            const facade = (globalThis as any).cce?.SceneFacadeManager?.getCurrentFacade?.();
+            if (!facade || typeof facade.querySceneSerializedData !== 'function') {
+                return { success: false, error: 'The scene facade does not expose querySceneSerializedData' };
+            }
+            return Promise.resolve(facade.querySceneSerializedData()).then(async (raw: string) => {
+                const sceneUuid = await Editor.Message.request('scene', 'query-current-scene');
+                if (!sceneUuid) return { success: false, error: 'No scene is open' };
+                let scenePath = '';
+                try {
+                    scenePath = (await Editor.Message.request('asset-db', 'query-path', sceneUuid)) || '';
+                } catch {
+                    scenePath = '';
+                }
+                const fs = require('fs');
+                if (!scenePath || !fs.existsSync(scenePath)) {
+                    return {
+                        success: true,
+                        data: {
+                            differsFromDisk: true,
+                            scenePath: scenePath || null,
+                            diffs: [],
+                            reason: 'The scene has never been written to disk, so everything in it is unsaved.'
+                        }
+                    };
+                }
+                const live = JSON.parse(raw);
+                const disk = JSON.parse(fs.readFileSync(scenePath, 'utf8'));
+                const diffs = diffSerialized(live, disk);
+                return {
+                    success: true,
+                    data: { differsFromDisk: diffs.length > 0, scenePath, diffs }
+                };
+            }).catch((error: any) => ({ success: false, error: error.message || String(error) }));
         } catch (error: any) {
             return { success: false, error: error.message };
         }

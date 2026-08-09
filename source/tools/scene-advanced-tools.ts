@@ -300,7 +300,14 @@ export class SceneAdvancedTools implements ToolExecutor {
             },
             {
                 name: 'query_scene_dirty',
-                description: 'Check if scene has unsaved changes',
+                description: 'Whether the open scene holds changes its file does not. Decided by serializing '
+                    + 'the scene the way the save path does and diffing that against the file, so it sees a '
+                    + 'property written through this bridge — which the editor\'s own undo-based dirty flag '
+                    + 'does not, and which is why that flag alone reported such a scene as clean. Returns '
+                    + '`dirty`, `differsFromDisk`, the editor\'s `editorUndoDirty` for comparison, and up to '
+                    + '20 differing paths. `comparedAgainstDisk: false` means only the undo flag was '
+                    + 'available and `dirty: false` means "unknown". A dirty scene is for the person at the '
+                    + 'editor to save.',
                 inputSchema: {
                     type: 'object',
                     properties: {}
@@ -688,20 +695,70 @@ export class SceneAdvancedTools implements ToolExecutor {
         });
     }
 
+    /**
+     * Whether the open scene holds anything the file does not, decided by comparing the scene's
+     * serialized form against the file's contents.
+     *
+     * The editor's `query-dirty` is reported alongside but never on its own: it answers
+     * `_undoMgr.isDirty()`, the undo cursor's distance from the last save, and a `set-property`
+     * issued outside a begin-recording/end-recording pair moves the scene without moving that
+     * cursor. Every write this bridge makes is such a write, so the editor called a scene with
+     * unsaved property changes clean — which is the answer that loses work, since a caller reading
+     * it decides there is nothing to save and leaves.
+     */
     private async querySceneDirty(): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'query-dirty').then((dirty: boolean) => {
-                resolve({
-                    success: true,
-                    data: {
-                        dirty: dirty,
-                        message: dirty ? 'Scene has unsaved changes' : 'Scene is clean'
-                    }
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
+        let undoDirty: boolean | null = null;
+        try {
+            undoDirty = await Editor.Message.request('scene', 'query-dirty');
+        } catch {
+            undoDirty = null;
+        }
+
+        let comparison: any = null;
+        let comparisonError = '';
+        try {
+            const result: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'sceneDirtyAgainstDisk',
+                args: []
             });
-        });
+            if (result && result.success) comparison = result.data;
+            else comparisonError = (result && result.error) || 'scene script unavailable';
+        } catch (err: any) {
+            comparisonError = err?.message || String(err);
+        }
+
+        if (!comparison) {
+            return {
+                success: true,
+                data: {
+                    dirty: undoDirty === true,
+                    comparedAgainstDisk: false,
+                    editorUndoDirty: undoDirty,
+                    message: `The scene could not be compared against its file (${comparisonError}), so this `
+                        + `is the editor's undo state alone. That state does not see a property written `
+                        + `through this bridge — treat 'dirty: false' here as "unknown", not as "clean".`
+                }
+            };
+        }
+
+        const dirty = comparison.differsFromDisk === true || undoDirty === true;
+        return {
+            success: true,
+            data: {
+                dirty,
+                comparedAgainstDisk: true,
+                differsFromDisk: comparison.differsFromDisk,
+                editorUndoDirty: undoDirty,
+                scenePath: comparison.scenePath,
+                diffs: comparison.diffs,
+                message: dirty
+                    ? `The open scene differs from ${comparison.scenePath} and must be saved by the person `
+                        + `at the editor. Do not call save_scene on their behalf — it would overwrite whatever `
+                        + `they have open in the Inspector.`
+                    : 'The open scene matches its file on disk.'
+            }
+        };
     }
 
     private async querySceneClasses(extendsClass?: string): Promise<ToolResponse> {

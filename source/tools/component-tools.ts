@@ -11,6 +11,7 @@ interface VerifyResult {
     actual: any;
     mismatches: string[];
     persistence: { checked: boolean; found: boolean; actual: any; mismatches: string[]; reason?: string };
+    sceneNeedsSave: boolean | null;
 }
 
 export class ComponentTools implements ToolExecutor {
@@ -103,6 +104,13 @@ export class ComponentTools implements ToolExecutor {
                     'opposite — property "enter" with value {"duration":0.5,"toScale":{"x":2,"y":2,"z":2}} PATCHES ' +
                     'the named members and leaves every member you omit alone, and a misspelled member is an error ' +
                     'rather than a silent no-op. ' +
+                    'THE WRITE LANDS IN THE OPEN SCENE, NOT IN THE SCENE FILE. `sceneNeedsSave` is the one field ' +
+                    'that has looked at the file: true means the scene now differs from it and the person at the ' +
+                    'editor has to save (do not save on their behalf), false means the write matched what the file ' +
+                    'already held, null means the comparison was unavailable. `changeVerified` is the live ' +
+                    'component read back; `serializerVerified` with `serializedValue` is the editor\'s serializer ' +
+                    '— the call the save path runs — agreeing, so a save would carry the value. Those two say ' +
+                    'nothing about the file. ' +
                     'Note: For node basic properties (name, active, layer, etc.), use set_node_property. For node ' +
                     'transform properties (position, rotation, scale, etc.), use set_node_transform.',
                 inputSchema: {
@@ -1239,7 +1247,7 @@ export class ComponentTools implements ToolExecutor {
                     requested: expected,
                     actualValue: check.actual,
                     changeVerified: false,
-                    ...this.persistenceReport(check, property)
+                    ...this.serializerReport(check, property)
                 }
             };
         }
@@ -1255,7 +1263,7 @@ export class ComponentTools implements ToolExecutor {
                 references: references.map(reference => `${reference.path} = ${reference.uuid || '(cleared)'}`),
                 actualValue: check.actual,
                 changeVerified: check.found,
-                ...this.persistenceReport(check, property)
+                ...this.serializerReport(check, property)
             }
         };
     }
@@ -1321,7 +1329,7 @@ export class ComponentTools implements ToolExecutor {
                 data: {
                     nodeUuid, componentType, property, dumpType: descriptor.type,
                     requested: built.expected, actualValue: check.actual, changeVerified: false,
-                    ...this.persistenceReport(check, property)
+                    ...this.serializerReport(check, property)
                 }
             };
         }
@@ -1334,7 +1342,7 @@ export class ComponentTools implements ToolExecutor {
                 nodeUuid, componentType, property, dumpType: descriptor.type,
                 membersWritten: Object.keys(built.expected),
                 actualValue: check.actual, changeVerified: check.found,
-                ...this.persistenceReport(check, property)
+                ...this.serializerReport(check, property)
             }
         };
     }
@@ -1545,7 +1553,7 @@ export class ComponentTools implements ToolExecutor {
                     requested: dump.value,
                     actualValue: check.actual,
                     changeVerified: false,
-                    ...this.persistenceReport(check, property)
+                    ...this.serializerReport(check, property)
                 }
             };
         }
@@ -1561,7 +1569,7 @@ export class ComponentTools implements ToolExecutor {
                 dumpType: dump.type || descriptor?.type || 'inferred',
                 actualValue: check.actual,
                 changeVerified: check.found,
-                ...this.persistenceReport(check, property)
+                ...this.serializerReport(check, property)
             }
         };
     }
@@ -1767,12 +1775,29 @@ export class ComponentTools implements ToolExecutor {
         nodeUuid: string, componentType: string, property: string, expected: any
     ): Promise<VerifyResult> {
         const persistence = await this.verifyPersisted(nodeUuid, componentType, property, expected);
+        const sceneNeedsSave = await this.sceneNeedsSave();
         const read = await this.readDumpProperty(nodeUuid, componentType, property);
-        if (!read.found) return { found: false, actual: undefined, mismatches: [], persistence };
+        if (!read.found) return { found: false, actual: undefined, mismatches: [], persistence, sceneNeedsSave };
         const actual = this.unwrapDumpValue(read.entry);
         const mismatches: string[] = [];
         this.collectMismatches(expected, actual, property, mismatches);
-        return { found: true, actual, mismatches, persistence };
+        return { found: true, actual, mismatches, persistence, sceneNeedsSave };
+    }
+
+    // The editor's dirty flag counts undo steps, which a set-property never moves; asked per write
+    // because restoring the value the file already holds leaves nothing to save.
+    private async sceneNeedsSave(): Promise<boolean | null> {
+        try {
+            const result: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'sceneDirtyAgainstDisk',
+                args: []
+            });
+            if (!result || result.success !== true) return null;
+            return result.data?.differsFromDisk === true;
+        } catch {
+            return null;
+        }
     }
 
     /**
@@ -1781,10 +1806,11 @@ export class ComponentTools implements ToolExecutor {
      *
      * This catches a property the dump exposes but the serializer does not write, which is a write
      * that does nothing on save while reading back as applied. It does NOT prove the scene file
-     * changed: the serializer walks the same live object graph, so a loss that happened before it
-     * ran is invisible to both checks. That boundary is why the result reports `persistenceVerified`
-     * as its own verdict instead of folding into `changeVerified`, and why an unreachable
-     * serializer leaves `checked` false and says so rather than implying a pass.
+     * changed — nothing here writes the file — and it does not prove the value is safe either: the
+     * serializer walks the same live object graph, so a loss that happened before it ran is
+     * invisible to both checks. That boundary is why the result reports `serializerVerified` as its
+     * own verdict instead of folding into `changeVerified`, and why an unreachable serializer
+     * leaves `checked` false and says so rather than implying a pass.
      */
     private async verifyPersisted(
         nodeUuid: string, resolvedCid: string, property: string, expected: any
@@ -1811,27 +1837,33 @@ export class ComponentTools implements ToolExecutor {
     }
 
     /**
-     * How a write is reported once both checks have run. `changeVerified` still means the live
-     * component agrees; `persistence` is the separate question of whether a save would keep it.
+     * How a write is reported once both checks have run. `changeVerified` means the live component
+     * agrees; `serializerVerified` means the editor's serializer emits the value, so a save would
+     * carry it.
+     *
+     * The field used to be `persistenceVerified`, which reads as "it is on disk" — and it never
+     * was. `sceneNeedsSave` is the one field here that has looked at the file.
      */
-    private persistenceReport(check: VerifyResult, property: string): Record<string, any> {
-        const { persistence } = check;
+    private serializerReport(check: VerifyResult, property: string): Record<string, any> {
+        const { persistence, sceneNeedsSave } = check;
         if (!persistence.checked) {
             return {
-                persistenceVerified: false,
-                persistenceNote: `'${property}' was NOT verified against the saved form `
+                serializerVerified: false,
+                sceneNeedsSave,
+                serializerNote: `'${property}' was NOT verified against the serialized form `
                     + `(${persistence.reason || 'serializer unavailable'}). The live component agrees, which does `
                     + `not prove the value survives a save.`
             };
         }
         if (!persistence.found) {
             return {
-                persistenceVerified: false,
-                persistenceNote: `The serializer does not emit '${property}', so persistence could not be `
-                    + `confirmed. The write itself did not error.`
+                serializerVerified: false,
+                sceneNeedsSave,
+                serializerNote: `The serializer does not emit '${property}', so it could not be confirmed that `
+                    + `a save would carry the value. The write itself did not error.`
             };
         }
-        return { persistenceVerified: true, persistedValue: persistence.actual };
+        return { serializerVerified: true, serializedValue: persistence.actual, sceneNeedsSave };
     }
 
     /** Keys absent from `expected` are not compared — a partial write is checked partially. */
