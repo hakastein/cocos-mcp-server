@@ -93,6 +93,18 @@ test('an alias is rewritten to the declared parameter before validation', async 
     assert.equal(result.success, true);
 });
 
+test('an accepted alias is advertised on the parameter it stands for', () => {
+    const tool = defineTool({
+        name: 'echo',
+        description: 'Echoes its arguments',
+        schema: z.object({ text: z.string() }),
+        aliases: { message: 'text', body: 'text' },
+        handler: async (args) => ({ success: true, data: args.text })
+    });
+    const schema = new ToolRegistry([tool]).list()[0].inputSchema;
+    assert.deepEqual(schema.properties.text['x-aliases'], ['message', 'body']);
+});
+
 test('an explicit parameter wins over its alias', async () => {
     let seen;
     const tool = defineTool({

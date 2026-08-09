@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { fail, ToolResult } from './result';
+import { ALIAS_KEY } from './tool-args';
 import type { ToolContext } from './context';
 
 export interface RegisteredTool {
@@ -44,6 +45,17 @@ function jsonSchemaOf(schema: z.ZodTypeAny): object {
     return toJsonSchema(schema, { $refStrategy: 'none' });
 }
 
+function advertiseAliases(schema: object, aliases: Record<string, string> | undefined): object {
+    const properties: Record<string, any> = (schema as any).properties;
+    if (!aliases || !properties) return schema;
+    for (const [alias, canonical] of Object.entries(aliases)) {
+        const property = properties[canonical];
+        if (!property) continue;
+        property[ALIAS_KEY] = [...(property[ALIAS_KEY] || []), alias];
+    }
+    return schema;
+}
+
 function describeIssues(error: z.ZodError): string {
     return error.issues
         .map(issue => `${issue.path.length ? issue.path.join('.') : '(root)'}: ${issue.message}`)
@@ -61,7 +73,7 @@ export function defineTool<S extends z.ZodRawShape>(def: ToolDefinition<S>): Reg
     return {
         name: def.name,
         description: def.description,
-        inputSchema: jsonSchemaOf(def.schema as unknown as z.ZodTypeAny),
+        inputSchema: advertiseAliases(jsonSchemaOf(def.schema as unknown as z.ZodTypeAny), def.aliases),
         async invoke(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
             const parsed = def.schema.safeParse(applyAliases(args, def.aliases));
             if (!parsed.success) {
