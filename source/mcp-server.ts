@@ -12,7 +12,6 @@ export class MCPServer {
     private httpServer: http.Server | null = null;
     private tools: Record<string, any> = {};
     private toolsList: ToolDefinition[] = [];
-    private enabledTools: any[] = [];
     /**
      * Lazily built `{category}_{tool}` -> definition index, holding the path-augmented copy of
      * every tool. Definitions are static, and both the advertised list and argument validation
@@ -85,19 +84,6 @@ export class MCPServer {
 
     public getAvailableTools(): ToolDefinition[] {
         return this.toolsList;
-    }
-
-    public getFilteredTools(enabledTools: any[]): ToolDefinition[] {
-        if (!enabledTools || enabledTools.length === 0) {
-            return this.toolsList;
-        }
-        const enabledSet = new Set(enabledTools.map(t => `${t.category}_${t.name}`));
-        return this.toolsList.filter(tool => enabledSet.has(tool.name));
-    }
-
-    public updateEnabledTools(enabledTools: any[]): void {
-        this.enabledTools = enabledTools;
-        this.rebuildToolsList();
     }
 
     public async executeToolCall(toolName: string, args: any): Promise<any> {
@@ -183,11 +169,6 @@ export class MCPServer {
         return { ok: true, resolutions: (result.data.resolutions || {}) as Record<string, PathResolution> };
     }
 
-    /**
-     * Input schema for a tool, by category and method name. Indexed across every registered
-     * category regardless of the enabled-tools filter, so validation does not depend on
-     * which tools the current configuration exposes.
-     */
     private schemaFor(category: string, methodName: string): any | undefined {
         const def = this.definitions().get(`${category}_${methodName}`);
         return def && def.inputSchema;
@@ -212,16 +193,7 @@ export class MCPServer {
     }
 
     private rebuildToolsList(): void {
-        const enabledSet = this.enabledTools.length > 0
-            ? new Set(this.enabledTools.map(t => `${t.category}_${t.name}`))
-            : null;
-
-        this.toolsList = [];
-        for (const definition of this.definitions().values()) {
-            if (!enabledSet || enabledSet.has(definition.name)) {
-                this.toolsList.push(definition);
-            }
-        }
+        this.toolsList = Array.from(this.definitions().values());
     }
 
     private async readRequestBody(req: http.IncomingMessage): Promise<string> {

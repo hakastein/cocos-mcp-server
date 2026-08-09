@@ -120,30 +120,3 @@ export interface ToolExecutor {
     execute(toolName: string, args: any): Promise<ToolResponse>;
 }
 
-export interface ToolConfig {
-    category: string;
-    name: string;
-    enabled: boolean;
-    description: string;
-}
-
-export interface ToolConfiguration {
-    id: string;
-    name: string;
-    description?: string;
-    tools: ToolConfig[];
-    createdAt: string;
-    updatedAt: string;
-}
-
-export interface ToolManagerSettings {
-    configurations: ToolConfiguration[];
-    currentConfigId: string;
-    maxConfigSlots: number;
-}
-
-export interface ToolManagerState {
-    availableTools: ToolConfig[];
-    currentConfiguration: ToolConfiguration | null;
-    configurations: ToolConfiguration[];
-}
