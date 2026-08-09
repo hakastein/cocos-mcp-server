@@ -12,10 +12,15 @@
     "description": "i18n:cocos-mcp-server.description",
     "main": "./dist/main.js",
     "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.30.0",
         "fs-extra": "^11.3.0",
+        "p-queue": "^6.6.2",
+        "p-wait-for": "^3.2.0",
         "typescript": "^5.8.2",
         "uuid": "^9.0.1",
-        "vue": "^3.1.4"
+        "vue": "^3.1.4",
+        "zod": "^3.25.76",
+        "zod-to-json-schema": "^3.25.2"
     },
     "devDependencies": {
         "@cocos/creator-types": "^3.8.6",
@@ -47,19 +52,29 @@
         ],
         "messages": {
             "open-panel": {
-                "methods": ["openPanel"]
+                "methods": [
+                    "openPanel"
+                ]
             },
             "start-server": {
-                "methods": ["startServer"]
+                "methods": [
+                    "startServer"
+                ]
             },
             "stop-server": {
-                "methods": ["stopServer"]
+                "methods": [
+                    "stopServer"
+                ]
             },
             "get-server-status": {
-                "methods": ["getServerStatus"]
+                "methods": [
+                    "getServerStatus"
+                ]
             },
             "update-settings": {
-                "methods": ["updateSettings"]
+                "methods": [
+                    "updateSettings"
+                ]
             }
         },
         "scene": {

@@ -2,8 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { MCPServerSettings } from './types';
 
+export const DEFAULT_PORT = 4000;
+
 export const DEFAULT_SETTINGS: MCPServerSettings = {
-    port: 3000,
+    port: DEFAULT_PORT,
     autoStart: false,
     enableDebugLog: false,
     maxConnections: 10

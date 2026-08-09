@@ -5,6 +5,7 @@ import { searchLines } from '../log-search';
 import { ALIAS_KEY } from '../tool-args';
 import { groupLogLines, filterEntries, parseSince, ProjectLogEntry } from '../project-log';
 import { previewLogStore } from '../preview-log-store';
+import { DEFAULT_PORT } from '../settings';
 
 export class DebugTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -244,9 +245,9 @@ export class DebugTools implements ToolExecutor {
             const settings = JSON.parse(fs.readFileSync(
                 path.join(Editor.Project.path, 'settings', 'mcp-server.json'), 'utf8'
             ));
-            return settings.port || 4000;
+            return settings.port || DEFAULT_PORT;
         } catch {
-            return 4000;
+            return DEFAULT_PORT;
         }
     }
 
