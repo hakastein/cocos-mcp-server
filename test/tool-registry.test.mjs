@@ -15,9 +15,8 @@ import { createToolInstances } from '../dist/tool-registry.js';
 
 test('the registry is the only category list, and it carries ecs', () => {
     const categories = Object.keys(createToolInstances());
-    for (const required of ['scene', 'node', 'component', 'prefab', 'skeletalAnimation', 'ecs', 'batch']) {
-        assert.ok(categories.includes(required), `category '${required}' is missing from the registry`);
-    }
+    const expected = ['scene', 'node', 'component', 'prefab', 'project', 'assetAdvanced', 'sceneAdvanced', 'skeletalAnimation', 'debug', 'ecs', 'batch'];
+    assert.deepEqual(categories.sort(), expected.slice().sort());
 });
 
 test('ecs_component_census is a real tool with a schema, not just a class', () => {

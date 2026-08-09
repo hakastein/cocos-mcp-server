@@ -4,14 +4,8 @@ import { ComponentTools } from './tools/component-tools';
 import { PrefabTools } from './tools/prefab-tools';
 import { ProjectTools } from './tools/project-tools';
 import { DebugTools } from './tools/debug-tools';
-import { PreferencesTools } from './tools/preferences-tools';
-import { ServerTools } from './tools/server-tools';
-import { BroadcastTools } from './tools/broadcast-tools';
 import { SceneAdvancedTools } from './tools/scene-advanced-tools';
-import { SceneViewTools } from './tools/scene-view-tools';
-import { ReferenceImageTools } from './tools/reference-image-tools';
 import { AssetAdvancedTools } from './tools/asset-advanced-tools';
-import { ValidationTools } from './tools/validation-tools';
 import { SkeletalAnimationTools } from './tools/skeletal-animation-tools';
 import { BatchTools } from './tools/batch-tools';
 import { EcsTools } from './tools/ecs-tools';
@@ -34,14 +28,8 @@ export function createToolInstances(dispatch?: ToolDispatcher): Record<string, a
         prefab: new PrefabTools(),
         project: new ProjectTools(),
         debug: new DebugTools(),
-        preferences: new PreferencesTools(),
-        server: new ServerTools(),
-        broadcast: new BroadcastTools(),
         sceneAdvanced: new SceneAdvancedTools(),
-        sceneView: new SceneViewTools(),
-        referenceImage: new ReferenceImageTools(),
         assetAdvanced: new AssetAdvancedTools(),
-        validation: new ValidationTools(),
         skeletalAnimation: new SkeletalAnimationTools(),
         ecs: new EcsTools(),
         batch: new BatchTools(dispatch)
