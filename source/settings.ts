@@ -6,7 +6,6 @@ export const DEFAULT_SETTINGS: MCPServerSettings = {
     port: 3000,
     autoStart: false,
     enableDebugLog: false,
-    allowedOrigins: ['*'],
     maxConnections: 10
 };
 

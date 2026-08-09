@@ -1,13 +1,3 @@
-/**
- * Every tool category reaches the advertised list.
- *
- * ToolManager's saved configuration is what `tools/list` filters by, and it used to be built from
- * its own copy of the category list. A category in MCPServer's list and not in ToolManager's was
- * discovered by nobody, saved into no configuration, and advertised to no client — it shipped,
- * ran, and could not be called. `skeletalAnimation_*` was invisible that way once, and
- * `ecs_component_census` was invisible that way while CLAUDE.md documented it as the tool for
- * finding a component with readers and no writer.
- */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
