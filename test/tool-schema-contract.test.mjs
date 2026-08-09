@@ -9,7 +9,6 @@ import assert from 'node:assert/strict';
 import ta from '../dist/tool-args.js';
 import { DebugTools } from '../dist/tools/debug-tools.js';
 import { ProjectTools } from '../dist/tools/project-tools.js';
-import { PreferencesTools } from '../dist/tools/preferences-tools.js';
 import { NodeTools } from '../dist/tools/node-tools.js';
 import { ComponentTools } from '../dist/tools/component-tools.js';
 import { PrefabTools } from '../dist/tools/prefab-tools.js';
@@ -78,7 +77,6 @@ test('every declared required argument is actually reachable under its own name'
     const executors = {
         debug: new DebugTools(),
         project: new ProjectTools(),
-        preferences: new PreferencesTools(),
         node: new NodeTools(),
         component: new ComponentTools(),
         prefab: new PrefabTools(),
@@ -106,7 +104,7 @@ test('every declared required argument is actually reachable under its own name'
 });
 
 test('no two aliases on one tool collide with a different declared parameter', () => {
-    const executors = [new DebugTools(), new ProjectTools(), new PreferencesTools(),
+    const executors = [new DebugTools(), new ProjectTools(),
                        new NodeTools(), new ComponentTools(), new PrefabTools(), new SceneTools()];
     for (const ex of executors) {
         for (const tool of ex.getTools()) {
