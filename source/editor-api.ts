@@ -1,9 +1,9 @@
 import type {
-    AssetInfo,
+    AssetInfo as EditorAssetInfo,
     AssetOperationOption,
 } from '@cocos/creator-types/editor/packages/asset-db/@types/public';
 
-export type { AssetInfo, AssetOperationOption };
+export type { EditorAssetInfo, AssetOperationOption };
 
 export interface SceneScriptCall {
     name: string;
@@ -28,56 +28,59 @@ export class EditorRequestError extends Error {
 export class EditorApi {
     readonly scene = {
         querySceneReady: (): Promise<boolean> =>
-            this.request<boolean>('scene', 'query-is-ready'),
+            this.request('scene', 'query-is-ready'),
 
         queryDirty: (): Promise<boolean> =>
-            this.request<boolean>('scene', 'query-dirty'),
+            this.request('scene', 'query-dirty'),
 
         openScene: (uuid: string): Promise<void> =>
-            this.request<void>('scene', 'open-scene', uuid),
+            this.request('scene', 'open-scene', uuid),
 
         saveScene: (): Promise<string | undefined> =>
-            this.request<string | undefined>('scene', 'save-scene'),
+            this.request('scene', 'save-scene'),
 
         closeScene: (): Promise<boolean> =>
-            this.request<boolean>('scene', 'close-scene'),
+            this.request('scene', 'close-scene'),
 
         executeSceneScript: (payload: SceneScriptCall): Promise<unknown> =>
-            this.request<unknown>('scene', 'execute-scene-script', payload),
+            this.request('scene', 'execute-scene-script', payload),
 
-        beginRecording: (uuids: string | string[]): Promise<string> =>
-            this.request<string>('scene', 'begin-recording', uuids),
+        beginRecording: (uuid: string): Promise<string> =>
+            this.request('scene', 'begin-recording', uuid),
 
         endRecording: (undoId: string): Promise<void> =>
-            this.request<void>('scene', 'end-recording', undoId),
+            this.request('scene', 'end-recording', undoId),
 
         cancelRecording: (undoId: string): Promise<void> =>
-            this.request<void>('scene', 'cancel-recording', undoId),
+            this.request('scene', 'cancel-recording', undoId),
     };
 
     readonly assetDb = {
-        queryAssetInfo: (uuidOrUrl: string): Promise<AssetInfo | null> =>
-            this.request<AssetInfo | null>('asset-db', 'query-asset-info', uuidOrUrl),
+        queryAssetInfo: (uuidOrUrl: string): Promise<EditorAssetInfo | null> =>
+            this.request('asset-db', 'query-asset-info', uuidOrUrl),
 
         queryUuid: (url: string): Promise<string | null> =>
-            this.request<string | null>('asset-db', 'query-uuid', url),
+            this.request('asset-db', 'query-uuid', url),
 
         queryPath: (uuidOrUrl: string): Promise<string | null> =>
-            this.request<string | null>('asset-db', 'query-path', uuidOrUrl),
+            this.request('asset-db', 'query-path', uuidOrUrl),
 
-        queryAssets: (pattern: string): Promise<AssetInfo[]> =>
-            this.request<AssetInfo[]>('asset-db', 'query-assets', { pattern }),
+        queryAssets: (pattern: string): Promise<EditorAssetInfo[]> =>
+            this.request('asset-db', 'query-assets', { pattern }),
 
-        createAsset: (url: string, content: string | null, opts?: AssetOperationOption): Promise<AssetInfo | null> =>
+        createAsset: (url: string, content: string | null, opts?: AssetOperationOption): Promise<EditorAssetInfo | null> =>
             opts === undefined
-                ? this.request<AssetInfo | null>('asset-db', 'create-asset', url, content)
-                : this.request<AssetInfo | null>('asset-db', 'create-asset', url, content, opts),
+                ? this.request('asset-db', 'create-asset', url, content)
+                : this.request('asset-db', 'create-asset', url, content, opts),
 
         refreshAsset: (url: string): Promise<void> =>
-            this.request<void>('asset-db', 'refresh-asset', url),
+            this.request('asset-db', 'refresh-asset', url),
     };
 
-    private async request<T>(pkg: string, msg: string, ...args: unknown[]): Promise<T> {
+    private async request<
+        J extends keyof EditorMessageMaps & string,
+        K extends keyof EditorMessageMaps[J] & string,
+    >(pkg: J, msg: K, ...args: EditorMessageMaps[J][K]['params']): Promise<EditorMessageMaps[J][K]['result']> {
         try {
             return await Editor.Message.request(pkg, msg, ...args);
         } catch (cause) {
