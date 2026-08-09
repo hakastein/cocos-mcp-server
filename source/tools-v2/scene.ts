@@ -11,6 +11,9 @@ function textOf(error: unknown): string {
 }
 
 function fromScene<T>(result: SceneResult<T>): ToolResult<T> {
+    if (!result || typeof result.success !== 'boolean') {
+        return fail('scene_script', 'scene script did not answer; is the extension scene script loaded?');
+    }
     return result.success ? ok(result.data, result.message) : fail('scene_script', result.error);
 }
 
@@ -239,7 +242,7 @@ export const sceneChecksum = defineTool({
     }),
     async handler(args, ctx) {
         const dump = await ctx.sceneScript.call('dumpSceneNodes', { includeComponents: true });
-        if (!dump.success) return fromScene(dump);
+        if (!dump?.success) return fromScene(dump);
 
         const nodes = dump.data.nodes || [];
         const signature = signatureOf(nodes);
@@ -304,8 +307,8 @@ export const sceneQueryDirty = defineTool({
         let comparisonError = '';
         try {
             const result = await ctx.sceneScript.call('sceneDirtyAgainstDisk');
-            if (result.success) comparison = result.data;
-            else comparisonError = result.error || 'scene script unavailable';
+            if (result?.success) comparison = result.data;
+            else comparisonError = result?.error || 'scene script unavailable';
         } catch (error) {
             comparisonError = textOf(error);
         }

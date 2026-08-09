@@ -93,6 +93,16 @@ test('an alias is rewritten to the declared parameter before validation', async 
     assert.equal(result.success, true);
 });
 
+test('an alias shadowing a declared parameter is rejected at definition time', () => {
+    assert.throws(() => defineTool({
+        name: 'find_owners',
+        description: 'Finds owners',
+        schema: z.object({ className: z.string(), name: z.string().optional() }),
+        aliases: { name: 'className' },
+        handler: async () => ({ success: true, data: null })
+    }), /find_owners.*'name'/s);
+});
+
 test('an accepted alias is advertised on the parameter it stands for', () => {
     const tool = defineTool({
         name: 'echo',

@@ -87,52 +87,48 @@ test('find_component_owners without a class name is a clear validation error', a
     assert.match(result.error.message, /className/);
 });
 
-test('every declared required argument is actually reachable under its own name', () => {
-    // guards the defect class: a schema advertising one name while the handler reads another
-    const executors = {
+/** Every advertised schema on the surface, legacy and migrated alike, under its full tool name. */
+const advertisedSchemas = () => [
+    ...Object.entries({
         debug: new DebugTools(),
         project: new ProjectTools(),
         node: new NodeTools(),
         component: new ComponentTools(),
         prefab: new PrefabTools()
-    };
-    for (const [category, ex] of Object.entries(executors)) {
-        for (const tool of ex.getTools()) {
-            const schema = tool.inputSchema || {};
-            const required = Array.isArray(schema.required) ? schema.required : [];
-            if (!required.length) continue;
-            const props = Object.keys(schema.properties || {});
-            for (const name of required) {
-                assert.ok(
-                    props.includes(name),
-                    `${category}_${tool.name}: required '${name}' is not declared in properties`
-                );
-            }
-            // a call supplying exactly the required set must validate
-            const args = Object.fromEntries(required.map(n => [n, 'x']));
-            const r = normalizeToolArgs(`${category}_${tool.name}`, schema, args);
-            assert.ok(r.ok || /must be of type/.test(r.error),
-                `${category}_${tool.name}: supplying all required args was rejected: ${r.error}`);
+    }).flatMap(([category, ex]) => ex.getTools()
+        .map(tool => ({ name: `${category}_${tool.name}`, inputSchema: tool.inputSchema || {} }))),
+    ...sceneTools.map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }))
+];
+
+test('every declared required argument is actually reachable under its own name', () => {
+    // guards the defect class: a schema advertising one name while the handler reads another
+    for (const { name: toolName, inputSchema } of advertisedSchemas()) {
+        const required = Array.isArray(inputSchema.required) ? inputSchema.required : [];
+        if (!required.length) continue;
+        const props = Object.keys(inputSchema.properties || {});
+        for (const name of required) {
+            assert.ok(props.includes(name), `${toolName}: required '${name}' is not declared in properties`);
         }
+        // a call supplying exactly the required set must validate
+        const args = Object.fromEntries(required.map(n => [n, 'x']));
+        const r = normalizeToolArgs(toolName, inputSchema, args);
+        assert.ok(r.ok || /must be of type/.test(r.error),
+            `${toolName}: supplying all required args was rejected: ${r.error}`);
     }
 });
 
 test('no two aliases on one tool collide with a different declared parameter', () => {
-    const executors = [new DebugTools(), new ProjectTools(),
-                       new NodeTools(), new ComponentTools(), new PrefabTools()];
-    for (const ex of executors) {
-        for (const tool of ex.getTools()) {
-            const props = (tool.inputSchema || {}).properties || {};
-            const names = Object.keys(props);
-            const seen = new Map();
-            for (const [name, def] of Object.entries(props)) {
-                for (const alias of (def && def['x-aliases']) || []) {
-                    assert.ok(!names.includes(alias),
-                        `${tool.name}: alias '${alias}' on '${name}' shadows a real parameter`);
-                    assert.ok(!seen.has(alias),
-                        `${tool.name}: alias '${alias}' claimed by both '${seen.get(alias)}' and '${name}'`);
-                    seen.set(alias, name);
-                }
+    for (const { name: toolName, inputSchema } of advertisedSchemas()) {
+        const props = inputSchema.properties || {};
+        const names = Object.keys(props);
+        const seen = new Map();
+        for (const [name, def] of Object.entries(props)) {
+            for (const alias of (def && def['x-aliases']) || []) {
+                assert.ok(!names.includes(alias),
+                    `${toolName}: alias '${alias}' on '${name}' shadows a real parameter`);
+                assert.ok(!seen.has(alias),
+                    `${toolName}: alias '${alias}' claimed by both '${seen.get(alias)}' and '${name}'`);
+                seen.set(alias, name);
             }
         }
     }

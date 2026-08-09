@@ -56,6 +56,17 @@ function advertiseAliases(schema: object, aliases: Record<string, string> | unde
     return schema;
 }
 
+function assertAliasesAreFree(name: string, declared: string[], aliases: Record<string, string> | undefined): void {
+    if (!aliases) return;
+    const shadowed = Object.keys(aliases).filter(alias => declared.includes(alias));
+    if (!shadowed.length) return;
+    throw new Error(
+        `defineTool(${name}): alias ${shadowed.map(alias => `'${alias}'`).join(', ')} is also a declared `
+        + 'parameter. An alias is deleted from the arguments once applied, so a caller passing both '
+        + 'spellings would silently lose the declared one.'
+    );
+}
+
 function describeIssues(error: z.ZodError): string {
     return error.issues
         .map(issue => `${issue.path.length ? issue.path.join('.') : '(root)'}: ${issue.message}`)
@@ -70,6 +81,7 @@ export const booleanArg = z.preprocess(value => {
 }, z.boolean());
 
 export function defineTool<S extends z.ZodRawShape>(def: ToolDefinition<S>): RegisteredTool {
+    assertAliasesAreFree(def.name, Object.keys(def.schema.shape), def.aliases);
     return {
         name: def.name,
         description: def.description,

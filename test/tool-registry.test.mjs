@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createToolInstances } from '../dist/tool-registry.js';
+import { ToolRegistry } from '../dist/registry.js';
+import { legacyTools } from '../dist/legacy-adapter.js';
+import { sceneTools } from '../dist/tools-v2/scene.js';
 
 test('the registry is the only category list, and it carries ecs', () => {
     const categories = Object.keys(createToolInstances());
@@ -25,4 +28,18 @@ test('every category answers getTools() with named, described tools', () => {
             assert.ok(tool.description, `${category}_${tool.name} has no description`);
         }
     }
+});
+
+test('the whole advertised surface composes with no name collision across categories', () => {
+    // the exact composition main.ts builds; ToolRegistry throws on a duplicate name
+    const tools = [
+        ...sceneTools,
+        ...Object.entries(createToolInstances())
+            .flatMap(([category, executor]) => legacyTools(category, executor))
+    ];
+    const names = new ToolRegistry(tools).list().map(tool => tool.name);
+
+    assert.equal(names.length, tools.length);
+    assert.equal(new Set(names).size, names.length);
+    assert.ok(names.includes('scene_dump'), 'the migrated scene category is missing from the surface');
 });
