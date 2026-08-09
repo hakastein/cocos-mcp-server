@@ -32,20 +32,6 @@ export class PrefabTools implements ToolExecutor {
                 }
             },
             {
-                name: 'load_prefab',
-                description: 'Load a prefab by path',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        prefabPath: {
-                            type: 'string',
-                            description: 'Prefab asset path'
-                        }
-                    },
-                    required: ['prefabPath']
-                }
-            },
-            {
                 name: 'instantiate_prefab',
                 description: 'Instantiate a prefab in the scene as a LINKED instance: the node keeps a '
                     + 'PrefabInfo, the saved scene carries its `_prefab` block, and later edits to the '
@@ -138,20 +124,6 @@ export class PrefabTools implements ToolExecutor {
                 }
             },
             {
-                name: 'get_prefab_info',
-                description: 'Get detailed prefab information',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        prefabPath: {
-                            type: 'string',
-                            description: 'Prefab asset path'
-                        }
-                    },
-                    required: ['prefabPath']
-                }
-            },
-            {
                 name: 'validate_prefab',
                 description: 'Validate a prefab file format',
                 inputSchema: {
@@ -163,28 +135,6 @@ export class PrefabTools implements ToolExecutor {
                         }
                     },
                     required: ['prefabPath']
-                }
-            },
-            {
-                name: 'duplicate_prefab',
-                description: 'Duplicate an existing prefab',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        sourcePrefabPath: {
-                            type: 'string',
-                            description: 'Source prefab path'
-                        },
-                        targetPrefabPath: {
-                            type: 'string',
-                            description: 'Target prefab path'
-                        },
-                        newPrefabName: {
-                            type: 'string',
-                            description: 'New prefab name'
-                        }
-                    },
-                    required: ['sourcePrefabPath', 'targetPrefabPath']
                 }
             },
             {
@@ -325,7 +275,7 @@ export class PrefabTools implements ToolExecutor {
             {
                 name: 'remove_override',
                 description: 'Remove ONE property override from a prefab instance by property path, leaving every other ' +
-                    'override in place — unlike restore_prefab_node / sceneAdvanced_restore_prefab, which discard the whole ' +
+                    'override in place — unlike restore_prefab_node, which discards the whole ' +
                     'set including the designer\'s transform, materials and added components. The record is spliced off the ' +
                     'live instance and the editor reserialises the scene, so __id__ numbering is regenerated rather than ' +
                     'hand-patched. Saves the scene unless save:false. When one path matches several records (the same ' +
@@ -363,8 +313,6 @@ export class PrefabTools implements ToolExecutor {
         switch (toolName) {
             case 'get_prefab_list':
                 return await this.getPrefabList(args.folder);
-            case 'load_prefab':
-                return await this.loadPrefab(args.prefabPath);
             case 'instantiate_prefab':
                 return await this.instantiatePrefab(args);
             case 'create_prefab':
@@ -373,12 +321,8 @@ export class PrefabTools implements ToolExecutor {
                 return await this.updatePrefab(args.prefabPath, args.nodeUuid);
             case 'revert_prefab':
                 return await this.revertPrefab(args.nodeUuid);
-            case 'get_prefab_info':
-                return await this.getPrefabInfo(args.prefabPath);
             case 'validate_prefab':
                 return await this.validatePrefab(args.prefabPath);
-            case 'duplicate_prefab':
-                return await this.duplicatePrefab(args);
             case 'restore_prefab_node':
                 return await this.restorePrefabNode(args.nodeUuid, args.assetUuid);
             case 'dump':
@@ -720,32 +664,6 @@ export class PrefabTools implements ToolExecutor {
             });
         });
     }
-
-    private async loadPrefab(prefabPath: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('asset-db', 'query-asset-info', prefabPath).then((assetInfo: any) => {
-                if (!assetInfo) {
-                    throw new Error('Prefab not found');
-                }
-                
-                return Editor.Message.request('scene', 'load-asset', {
-                    uuid: assetInfo.uuid
-                });
-            }).then((prefabData: any) => {
-                resolve({
-                    success: true,
-                    data: {
-                        uuid: prefabData.uuid,
-                        name: prefabData.name,
-                        message: 'Prefab loaded successfully'
-                    }
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
 
     private async instantiatePrefab(args: any): Promise<ToolResponse> {
         return new Promise(async (resolve) => {
@@ -1476,22 +1394,6 @@ export class PrefabTools implements ToolExecutor {
         return fileId;
     }
 
-    private createMetaData(prefabName: string, prefabUuid: string): any {
-        return {
-            "ver": "1.1.50",
-            "importer": "prefab",
-            "imported": true,
-            "uuid": prefabUuid,
-            "files": [
-                ".json"
-            ],
-            "subMetas": {},
-            "userData": {
-                "syncNodeName": prefabName
-            }
-        };
-    }
-
     private async savePrefabFiles(prefabPath: string, prefabData: any[], metaData: any): Promise<{ success: boolean; error?: string }> {
         return new Promise((resolve) => {
             try {
@@ -1572,31 +1474,6 @@ export class PrefabTools implements ToolExecutor {
                     success: true,
                     message: 'Prefab instance reverted successfully'
                 });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
-    private async getPrefabInfo(prefabPath: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('asset-db', 'query-asset-info', prefabPath).then((assetInfo: any) => {
-                if (!assetInfo) {
-                    throw new Error('Prefab not found');
-                }
-
-                return Editor.Message.request('asset-db', 'query-asset-meta', assetInfo.uuid);
-            }).then((metaInfo: any) => {
-                const info: PrefabInfo = {
-                    name: metaInfo.name,
-                    uuid: metaInfo.uuid,
-                    path: prefabPath,
-                    folder: prefabPath.substring(0, prefabPath.lastIndexOf('/')),
-                    createTime: metaInfo.createTime,
-                    modifyTime: metaInfo.modifyTime,
-                    dependencies: metaInfo.depends || []
-                };
-                resolve({ success: true, data: info });
             }).catch((err: Error) => {
                 resolve({ success: false, error: err.message });
             });
@@ -1686,80 +1563,6 @@ export class PrefabTools implements ToolExecutor {
             nodeCount,
             componentCount
         };
-    }
-
-    private async duplicatePrefab(args: any): Promise<ToolResponse> {
-        return new Promise(async (resolve) => {
-            try {
-                const { sourcePrefabPath, targetPrefabPath, newPrefabName } = args;
-                
-                // Read the source prefab
-                const sourceInfo = await this.getPrefabInfo(sourcePrefabPath);
-                if (!sourceInfo.success) {
-                    resolve({
-                        success: false,
-                        error: `Unable to read source prefab: ${sourceInfo.error}`
-                    });
-                    return;
-                }
-
-                // Read the source prefab content
-                const sourceContent = await this.readPrefabContent(sourcePrefabPath);
-                if (!sourceContent.success) {
-                    resolve({
-                        success: false,
-                        error: `Unable to read source prefab content: ${sourceContent.error}`
-                    });
-                    return;
-                }
-
-                // Generate a new UUID
-                const newUuid = this.generateUUID();
-
-                // Modify the prefab data
-                const modifiedData = this.modifyPrefabForDuplication(sourceContent.data, newPrefabName, newUuid);
-
-                // Create new meta data
-                const newMetaData = this.createMetaData(newPrefabName || 'DuplicatedPrefab', newUuid);
-
-                // Prefab duplication is temporarily disabled due to complex serialization format
-                resolve({
-                    success: false,
-                    error: 'Prefab duplication is temporarily unavailable',
-                    instruction: 'Please duplicate the prefab manually in the Cocos Creator editor:\n1. Select the prefab in the Assets panel\n2. Right-click and choose Copy\n3. Paste at the target location'
-                });
-
-            } catch (error) {
-                resolve({
-                    success: false,
-                    error: `Error occurred while duplicating prefab: ${error}`
-                });
-            }
-        });
-    }
-
-    private async readPrefabContent(prefabPath: string): Promise<{ success: boolean; data?: any; error?: string }> {
-        try {
-            return { success: true, data: await readAssetJson(prefabPath) };
-        } catch (error: any) {
-            if (error instanceof SyntaxError) return { success: false, error: 'Prefab file format error' };
-            return { success: false, error: error.message || 'Failed to read prefab file' };
-        }
-    }
-
-    private modifyPrefabForDuplication(prefabData: any[], newName: string, newUuid: string): any[] {
-        // Modify the prefab data to create a copy
-        const modifiedData = [...prefabData];
-
-        // Modify the first element (prefab asset)
-        if (modifiedData[0] && modifiedData[0].__type__ === 'cc.Prefab') {
-            modifiedData[0]._name = newName || 'DuplicatedPrefab';
-        }
-
-        // Update all UUID references (simplified version)
-        // In practice, more complex UUID mapping may be required
-
-        return modifiedData;
     }
 
     /**

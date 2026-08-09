@@ -47,7 +47,7 @@ export interface UuidPathPair {
  */
 const BARE_UUID_NODE_TOOLS = new Set([
     'get_node_info', 'set_node_property', 'set_node_transform', 'delete_node',
-    'duplicate_node', 'detect_node_type',
+    'duplicate_node',
     'reset_node_property', 'reset_node_transform', 'move_array_element', 'remove_array_element'
 ]);
 

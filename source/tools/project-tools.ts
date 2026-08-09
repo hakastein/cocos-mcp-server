@@ -233,28 +233,6 @@ export class ProjectTools implements ToolExecutor {
                 }
             },
             {
-                name: 'start_preview_server',
-                description: 'Start preview server',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        port: {
-                            type: 'number',
-                            description: 'Preview server port',
-                            default: 7456
-                        }
-                    }
-                }
-            },
-            {
-                name: 'stop_preview_server',
-                description: 'Stop preview server',
-                inputSchema: {
-                    type: 'object',
-                    properties: {}
-                }
-            },
-            {
                 name: 'create_asset',
                 description: 'Create a new asset file or folder',
                 inputSchema: {
@@ -506,10 +484,6 @@ export class ProjectTools implements ToolExecutor {
                 return await this.openBuildPanel();
             case 'check_builder_status':
                 return await this.checkBuilderStatus();
-            case 'start_preview_server':
-                return await this.startPreviewServer(args.port);
-            case 'stop_preview_server':
-                return await this.stopPreviewServer();
             case 'create_asset':
                 return await this.createAsset(args.url, args.content, args.overwrite);
             case 'copy_asset':
@@ -554,7 +528,7 @@ export class ProjectTools implements ToolExecutor {
             if (res && res.success) {
                 return {
                     success: true,
-                    message: 'In-editor preview started (Play). Use stop_preview_server or the editor Stop button to end it.',
+                    message: 'In-editor preview started (Play). Use the editor Stop button to end it.',
                     data: { mode: 'in-editor-preview' }
                 };
             }
@@ -1118,26 +1092,6 @@ export class ProjectTools implements ToolExecutor {
                 note: 'Readiness is not a build result — run build_project to actually build.'
             }
         };
-    }
-
-    private async startPreviewServer(port: number = 7456): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            resolve({
-                success: false,
-                error: 'Preview server control is not supported through MCP API',
-                instruction: 'Please start the preview server manually using the editor menu: Project > Preview, or use the preview panel in the editor'
-            });
-        });
-    }
-
-    private async stopPreviewServer(): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            resolve({
-                success: false,
-                error: 'Preview server control is not supported through MCP API',
-                instruction: 'Please stop the preview server manually using the preview panel in the editor'
-            });
-        });
     }
 
     private async createAsset(url: string, content: string | null = null, overwrite: boolean = false): Promise<ToolResponse> {

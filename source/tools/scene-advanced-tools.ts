@@ -161,24 +161,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                 }
             },
             {
-                name: 'restore_prefab',
-                description: 'Restore prefab instance from asset',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        nodeUuid: {
-                            type: 'string',
-                            description: 'Node UUID'
-                        },
-                        assetUuid: {
-                            type: 'string',
-                            description: 'Prefab asset UUID'
-                        }
-                    },
-                    required: ['nodeUuid', 'assetUuid']
-                }
-            },
-            {
                 name: 'execute_component_method',
                 description: 'Execute method on component',
                 inputSchema: {
@@ -199,45 +181,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                         }
                     },
                     required: ['uuid', 'name']
-                }
-            },
-            {
-                name: 'execute_scene_script',
-                description: 'Execute scene script method',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        name: {
-                            type: 'string',
-                            description: 'Plugin name'
-                        },
-                        method: {
-                            type: 'string',
-                            description: 'Method name'
-                        },
-                        args: {
-                            type: 'array',
-                            description: 'Method arguments',
-                            default: []
-                        }
-                    },
-                    required: ['name', 'method']
-                }
-            },
-            {
-                name: 'scene_snapshot',
-                description: 'Create scene state snapshot',
-                inputSchema: {
-                    type: 'object',
-                    properties: {}
-                }
-            },
-            {
-                name: 'scene_snapshot_abort',
-                description: 'Abort scene snapshot creation',
-                inputSchema: {
-                    type: 'object',
-                    properties: {}
                 }
             },
             {
@@ -335,20 +278,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                 }
             },
             {
-                name: 'query_component_has_script',
-                description: 'Check if component has script',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        className: {
-                            type: 'string',
-                            description: 'Script class name to check'
-                        }
-                    },
-                    required: ['className']
-                }
-            },
-            {
                 name: 'query_nodes_by_asset_uuid',
                 description: 'Find nodes that use specific asset UUID',
                 inputSchema: {
@@ -383,16 +312,8 @@ export class SceneAdvancedTools implements ToolExecutor {
                 return await this.resetNodeTransform(args.uuid);
             case 'reset_component':
                 return await this.resetComponent(args.uuid);
-            case 'restore_prefab':
-                return await this.restorePrefab(args.nodeUuid, args.assetUuid);
             case 'execute_component_method':
                 return await this.executeComponentMethod(args.uuid, args.name, args.args);
-            case 'execute_scene_script':
-                return await this.executeSceneScript(args.name, args.method, args.args);
-            case 'scene_snapshot':
-                return await this.sceneSnapshot();
-            case 'scene_snapshot_abort':
-                return await this.sceneSnapshotAbort();
             case 'begin_undo_recording':
                 return await this.beginUndoRecording(args.nodeUuid);
             case 'end_undo_recording':
@@ -409,8 +330,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                 return await this.querySceneClasses(args.extends);
             case 'query_scene_components':
                 return await this.querySceneComponents();
-            case 'query_component_has_script':
-                return await this.queryComponentHasScript(args.className);
             case 'query_nodes_by_asset_uuid':
                 return await this.queryNodesByAssetUuid(args.assetUuid);
             default:
@@ -548,19 +467,6 @@ export class SceneAdvancedTools implements ToolExecutor {
         });
     }
 
-    private async restorePrefab(nodeUuid: string, assetUuid: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            (Editor.Message.request as any)('scene', 'restore-prefab', nodeUuid, assetUuid).then(() => {
-                resolve({
-                    success: true,
-                    message: 'Prefab restored successfully'
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
     private async executeComponentMethod(uuid: string, name: string, args: any[] = []): Promise<ToolResponse> {
         return new Promise((resolve) => {
             Editor.Message.request('scene', 'execute-component-method', {
@@ -574,49 +480,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                         result: result,
                         message: `Method '${name}' executed successfully`
                     }
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
-    private async executeSceneScript(name: string, method: string, args: any[] = []): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'execute-scene-script', {
-                name,
-                method,
-                args
-            }).then((result: any) => {
-                resolve({
-                    success: true,
-                    data: result
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
-    private async sceneSnapshot(): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'snapshot').then(() => {
-                resolve({
-                    success: true,
-                    message: 'Scene snapshot created'
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
-    private async sceneSnapshotAbort(): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'snapshot-abort').then(() => {
-                resolve({
-                    success: true,
-                    message: 'Scene snapshot aborted'
                 });
             }).catch((err: Error) => {
                 resolve({ success: false, error: err.message });
@@ -791,23 +654,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                     data: {
                         components: components,
                         count: components.length
-                    }
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
-    private async queryComponentHasScript(className: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'query-component-has-script', className).then((hasScript: boolean) => {
-                resolve({
-                    success: true,
-                    data: {
-                        className: className,
-                        hasScript: hasScript,
-                        message: hasScript ? `Component '${className}' has script` : `Component '${className}' does not have script`
                     }
                 });
             }).catch((err: Error) => {

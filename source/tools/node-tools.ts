@@ -23,7 +23,7 @@ export class NodeTools implements ToolExecutor {
                         },
                         parentUuid: {
                             type: 'string',
-                            description: 'Parent node UUID. STRONGLY RECOMMENDED: Always provide this parameter. Use get_current_scene or get_all_nodes to find parent UUIDs. If not provided, node will be created at scene root.'
+                            description: 'Parent node UUID. STRONGLY RECOMMENDED: Always provide this parameter. Use get_current_scene or scene_dump to find parent UUIDs. If not provided, node will be created at scene root.'
                         },
                         nodeType: {
                             type: 'string',
@@ -139,14 +139,6 @@ export class NodeTools implements ToolExecutor {
                         }
                     },
                     required: ['name']
-                }
-            },
-            {
-                name: 'get_all_nodes',
-                description: 'Get all nodes in the scene with their UUIDs',
-                inputSchema: {
-                    type: 'object',
-                    properties: {}
                 }
             },
             {
@@ -269,20 +261,6 @@ export class NodeTools implements ToolExecutor {
                 }
             },
             {
-                name: 'detect_node_type',
-                description: 'Detect if a node is 2D or 3D based on its components and properties',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        uuid: {
-                            type: 'string',
-                            description: 'Node UUID to analyze'
-                        }
-                    },
-                    required: ['uuid']
-                }
-            },
-            {
                 name: 'create_primitive',
                 description: 'Create a real primitive node (3D mesh) for editor-first environment authoring: a cc.MeshRenderer with a builtin primitive mesh and an optional colored material. Mesh sub-uuids are resolved dynamically from db://internal/primitives.fbx (never hardcoded).',
                 inputSchema: {
@@ -330,8 +308,6 @@ export class NodeTools implements ToolExecutor {
                 return await this.findNodes(args.pattern, args.exactMatch);
             case 'find_node_by_name':
                 return await this.findNodeByName(args.name);
-            case 'get_all_nodes':
-                return await this.getAllNodes();
             case 'set_node_property':
                 return await this.setNodeProperty(args.uuid, args.property, coerceJsonArg(args.value).value);
             case 'set_node_transform':
@@ -342,8 +318,6 @@ export class NodeTools implements ToolExecutor {
                 return await this.moveNode(args.nodeUuid, args.newParentUuid, args.siblingIndex);
             case 'duplicate_node':
                 return await this.duplicateNode(args.uuid, args.includeChildren);
-            case 'detect_node_type':
-                return await this.detectNodeType(args.uuid);
             default:
                 throw new Error(`Unknown tool: ${toolName}`);
         }
@@ -1003,56 +977,6 @@ export class NodeTools implements ToolExecutor {
         return null;
     }
 
-    private async getAllNodes(): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            // Query scene node tree
-            Editor.Message.request('scene', 'query-node-tree').then((tree: any) => {
-                const nodes: any[] = [];
-                
-                const traverseTree = (node: any) => {
-                    nodes.push({
-                        uuid: node.uuid,
-                        name: node.name,
-                        type: node.type,
-                        active: node.active,
-                        path: this.getNodePath(node)
-                    });
-                    
-                    if (node.children) {
-                        for (const child of node.children) {
-                            traverseTree(child);
-                        }
-                    }
-                };
-                
-                if (tree && tree.children) {
-                    traverseTree(tree);
-                }
-                
-                resolve({
-                    success: true,
-                    data: {
-                        totalNodes: nodes.length,
-                        nodes: nodes
-                    }
-                });
-            }).catch((err: Error) => {
-                // Fallback: use scene script
-                const options = {
-                    name: 'cocos-mcp-server',
-                    method: 'getAllNodes',
-                    args: []
-                };
-                
-                Editor.Message.request('scene', 'execute-scene-script', options).then((result: any) => {
-                    resolve(result);
-                }).catch((err2: Error) => {
-                    resolve({ success: false, error: `Direct API failed: ${err.message}, Scene script failed: ${err2.message}` });
-                });
-            });
-        });
-    }
-
     private getNodePath(node: any): string {
         const path = [node.name];
         let current = node.parent;
@@ -1407,111 +1331,4 @@ export class NodeTools implements ToolExecutor {
         });
     }
 
-    private async detectNodeType(uuid: string): Promise<ToolResponse> {
-        return new Promise(async (resolve) => {
-            try {
-                const nodeInfoResponse = await this.getNodeInfo(uuid);
-                if (!nodeInfoResponse.success || !nodeInfoResponse.data) {
-                    resolve({ success: false, error: 'Failed to get node information' });
-                    return;
-                }
-
-                const nodeInfo = nodeInfoResponse.data;
-                const is2D = this.is2DNode(nodeInfo);
-                const components = nodeInfo.components || [];
-                
-                // Collect detection reasons
-                const detectionReasons: string[] = [];
-                
-                // Check for 2D/UI components
-                const twoDComponents = components.filter((comp: any) =>
-                    comp.type && (
-                        comp.type.includes('cc.UITransform') ||
-                        comp.type.includes('cc.Canvas') ||
-                        comp.type.includes('cc.Sprite') ||
-                        comp.type.includes('cc.Label') ||
-                        comp.type.includes('cc.RichText') ||
-                        comp.type.includes('cc.Button') ||
-                        comp.type.includes('cc.Layout') ||
-                        comp.type.includes('cc.Widget') ||
-                        comp.type.includes('cc.Mask') ||
-                        comp.type.includes('cc.Graphics')
-                    )
-                );
-
-                // Check for 3D components
-                const threeDComponents = components.filter((comp: any) =>
-                    comp.type && (
-                        comp.type.includes('cc.MeshRenderer') ||
-                        comp.type.includes('cc.SkinnedMeshRenderer') ||
-                        comp.type.includes('cc.Camera') ||
-                        comp.type.includes('Light') ||
-                        comp.type.includes('cc.ParticleSystem')
-                    )
-                );
-
-                if (twoDComponents.length > 0) {
-                    detectionReasons.push(`Has 2D/UI components: ${twoDComponents.map((c: any) => c.type).join(', ')}`);
-                }
-
-                if (threeDComponents.length > 0) {
-                    detectionReasons.push(`Has 3D components: ${threeDComponents.map((c: any) => c.type).join(', ')}`);
-                }
-
-                // Node layer is the tie-breaker (only UI_2D marks a 2D node).
-                if (nodeInfo.layer === NodeTools.LAYER_UI_2D) {
-                    detectionReasons.push('Node is on the UI_2D layer (2D)');
-                }
-
-                if (detectionReasons.length === 0) {
-                    detectionReasons.push('No 2D/UI signals found; treated as a 3D node (full x/y/z transform)');
-                }
-
-                resolve({
-                    success: true,
-                    data: {
-                        nodeUuid: uuid,
-                        nodeName: nodeInfo.name,
-                        nodeType: is2D ? '2D' : '3D',
-                        detectionReasons: detectionReasons,
-                        components: components.map((comp: any) => ({
-                            type: comp.type,
-                            category: this.getComponentCategory(comp.type)
-                        })),
-                        position: nodeInfo.position,
-                        transformConstraints: {
-                            position: is2D ? 'x, y only (z ignored)' : 'x, y, z all used',
-                            rotation: is2D ? 'z only (x, y ignored)' : 'x, y, z all used',
-                            scale: is2D ? 'x, y main, z typically 1' : 'x, y, z all used'
-                        }
-                    }
-                });
-                
-            } catch (err: any) {
-                resolve({ 
-                    success: false, 
-                    error: `Failed to detect node type: ${err.message}` 
-                });
-            }
-        });
-    }
-
-    private getComponentCategory(componentType: string): string {
-        if (!componentType) return 'unknown';
-        
-        if (componentType.includes('cc.Sprite') || componentType.includes('cc.Label') || 
-            componentType.includes('cc.Button') || componentType.includes('cc.Layout') ||
-            componentType.includes('cc.Widget') || componentType.includes('cc.Mask') ||
-            componentType.includes('cc.Graphics')) {
-            return '2D';
-        }
-        
-        if (componentType.includes('cc.MeshRenderer') || componentType.includes('cc.Camera') ||
-            componentType.includes('cc.Light') || componentType.includes('cc.DirectionalLight') ||
-            componentType.includes('cc.PointLight') || componentType.includes('cc.SpotLight')) {
-            return '3D';
-        }
-        
-        return 'generic';
-    }
 }

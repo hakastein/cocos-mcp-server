@@ -1,6 +1,5 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, SceneInfo } from '../types';
 import { signatureOf, hashSignature, diffSignatures } from '../scene-signature';
-import { decompressUuid } from '../prefab-json';
 import { ALIAS_KEY } from '../tool-args';
 
 export class SceneTools implements ToolExecutor {
@@ -48,34 +47,9 @@ export class SceneTools implements ToolExecutor {
                 }
             },
             {
-                name: 'save_scene_as',
-                description: 'Save scene as new file',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        path: { type: 'string', description: 'Path to save the scene' }
-                    },
-                    required: ['path']
-                }
-            },
-            {
                 name: 'close_scene',
                 description: 'Close current scene',
                 inputSchema: { type: 'object', properties: {} }
-            },
-            {
-                name: 'get_scene_hierarchy',
-                description: 'Get the complete hierarchy of current scene',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        includeComponents: {
-                            type: 'boolean',
-                            description: 'Include component information',
-                            default: false
-                        }
-                    }
-                }
             },
             {
                 name: 'dump',
@@ -143,9 +117,7 @@ export class SceneTools implements ToolExecutor {
             case 'open_scene':          return this.openScene(args.scenePath);
             case 'save_scene':          return this.saveScene();
             case 'create_scene':        return this.createScene(args.sceneName, args.savePath);
-            case 'save_scene_as':       return this.saveSceneAs(args.path);
             case 'close_scene':         return this.closeScene();
-            case 'get_scene_hierarchy': return this.getSceneHierarchy(args.includeComponents);
             case 'dump':                return this.dumpScene(args || {});
             case 'checksum':            return this.checksum(args || {});
             case 'find_component_owners':
@@ -308,150 +280,6 @@ export class SceneTools implements ToolExecutor {
                     sceneVerified: !!created
                 },
                 verificationData: created
-            };
-        } catch (err: any) {
-            return { success: false, error: err.message };
-        }
-    }
-
-    private async getSceneHierarchy(includeComponents: boolean = false): Promise<ToolResponse> {
-        try {
-            await this.waitSceneReady();
-            const tree: any = await Editor.Message.request('scene', 'query-node-tree');
-            if (tree) {
-                const data = this.buildHierarchy(tree, includeComponents);
-                if (includeComponents) await this.resolveHierarchyClassNames(data);
-                return { success: true, data };
-            }
-            return { success: false, error: 'No scene hierarchy available' };
-        } catch (err: any) {
-            // Fallback: query via scene script
-            try {
-                const result: any = await Editor.Message.request('scene', 'execute-scene-script', {
-                    name: 'cocos-mcp-server',
-                    method: 'getSceneHierarchy',
-                    args: [includeComponents]
-                });
-                return result;
-            } catch (err2: any) {
-                return { success: false, error: `Editor API failed: ${err.message}; Scene script failed: ${err2.message}` };
-            }
-        }
-    }
-
-    private buildHierarchy(node: any, includeComponents: boolean): any {
-        const result: any = {
-            uuid: node.uuid,
-            name: node.name,
-            type: node.type,
-            active: node.active,
-            children: node.children?.map((child: any) => this.buildHierarchy(child, includeComponents)) ?? []
-        };
-        if (includeComponents && node.__comps__) {
-            result.components = node.__comps__.map((comp: any) => ({
-                type: comp.__type__ ?? 'Unknown',
-                enabled: comp.enabled ?? true
-            }));
-        }
-        return result;
-    }
-
-    /** A `__type__` that is a compressed script-asset uuid rather than a `cc.` class name. */
-    private isCompressedCid(type: string): boolean {
-        return typeof type === 'string'
-            && !type.startsWith('cc.')
-            && /^[A-Za-z0-9+/]{20,24}$/.test(type);
-    }
-
-    /**
-     * Give every component in the tree a `className`.
-     *
-     * This path builds its component list from the editor's node dump, where a user script's
-     * `__type__` is the 23-char compressed uuid of its .ts asset — unreadable to a caller and
-     * not something any other tool accepts as a component type. Resolving it back to the
-     * script's class name is what makes "which node owns component X" answerable here, the
-     * same way prefab_dump already does it. `type` is left untouched.
-     */
-    private async resolveHierarchyClassNames(root: any): Promise<void> {
-        const cache = new Map<string, string>();
-        const pending = new Set<string>();
-
-        const collect = (node: any) => {
-            for (const comp of node.components || []) {
-                if (this.isCompressedCid(comp.type)) pending.add(comp.type);
-            }
-            for (const child of node.children || []) collect(child);
-        };
-        collect(root);
-
-        for (const cid of pending) {
-            let name = cid;
-            try {
-                const url: string | null = await Editor.Message.request(
-                    'asset-db', 'query-url', decompressUuid(cid)
-                );
-                if (url) name = url.split('/').pop()!.replace(/\.ts$/, '');
-            } catch {
-                // unresolvable script asset: leave the raw id as the name
-            }
-            cache.set(cid, name);
-        }
-
-        const apply = (node: any) => {
-            for (const comp of node.components || []) {
-                comp.className = cache.get(comp.type) ?? comp.type;
-            }
-            for (const child of node.children || []) apply(child);
-        };
-        apply(root);
-    }
-
-    private async saveSceneAs(path: string): Promise<ToolResponse> {
-        // NOTE: the editor's `scene/save-as-scene` channel only opens the native file
-        // dialog (and blocks until dismissed), so it is unusable headlessly. There is also
-        // no `scene/serialize` message in 3.8.x. Instead we flush the current scene to its
-        // own file and copy that file to the target path via the asset database.
-        try {
-            if (!path || !path.startsWith('db://')) {
-                return {
-                    success: false,
-                    error: 'save_scene_as requires a db:// target path, e.g. db://assets/scenes/MyScene.scene'
-                };
-            }
-            const targetPath = path.endsWith('.scene') ? path : `${path}.scene`;
-
-            // Flush in-memory edits so the copy reflects the current scene state.
-            // (This also writes the current scene's own file, as a real "Save As" does.)
-            await Editor.Message.request('scene', 'save-scene');
-
-            // Resolve the current scene's source url from its (runtime) root uuid.
-            const tree: any = await Editor.Message.request('scene', 'query-node-tree');
-            const sceneUuid: string | undefined = tree?.uuid;
-            const sourceUrl: string | null = sceneUuid
-                ? await Editor.Message.request('asset-db', 'query-url', sceneUuid).catch(() => null)
-                : null;
-            if (!sourceUrl) {
-                return { success: false, error: 'Could not resolve the current scene source file to copy from' };
-            }
-            if (sourceUrl === targetPath) {
-                return { success: true, data: { path: targetPath, message: 'Target equals current scene; saved in place' } };
-            }
-
-            // Copy the scene asset directly to the target (overwrite if it exists) — no dialog.
-            const existing: string | null = await Editor.Message.request('asset-db', 'query-uuid', targetPath).catch(() => null);
-            const result: any = await (Editor.Message.request as any)(
-                'asset-db', 'copy-asset', sourceUrl, targetPath, { overwrite: true }
-            );
-
-            return {
-                success: true,
-                data: {
-                    path: result?.url ?? targetPath,
-                    uuid: result?.uuid ?? null,
-                    source: sourceUrl,
-                    overwritten: !!existing,
-                    message: `Scene saved to ${targetPath} (headless copy of ${sourceUrl}, no dialog)`
-                }
             };
         } catch (err: any) {
             return { success: false, error: err.message };

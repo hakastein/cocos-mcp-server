@@ -25,7 +25,7 @@ export class ComponentTools implements ToolExecutor {
                     properties: {
                         nodeUuid: {
                             type: 'string',
-                            description: 'Target node UUID. REQUIRED: You must specify the exact node to add the component to. Use get_all_nodes or find_node_by_name to get the UUID of the desired node.'
+                            description: 'Target node UUID. REQUIRED: You must specify the exact node to add the component to. Use scene_dump or find_node_by_name to get the UUID of the desired node.'
                         },
                         componentType: {
                             type: 'string',
@@ -171,7 +171,7 @@ export class ComponentTools implements ToolExecutor {
                                 '• size: {"width":100,"height":50} (size dimensions)\n\n' +
                                 '🔗 Reference Types (using UUID strings):\n' +
                                 '• node: "target-node-uuid" (node reference)\n' +
-                                '  How to get: Use get_all_nodes or find_node_by_name to get node UUIDs\n' +
+                                '  How to get: Use scene_dump or find_node_by_name to get node UUIDs\n' +
                                 '• component: "target-node-uuid" (component reference)\n' +
                                 '  How it works: \n' +
                                 '    1. Provide the UUID of the NODE that contains the target component\n' +
@@ -231,21 +231,6 @@ export class ComponentTools implements ToolExecutor {
                         }
                     },
                     required: ['nodeUuid', 'scriptPath']
-                }
-            },
-            {
-                name: 'get_available_components',
-                description: 'Get list of available component types',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        category: {
-                            type: 'string',
-                            description: 'Component category filter',
-                            enum: ['all', 'renderer', 'ui', 'physics', 'animation', 'audio'],
-                            default: 'all'
-                        }
-                    }
                 }
             },
             {
@@ -335,8 +320,6 @@ export class ComponentTools implements ToolExecutor {
                 return await this.setComponentProperty(args);
             case 'attach_script':
                 return await this.attachScript(args.nodeUuid, args.scriptPath);
-            case 'get_available_components':
-                return await this.getAvailableComponents(args.category);
             case 'set_materials':
                 return await this.setMaterials(args.nodeUuid, args.materialUuids, args.componentType);
             case 'get_materials':
@@ -1001,7 +984,7 @@ export class ComponentTools implements ToolExecutor {
                 return {
                     success: false,
                     error: `Failed to get components for node '${nodeUuid}': ${componentsResponse.error}`,
-                    instruction: `Please verify that node UUID '${nodeUuid}' is correct. Use get_all_nodes or find_node_by_name to get the correct node UUID.`
+                    instruction: `Please verify that node UUID '${nodeUuid}' is correct. Use scene_dump or find_node_by_name to get the correct node UUID.`
                 };
             }
 
@@ -2306,38 +2289,6 @@ export class ComponentTools implements ToolExecutor {
             success: false,
             error: `Failed to attach script '${scriptName}' to node ${nodeUuid}.`,
             instruction: 'Ensure the script is a compiled cc.Component subclass (@ccclass) and the project has finished importing/compiling, then retry.'
-        };
-    }
-
-    private async getAvailableComponents(category: string = 'all'): Promise<ToolResponse> {
-        const componentCategories: Record<string, string[]> = {
-            renderer: ['cc.Sprite', 'cc.Label', 'cc.RichText', 'cc.Mask', 'cc.Graphics'],
-            ui: ['cc.Button', 'cc.Toggle', 'cc.Slider', 'cc.ScrollView', 'cc.EditBox', 'cc.ProgressBar'],
-            physics: ['cc.RigidBody2D', 'cc.BoxCollider2D', 'cc.CircleCollider2D', 'cc.PolygonCollider2D'],
-            animation: ['cc.Animation', 'cc.AnimationClip', 'cc.SkeletalAnimation'],
-            audio: ['cc.AudioSource'],
-            layout: ['cc.Layout', 'cc.Widget', 'cc.PageView', 'cc.PageViewIndicator'],
-            effects: ['cc.MotionStreak', 'cc.ParticleSystem2D'],
-            camera: ['cc.Camera'],
-            light: ['cc.Light', 'cc.DirectionalLight', 'cc.PointLight', 'cc.SpotLight']
-        };
-
-        let components: string[] = [];
-        
-        if (category === 'all') {
-            for (const cat in componentCategories) {
-                components = components.concat(componentCategories[cat]);
-            }
-        } else if (componentCategories[category]) {
-            components = componentCategories[category];
-        }
-
-        return {
-            success: true,
-            data: {
-                category: category,
-                components: components
-            }
         };
     }
 
