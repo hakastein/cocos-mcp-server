@@ -47,19 +47,7 @@ export const methods: { [key: string]: (...any: any) => any } = {
         return mcpServer ? mcpServer.getAvailableTools() : [];
     },
 
-    getFilteredToolsList() {
-        if (!mcpServer) return [];
-        const enabledTools = toolManager.getEnabledTools();
-        mcpServer.updateEnabledTools(enabledTools);
-        return mcpServer.getFilteredTools(enabledTools);
-    },
-
     async getServerSettings() {
-        return mcpServer ? mcpServer.getSettings() : readSettings();
-    },
-
-    // Alias kept for backwards compatibility with panel messages
-    async getSettings() {
         return mcpServer ? mcpServer.getSettings() : readSettings();
     },
 

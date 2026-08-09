@@ -910,18 +910,7 @@ export class NodeTools implements ToolExecutor {
                 
                 resolve({ success: true, data: nodes });
             }).catch((err: Error) => {
-                // Fallback: use scene script
-                const options = {
-                    name: 'cocos-mcp-server',
-                    method: 'findNodes',
-                    args: [pattern, exactMatch]
-                };
-                
-                Editor.Message.request('scene', 'execute-scene-script', options).then((result: any) => {
-                    resolve(result);
-                }).catch((err2: Error) => {
-                    resolve({ success: false, error: `Tree search failed: ${err.message}, Scene script failed: ${err2.message}` });
-                });
+                resolve({ success: false, error: `Tree search failed: ${err.message}` });
             });
         });
     }

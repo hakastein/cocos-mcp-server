@@ -822,24 +822,6 @@ export const methods: { [key: string]: (...any: any) => any } = {
         }
     },
 
-    createPrefabFromNode(nodeUuid: string, prefabPath: string) {
-        try {
-            const scene = requireActiveScene();
-            const node = findNodeByUuid(scene, nodeUuid);
-            // Prefab file creation requires Editor API support and cannot be done at runtime.
-            return {
-                success: true,
-                data: {
-                    prefabPath,
-                    sourceNodeUuid: nodeUuid,
-                    message: `Prefab created from node '${node.name}' at ${prefabPath}`
-                }
-            };
-        } catch (error: any) {
-            return { success: false, error: error.message };
-        }
-    },
-
     // Evaluate arbitrary JavaScript in the scene (engine) context, where the `cc`
     // module and the live `director`/scene are available. This replaces the previous
     // dependency on the editor-internal `console` scene package (whose `eval` method
