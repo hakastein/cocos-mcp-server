@@ -156,10 +156,17 @@ test('a node argument is advertised with its path spelling and stops being requi
     assert.deepEqual(schema.required, []);
 });
 
-test('list hands out copies, so a caller cannot rewrite what the registry advertises', () => {
+test('list hands out deep copies, down to the schema a caller could otherwise rewrite', () => {
     const registry = new ToolRegistry([echoTool()]);
-    registry.list()[0].description = 'rewritten';
-    assert.equal(registry.list()[0].description, 'Echoes its arguments');
+    const advertised = registry.list()[0];
+    advertised.description = 'rewritten';
+    advertised.inputSchema.properties.text.type = 'number';
+    delete advertised.inputSchema.required;
+
+    const fresh = registry.list()[0];
+    assert.equal(fresh.description, 'Echoes its arguments');
+    assert.equal(fresh.inputSchema.properties.text.type, 'string');
+    assert.deepEqual(fresh.inputSchema.required, ['text']);
 });
 
 test('a native tool under a category prefix is augmented like its legacy neighbours', async () => {
@@ -372,6 +379,48 @@ test('a legacy failure spelling both error and message keeps both, and its instr
         message: 'asset not found — db://assets/a.png was never imported',
         hint: 'call refresh_assets first'
     });
+});
+
+test('a legacy failure keeps the payload it reported beside its error', async () => {
+    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
+        success: false,
+        error: 'the write did not take',
+        data: { actualValue: 3, serializerNote: 'clamped' }
+    }))));
+    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
+
+    assert.deepEqual(result, {
+        success: false,
+        error: { code: 'legacy', message: 'the write did not take' },
+        data: { actualValue: 3, serializerNote: 'clamped' }
+    });
+});
+
+test('a legacy failure that names no reason still hands over its results', async () => {
+    const batch = {
+        total: 2, succeeded: 1, failed: 1, skipped: 0, haltedEarly: true,
+        results: [{ index: 0, success: true }, { index: 1, success: false, error: 'no scene is open' }]
+    };
+    const registry = new ToolRegistry(legacyTools('batch', {
+        getTools: () => [{ name: 'run', description: 'Runs a plan', inputSchema: { type: 'object', properties: {} } }],
+        execute: async () => ({ success: false, data: batch })
+    }));
+    const result = await registry.invoke('batch_run', {}, context);
+
+    assert.equal(result.success, false);
+    assert.equal(result.error.code, 'legacy');
+    assert.equal(/without naming it/.test(result.error.message), false);
+    assert.match(result.error.message, /see data/);
+    assert.deepEqual(result.data, batch);
+});
+
+test('a legacy failure with nothing but an error carries no data key', async () => {
+    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
+        success: false, error: 'asset not found'
+    }))));
+    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
+
+    assert.equal('data' in result, false);
 });
 
 test('a legacy failure repeating one text in both fields does not say it twice', async () => {

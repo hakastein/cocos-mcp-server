@@ -25,22 +25,32 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function payloadOf(record: Record<string, unknown>, spoken: string[]): unknown {
+    const rest: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(record)) {
+        if (!spoken.includes(key)) rest[key] = value;
+    }
+    const { data, ...siblings } = rest;
+    const siblingCount = Object.keys(siblings).length;
+    if (isPlainObject(data) && siblingCount) return { ...data, ...siblings };
+    if ('data' in rest) return siblingCount ? rest : data;
+    return siblingCount ? rest : undefined;
+}
+
 function legacyFailure(record: Record<string, unknown>): ToolResult {
     const error = textOf(record.error);
     const message = textOf(record.message);
     const spelled = [error, message === error ? undefined : message].filter(Boolean).join(' — ');
-    return fail('legacy', spelled || 'the tool reported a failure without naming it',
-        textOf(record.instruction));
+    const payload = payloadOf(record, ['success', 'error', 'message', 'instruction']);
+    const unnamed = payload === undefined
+        ? 'the tool reported a failure without naming it'
+        : 'legacy tool reported failure; see data';
+    return fail('legacy', spelled || unnamed, textOf(record.instruction), payload);
 }
 
 function legacySuccess(record: Record<string, unknown>): ToolResult {
-    const { success, message, ...rest } = record;
-    const { data, ...siblings } = rest;
-    const siblingCount = Object.keys(siblings).length;
-    const payload = isPlainObject(data) && siblingCount
-        ? { ...data, ...siblings }
-        : (siblingCount === 0 && 'data' in rest ? data : rest);
-    return typeof message === 'string' ? ok(payload, message) : ok(payload);
+    const payload = payloadOf(record, ['success', 'message']);
+    return typeof record.message === 'string' ? ok(payload, record.message) : ok(payload);
 }
 
 function toToolResult(raw: unknown): ToolResult {

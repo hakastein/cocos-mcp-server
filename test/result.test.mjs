@@ -31,6 +31,18 @@ test('fail without a hint omits the hint key', () => {
     assert.deepEqual(result.error, { code: 'NOT_FOUND', message: 'node missing' });
 });
 
+test('fail carries a payload beside the error when one is given', () => {
+    const result = fail('legacy', 'two steps failed', undefined, { failed: 2, results: [1, 2] });
+    assert.equal(result.success, false);
+    assert.deepEqual(result.error, { code: 'legacy', message: 'two steps failed' });
+    assert.deepEqual(result.data, { failed: 2, results: [1, 2] });
+});
+
+test('fail without a payload omits the data key', () => {
+    assert.equal('data' in fail('NOT_FOUND', 'node missing'), false);
+    assert.equal('data' in fail('NOT_FOUND', 'node missing', 'check the uuid'), false);
+});
+
 test('isOk distinguishes ok from fail', () => {
     assert.equal(isOk(ok(1)), true);
     assert.equal(isOk(fail('E', 'm')), false);

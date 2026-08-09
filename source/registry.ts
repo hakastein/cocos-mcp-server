@@ -44,7 +44,10 @@ export class ToolRegistry {
     }
 
     list(): AdvertisedTool[] {
-        return Array.from(this.entries.values(), entry => ({ ...entry.definition }));
+        return Array.from(this.entries.values(), entry => ({
+            ...entry.definition,
+            inputSchema: structuredClone(entry.definition.inputSchema)
+        }));
     }
 
     async invoke(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
