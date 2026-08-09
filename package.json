@@ -78,7 +78,7 @@
             }
         },
         "scene": {
-            "script": "./dist/scene.js",
+            "script": "./dist/scene/index.js",
             "methods": [
                 "declaredComponentProperty",
                 "createNewScene",

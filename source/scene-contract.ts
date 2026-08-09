@@ -1,0 +1,414 @@
+import type { SerializedDiff } from './serialized-diff';
+import type { PathResolution } from './node-path';
+
+export interface SceneFailure {
+    success: false;
+    error: string;
+    stack?: string;
+}
+
+export interface SceneSuccess<T> {
+    success: true;
+    data: T;
+    message?: string;
+}
+
+export interface SceneAck {
+    success: true;
+    message: string;
+}
+
+export type SceneResult<T> = SceneSuccess<T> | SceneFailure;
+export type SceneAckResult = SceneAck | SceneFailure;
+
+export interface Vec3Like {
+    x: number;
+    y: number;
+    z: number;
+}
+
+export interface QuatLike extends Vec3Like {
+    w: number;
+}
+
+export interface WriteReport {
+    written: boolean;
+    verified: boolean;
+    persisted: boolean;
+    prefabOverride?: { targetPath: string };
+    detail?: string;
+}
+
+export interface PropertyWriteFailure extends SceneFailure {
+    data: WriteReport;
+}
+
+export type PropertyWriteResult = SceneSuccess<WriteReport> | PropertyWriteFailure;
+
+export interface NodePropertyWrite {
+    nodeUuid: string;
+    property: string;
+    value: any;
+}
+
+export interface ComponentSummary {
+    type: string;
+    enabled: boolean;
+}
+
+export interface NodeInfo {
+    uuid: string;
+    name: string;
+    active: boolean;
+    position: Vec3Like;
+    rotation: QuatLike;
+    scale: Vec3Like;
+    parent: string | undefined;
+    children: string[];
+    components: ComponentSummary[];
+}
+
+export interface NodeSummary {
+    uuid: string;
+    name: string;
+    active: boolean;
+    parent: string | undefined;
+}
+
+export interface NamedNode {
+    uuid: string;
+    name: string;
+    active: boolean;
+    position: Vec3Like;
+}
+
+export interface SceneInfo {
+    name: string;
+    uuid: string;
+    nodeCount: number;
+}
+
+export interface HierarchyNode {
+    name: string;
+    uuid: string;
+    active: boolean;
+    children: HierarchyNode[];
+    components?: ComponentSummary[];
+}
+
+export interface DumpOptions {
+    rootUuid?: string;
+    includeComponents?: boolean;
+    includeTransform?: boolean;
+}
+
+export interface DumpedComponent {
+    type: string;
+    className: string;
+    uuid: string;
+    enabled: boolean;
+}
+
+export interface SceneNodeEntry {
+    uuid: string;
+    name: string;
+    path: string;
+    parentUuid: string | null;
+    active: boolean;
+    activeInHierarchy: boolean;
+    childCount: number;
+    components?: DumpedComponent[];
+    position?: Vec3Like;
+    rotation?: Vec3Like;
+    scale?: Vec3Like;
+}
+
+export interface SceneDump {
+    sceneName: string;
+    nodeCount: number;
+    nodes: SceneNodeEntry[];
+}
+
+export interface ComponentOwner {
+    nodePath: string;
+    nodeUuid: string;
+    nodeName: string;
+    active: boolean;
+    activeInHierarchy: boolean;
+    componentUuid: string;
+    className: string;
+    enabled: boolean;
+}
+
+export interface ComponentOwnerReport {
+    className: string;
+    sceneName: string;
+    nodesScanned: number;
+    ownerCount: number;
+    owners: ComponentOwner[];
+}
+
+export interface DeclaredProperty {
+    found: boolean;
+    ctorName?: string | null;
+    isNode?: boolean;
+    isComponent?: boolean;
+    isAsset?: boolean;
+    isArray?: boolean;
+    scalar?: string | null;
+}
+
+export interface EvalPayload {
+    result: unknown;
+    awaited?: boolean;
+    asyncWrapper?: boolean;
+    functionWrapper?: boolean;
+}
+
+export interface GradientWriteReport {
+    propertyPath: string;
+    mode: number;
+    colorKeys: number;
+    alphaKeys: number;
+    moduleEnabled: boolean;
+}
+
+export interface CurveWriteReport {
+    propertyPath: string;
+    mode: number;
+    multiplier: number;
+    keyCount: number;
+    eval0: number;
+    eval1: number;
+    moduleEnabled: boolean;
+}
+
+export interface GeneratedPrefab {
+    prefabData: string;
+    nodeName: string;
+}
+
+export interface SkeletalSocket {
+    path: string;
+    targetUuid: string | undefined;
+    targetName: string | undefined;
+    targetChildren: string[];
+}
+
+export interface SkeletalSocketList {
+    nodeUuid: string;
+    useBakedAnimation: boolean;
+    sockets: SkeletalSocket[];
+}
+
+export interface AddedSkeletalSocket {
+    targetUuid: string;
+    targetName: string;
+    bonePath: string;
+    created: boolean;
+    renamed: boolean;
+    socketCount: number;
+}
+
+export interface RemovedSkeletalSocket {
+    bonePath: string;
+    removedTargetUuid: string | undefined;
+    socketCount: number;
+}
+
+export interface OverrideValueDescription {
+    valueKind: string;
+    value?: unknown;
+    length?: number;
+    valueType?: string;
+    assetUuid?: string | null;
+    assetName?: string;
+    refUuid?: string;
+    refName?: string;
+}
+
+export interface PrefabTargetInfo {
+    kind: string;
+    name: string;
+    path: string;
+    type: string;
+}
+
+export interface PrefabOverrideRecord extends OverrideValueDescription {
+    index: number;
+    propertyPath: string;
+    propertyPathParts: string[];
+    localID: string[];
+    target: PrefabTargetInfo | null;
+}
+
+export interface PrefabOverrideReport {
+    nodeUuid: string;
+    nodeName: string;
+    prefabAsset: string | undefined;
+    overrideCount: number;
+    removedComponents: number;
+    mountedChildren: number;
+    overrides: PrefabOverrideRecord[];
+}
+
+export interface RemovedPrefabOverride extends OverrideValueDescription {
+    index: number;
+    propertyPath: string;
+    localID: string[];
+    target: PrefabTargetInfo | null;
+}
+
+export interface PrefabOverrideRemoval {
+    nodeUuid: string;
+    removed: RemovedPrefabOverride;
+    remaining: number;
+}
+
+export interface MaterialAssignment {
+    componentType: string;
+    count: number;
+    materials: Array<string | undefined>;
+}
+
+export interface SerializedValue {
+    found: boolean;
+    value: unknown;
+    reason?: string;
+}
+
+export interface PrefabLinkageReport {
+    linked: boolean;
+    asset: string | null;
+    fileId: string | null;
+    instanceRoot: boolean;
+    persistenceChecked: boolean;
+    persisted: boolean;
+    persistedAsset: string | null;
+    persistenceReason?: string;
+}
+
+export interface ReferencePlanReport {
+    componentIndex: number;
+    property: string;
+    isArray: boolean;
+    dumpType: string;
+    uuids: string[];
+    expected: Array<string | null>;
+    assignedKind: string;
+    assignedNames: string[];
+    assignedTypes: string[];
+    declaredType: string | null;
+    inferredType: string | null;
+    warning?: string;
+}
+
+export interface ReferenceApplied {
+    property: string;
+    assigned: Array<string | null>;
+}
+
+export interface ReferenceOutcomeReport {
+    live: Array<string | null>;
+    serialized: Array<string | null>;
+    projected: Array<string | null>;
+    projectionChecked: boolean;
+    componentInSceneGraph: boolean;
+    overrides: Array<{ index: number | null; uuid: string | null; prefabInstance: string | null }>;
+}
+
+export interface PrunedOverrides {
+    removed: number;
+    paths: string[];
+}
+
+export interface ResolvedNodePaths {
+    sceneName: string;
+    nodeCount: number;
+    resolutions: Record<string, PathResolution>;
+}
+
+export interface SceneDirtyReport {
+    differsFromDisk: boolean;
+    scenePath: string | null;
+    diffs: SerializedDiff[];
+    reason?: string;
+}
+
+export interface SceneMethods {
+    declaredComponentProperty(componentType: string, property: string): SceneResult<DeclaredProperty>;
+    createNewScene(): SceneAckResult;
+    addComponentToNode(nodeUuid: string, componentType: string): SceneResult<{ componentId: string }>;
+    removeComponentFromNode(nodeUuid: string, componentType: string): SceneAckResult;
+    createNode(name: string, parentUuid?: string): SceneResult<{ uuid: string; name: string }>;
+    getNodeInfo(nodeUuid: string): SceneResult<NodeInfo>;
+    getAllNodes(): SceneResult<NodeSummary[]>;
+    findNodeByName(name: string): SceneResult<NamedNode>;
+    getCurrentSceneInfo(): SceneResult<SceneInfo>;
+    setNodeProperty(
+        nodeUuid: NodePropertyWrite['nodeUuid'],
+        property: NodePropertyWrite['property'],
+        value: NodePropertyWrite['value'],
+    ): SceneAckResult;
+    getSceneHierarchy(includeComponents?: boolean): SceneResult<HierarchyNode[]>;
+    evalInScene(code: string, timeoutMs?: number): Promise<SceneResult<EvalPayload>>;
+    setComponentProperty(
+        nodeUuid: string,
+        componentType: string,
+        property: string,
+        value: any,
+    ): Promise<PropertyWriteResult>;
+    setParticleGradient(
+        nodeUuid: string,
+        componentType: string,
+        propertyPath: string,
+        colorKeys: Array<{ color?: { r?: number; g?: number; b?: number; a?: number }; time?: number }>,
+        alphaKeys: Array<{ alpha?: number; time?: number }>,
+        mode?: number,
+        enableModule?: boolean,
+    ): SceneResult<GradientWriteReport>;
+    setParticleCurve(
+        nodeUuid: string,
+        componentType: string,
+        propertyPath: string,
+        keyframes: Array<{ time?: number; value?: number }>,
+        mode?: number,
+        multiplier?: number,
+        enableModule?: boolean,
+    ): SceneResult<CurveWriteReport>;
+    createPrefabFromNode2(nodeUuid: string): SceneResult<GeneratedPrefab>;
+    previewPlay(action: string): SceneAckResult;
+    addSkeletalSocket(nodeUuid: string, bonePath: string, targetName?: string): SceneResult<AddedSkeletalSocket>;
+    listSkeletalSockets(nodeUuid: string): SceneResult<SkeletalSocketList>;
+    removeSkeletalSocket(nodeUuid: string, bonePath: string): SceneResult<RemovedSkeletalSocket>;
+    listPrefabOverrides(nodeUuid: string): SceneResult<PrefabOverrideReport>;
+    removePrefabOverride(
+        nodeUuid: string,
+        propertyPath: string | string[],
+        localID?: string,
+        index?: number,
+    ): SceneResult<PrefabOverrideRemoval>;
+    setMeshRendererMaterials(
+        nodeUuid: string,
+        materialUuids: string[],
+        componentType?: string,
+    ): Promise<SceneResult<MaterialAssignment>>;
+    serializedComponentValue(nodeUuid: string, cid: string, property: string): SceneResult<SerializedValue>;
+    nodePrefabLinkage(nodeUuid: string): SceneResult<PrefabLinkageReport>;
+    resolveComponentReference(args?: any): SceneResult<ReferencePlanReport>;
+    applyComponentReference(args?: any): SceneResult<ReferenceApplied>;
+    componentReferenceOutcome(
+        nodeUuid: string,
+        componentIndex: number,
+        property: string,
+    ): SceneResult<ReferenceOutcomeReport>;
+    pruneComponentReferenceOverrides(
+        nodeUuid: string,
+        componentIndex: number,
+        property: string,
+    ): SceneResult<PrunedOverrides>;
+    resolveNodePaths(paths: any): SceneResult<ResolvedNodePaths>;
+    dumpSceneNodes(options?: DumpOptions): SceneResult<SceneDump>;
+    findComponentOwners(options?: any): SceneResult<ComponentOwnerReport>;
+    sceneDirtyAgainstDisk(): SceneResult<SceneDirtyReport> | Promise<SceneResult<SceneDirtyReport>>;
+}
