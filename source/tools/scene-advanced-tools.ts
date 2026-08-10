@@ -101,29 +101,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                 }
             },
             {
-                name: 'execute_component_method',
-                description: 'Execute method on component',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        uuid: {
-                            type: 'string',
-                            description: 'Component UUID'
-                        },
-                        name: {
-                            type: 'string',
-                            description: 'Method name'
-                        },
-                        args: {
-                            type: 'array',
-                            description: 'Method arguments',
-                            default: []
-                        }
-                    },
-                    required: ['uuid', 'name']
-                }
-            },
-            {
                 name: 'query_scene_classes',
                 description: 'Query all registered classes',
                 inputSchema: {
@@ -174,8 +151,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                 return await this.resetNodeTransform(args.uuid);
             case 'reset_component':
                 return await this.resetComponent(args.uuid);
-            case 'execute_component_method':
-                return await this.executeComponentMethod(args.uuid, args.name, args.args);
             case 'query_scene_classes':
                 return await this.querySceneClasses(args.extends);
             case 'query_scene_components':
@@ -258,26 +233,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                 resolve({
                     success: true,
                     message: 'Component reset to default values'
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
-    private async executeComponentMethod(uuid: string, name: string, args: any[] = []): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'execute-component-method', {
-                uuid,
-                name,
-                args
-            }).then((result: any) => {
-                resolve({
-                    success: true,
-                    data: {
-                        result: result,
-                        message: `Method '${name}' executed successfully`
-                    }
                 });
             }).catch((err: Error) => {
                 resolve({ success: false, error: err.message });

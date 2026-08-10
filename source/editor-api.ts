@@ -6,8 +6,10 @@ import type {
     CreateComponentOptions,
     CreateNodeOptions,
     CutNodeOptions,
+    ExecuteComponentMethodOptions,
     INode,
     PasteNodeOptions,
+    RemoveComponentOptions,
     RemoveNodeOptions,
     SetPropertyOptions,
 } from '@cocos/creator-types/editor/packages/scene/@types/public';
@@ -74,6 +76,12 @@ export class EditorApi {
 
         createComponent: (options: CreateComponentOptions): Promise<void> =>
             this.request('scene', 'create-component', options),
+
+        removeComponent: (options: RemoveComponentOptions): Promise<void> =>
+            this.request('scene', 'remove-component', options),
+
+        executeComponentMethod: (options: ExecuteComponentMethodOptions): Promise<unknown> =>
+            this.request('scene', 'execute-component-method', options),
 
         copyNode: (uuids: string | string[]): Promise<string[]> =>
             this.request('scene', 'copy-node', uuids),

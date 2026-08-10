@@ -9,11 +9,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import np from '../dist/node-path.js';
-import { ComponentTools } from '../dist/tools/component-tools.js';
 import { PrefabTools } from '../dist/tools/prefab-tools.js';
+import { ProjectTools } from '../dist/tools/project-tools.js';
 import { sceneTools } from '../dist/tools-v2/scene.js';
 import { nodeTools } from '../dist/tools-v2/node.js';
+import { componentTools } from '../dist/tools-v2/component.js';
 import { ToolRegistry } from '../dist/registry.js';
+import ta from '../dist/tool-args.js';
+
+const { normalizeToolArgs } = ta;
 
 const {
     augmentToolDefinition, applyResolvedPaths, requestedPaths, pairsOf,
@@ -121,10 +125,10 @@ test('a prefix that is itself ambiguous still reports a usable nearer prefix', (
 
 // ----- schema augmentation ------------------------------------------------------------
 
-const toolNamed = (executor, name) => executor.getTools().find(t => t.name === name);
+const componentToolNamed = (name) => componentTools.find(t => t.name === name);
 
-test('set_component_ref gains nodePath, targetPath and targetPaths', () => {
-    const augmented = augmentToolDefinition(toolNamed(new ComponentTools(), 'set_component_ref'));
+test('the reference-writing tool gains nodePath, targetPath and targetPaths', () => {
+    const augmented = augmentToolDefinition(componentToolNamed('component_set_component_property'));
     const props = augmented.inputSchema.properties;
     for (const name of ['nodePath', 'targetPath', 'targetPaths']) {
         assert.ok(props[name], `${name} missing`);
@@ -134,13 +138,13 @@ test('set_component_ref gains nodePath, targetPath and targetPaths', () => {
 });
 
 test('the path parameter says outright that it wins over the uuid', () => {
-    const augmented = augmentToolDefinition(toolNamed(new ComponentTools(), 'set_component_ref'));
+    const augmented = augmentToolDefinition(componentToolNamed('component_set_component_property'));
     assert.match(augmented.inputSchema.properties.nodePath.description, /WINS when nodeUuid is also given/);
     assert.match(augmented.description, /preferred when both are given/);
 });
 
 test('a uuid that was required is no longer required on its own, but the pair still is', () => {
-    const original = toolNamed(new ComponentTools(), 'set_component_ref');
+    const original = componentToolNamed('component_set_component_property');
     assert.ok(original.inputSchema.required.includes('nodeUuid'));
 
     const augmented = augmentToolDefinition(original);
@@ -149,7 +153,7 @@ test('a uuid that was required is no longer required on its own, but the pair st
     const pair = pairsOf(augmented.inputSchema).find(p => p.uuid === 'nodeUuid');
     assert.equal(pair.required, true);
 
-    const missing = applyResolvedPaths('component_set_component_ref', augmented.inputSchema,
+    const missing = applyResolvedPaths('component_set_component_property', augmented.inputSchema,
         { componentType: 'Purchase', property: 'noMoney' }, {});
     assert.equal(missing.ok, false);
     assert.match(missing.error, /'nodeUuid' or 'nodePath'/);
@@ -170,10 +174,10 @@ test('augmenting a tool with no node arguments changes nothing', () => {
 });
 
 test('every tool taking a node uuid gains the matching path, across all categories', () => {
-    const executors = [new ComponentTools(), new PrefabTools()];
     const surveyed = [
-        ...executors.flatMap(executor => executor.getTools()),
+        ...new PrefabTools().getTools(),
         ...sceneTools,
+        ...componentTools,
         ...new ToolRegistry(nodeTools).list()
     ];
     let covered = 0;
@@ -194,7 +198,7 @@ test('every tool taking a node uuid gains the matching path, across all categori
 
 // ----- applying resolutions -----------------------------------------------------------
 
-const refSchema = augmentToolDefinition(toolNamed(new ComponentTools(), 'set_component_ref')).inputSchema;
+const refSchema = augmentToolDefinition(componentToolNamed('component_set_component_property')).inputSchema;
 
 test('requestedPaths collects singles and arrays without duplicates', () => {
     const paths = requestedPaths(refSchema, {
@@ -205,7 +209,7 @@ test('requestedPaths collects singles and arrays without duplicates', () => {
 });
 
 test('a resolved path becomes the uuid argument and the path argument is consumed', () => {
-    const applied = applyResolvedPaths('component_set_component_ref', refSchema, {
+    const applied = applyResolvedPaths('component_set_component_property', refSchema, {
         nodePath: 'InteractivePoints/InteractionPad_01',
         componentType: 'Purchase',
         property: 'noMoney'
@@ -222,7 +226,7 @@ test('a resolved path becomes the uuid argument and the path argument is consume
 });
 
 test('the path wins when both spellings are given', () => {
-    const applied = applyResolvedPaths('component_set_component_ref', refSchema, {
+    const applied = applyResolvedPaths('component_set_component_property', refSchema, {
         nodeUuid: 'a-uuid-that-went-stale',
         nodePath: 'InteractivePoints/InteractionPad_01',
         componentType: 'Purchase', property: 'noMoney'
@@ -234,7 +238,7 @@ test('the path wins when both spellings are given', () => {
 });
 
 test('an array of paths resolves element by element, in order', () => {
-    const applied = applyResolvedPaths('component_set_component_ref', refSchema, {
+    const applied = applyResolvedPaths('component_set_component_property', refSchema, {
         nodeUuid: 'u_pad1', componentType: 'Purchase', property: 'bars',
         targetPaths: ['A/B', 'C/D']
     }, {
@@ -246,7 +250,7 @@ test('an array of paths resolves element by element, in order', () => {
 });
 
 test('an unresolvable path fails the call and carries the resolver message through', () => {
-    const applied = applyResolvedPaths('component_set_component_ref', refSchema, {
+    const applied = applyResolvedPaths('component_set_component_property', refSchema, {
         nodePath: 'Nope', componentType: 'Purchase', property: 'noMoney'
     }, {
         Nope: { error: "path 'Nope' does not resolve — not even its first segment 'Nope'. Scene roots are: A, B." }
@@ -257,7 +261,7 @@ test('an unresolvable path fails the call and carries the resolver message throu
 });
 
 test('one bad element in an array fails the whole call rather than writing a short array', () => {
-    const applied = applyResolvedPaths('component_set_component_ref', refSchema, {
+    const applied = applyResolvedPaths('component_set_component_property', refSchema, {
         nodeUuid: 'u_pad1', componentType: 'Purchase', property: 'bars',
         targetPaths: ['A/B', 'Nope']
     }, {
@@ -269,7 +273,7 @@ test('one bad element in an array fails the whole call rather than writing a sho
 });
 
 test('both failing paths are reported together', () => {
-    const applied = applyResolvedPaths('component_set_component_ref', refSchema, {
+    const applied = applyResolvedPaths('component_set_component_property', refSchema, {
         nodePath: 'BadOwner', componentType: 'Purchase', property: 'noMoney', targetPath: 'BadTarget'
     }, {
         BadOwner: { error: "path 'BadOwner' does not resolve" },
@@ -283,4 +287,22 @@ test('both failing paths are reported together', () => {
 test('the augmented schema carries its pairs under an x- keyword, inert for schema consumers', () => {
     assert.ok(UUID_OR_PATH_KEY.startsWith('x-'));
     assert.ok(Array.isArray(refSchema[UUID_OR_PATH_KEY]));
+});
+
+test('set_node_transform takes a nodePath, while a bare uuid meaning an ASSET does not', () => {
+    const nodeSchema = new ToolRegistry(nodeTools).list()
+        .find(t => t.name === 'node_set_node_transform').inputSchema;
+    assert.ok(nodeSchema.properties.nodePath, 'set_node_transform should accept nodePath');
+    assert.equal(nodeSchema.required.includes('uuid'), false, 'the path alone is enough');
+    assert.deepEqual(pairsOf(nodeSchema).find(p => p.uuid === 'uuid'),
+        { uuid: 'uuid', path: 'nodePath', array: false, required: true });
+
+    const r = normalizeToolArgs('node_set_node_transform', nodeSchema,
+        { nodePath: 'Stage_3_Hookah/Hookah_model_v2', scale: { x: 1, y: 1, z: 1 } });
+    assert.equal(r.ok, true, r.error);
+
+    const assetSchema = augmentToolDefinition(
+        new ProjectTools().getTools().find(t => t.name === 'query_asset_url')).inputSchema;
+    assert.equal(assetSchema.properties.nodePath, undefined);
+    assert.equal(pairsOf(assetSchema).length, 0);
 });

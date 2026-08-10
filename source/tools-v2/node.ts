@@ -9,7 +9,7 @@ import {
     LAYER_UI_2D, NodeType, UI_COMPONENT_TYPES, classifyNode, transformConstraintsOf
 } from '../node-type';
 import { applyLinkageOptions, linkageVerdict, queryAssetType, verifyPrefabLinkage } from '../prefab-linkage';
-import { ComponentTools } from '../tools/component-tools';
+import { readComponentInfo, writeComponentProperty } from './component';
 import type { RegisteredTool } from '../tool';
 import type { ToolContext } from '../context';
 
@@ -17,8 +17,6 @@ const PRIMITIVES_FBX = 'db://internal/primitives.fbx';
 const PRIMITIVE_NAMES = ['box', 'sphere', 'capsule', 'cylinder', 'cone', 'plane', 'quad', 'torus'] as const;
 
 const LAYER_DEFAULT = 1073741824;
-
-const componentTools = new ComponentTools();
 
 const vec3Arg = z.object({
     x: z.coerce.number().optional(),
@@ -276,11 +274,10 @@ async function findComponentIndex(ctx: ToolContext, uuid: string, type: string):
 async function setupCanvas(ctx: ToolContext, canvasUuid: string): Promise<string | null> {
     await setLayer(ctx, canvasUuid, LAYER_UI_2D);
 
-    const canvasInfo: any = await componentTools.execute('get_component_info', {
-        nodeUuid: canvasUuid, componentType: 'cc.Canvas'
-    });
-    const properties: any = canvasInfo?.data?.properties || {};
-    if (properties.cameraComponent?.value?.uuid || properties._cameraComponent?.value?.uuid) return null;
+    const canvasInfo = await readComponentInfo(ctx, canvasUuid, 'cc.Canvas',
+        ['cameraComponent', '_cameraComponent']);
+    const properties: any = canvasInfo.success ? canvasInfo.data.properties : {};
+    if (properties.cameraComponent?.value || properties._cameraComponent?.value) return null;
 
     const created = await ctx.editor.scene.createNode({ name: 'Camera', parent: canvasUuid });
     const cameraUuid = Array.isArray(created) ? created[0] : created;
@@ -308,13 +305,13 @@ async function setupCanvas(ctx: ToolContext, canvasUuid: string): Promise<string
     if (cameraIndex < 0) {
         return `The UI camera node ${cameraUuid} carries no cc.Camera, so the Canvas has nothing to wire`;
     }
-    const wired: any = await componentTools.execute('set_component_property', {
+    const wired = await writeComponentProperty(ctx, {
         nodeUuid: canvasUuid, componentType: 'cc.Canvas',
         property: 'cameraComponent', propertyType: 'component', value: cameraUuid
     });
-    if (!wired?.success) {
+    if (!wired.success) {
         return `cc.Canvas.cameraComponent was not wired to the UI camera ${cameraUuid}: `
-            + `${wired?.error || 'unknown'} — the UI renders invisibly until it is`;
+            + `${wired.error.message} — the UI renders invisibly until it is`;
     }
     return null;
 }
@@ -454,24 +451,24 @@ export const nodeCreateNode = defineTool({
 
         let materialUuid: string | null = null;
         if (meshUuid) {
-            const meshWrite: any = await componentTools.execute('set_component_property', {
+            const meshWrite = await writeComponentProperty(ctx, {
                 nodeUuid: uuid, componentType: 'cc.MeshRenderer',
                 property: 'mesh', propertyType: 'asset', value: meshUuid
             });
-            if (!meshWrite?.success) {
+            if (!meshWrite.success) {
                 return orphan(uuid, 'mesh_failed',
-                    `Primitive mesh '${args.primitive}' was not assigned: ${meshWrite?.error || 'unknown'}`);
+                    `Primitive mesh '${args.primitive}' was not assigned: ${meshWrite.error.message}`);
             }
             if (args.color && args.color.length >= 3) {
                 materialUuid = await ensureColorMaterial(ctx, args.color, !!args.unlit);
                 if (materialUuid) {
-                    const materialWrite: any = await componentTools.execute('set_component_property', {
+                    const materialWrite = await writeComponentProperty(ctx, {
                         nodeUuid: uuid, componentType: 'cc.MeshRenderer',
                         property: 'sharedMaterials', propertyType: 'asset', value: materialUuid
                     });
-                    if (!materialWrite?.success) {
+                    if (!materialWrite.success) {
                         return orphan(uuid, 'material_failed',
-                            `Material ${materialUuid} was not assigned: ${materialWrite?.error || 'unknown'}`);
+                            `Material ${materialUuid} was not assigned: ${materialWrite.error.message}`);
                     }
                 }
             }

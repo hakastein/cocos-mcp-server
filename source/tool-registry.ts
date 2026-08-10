@@ -1,4 +1,3 @@
-import { ComponentTools } from './tools/component-tools';
 import { PrefabTools } from './tools/prefab-tools';
 import { ProjectTools } from './tools/project-tools';
 import { DebugTools } from './tools/debug-tools';
@@ -11,6 +10,7 @@ import { ToolRegistry } from './registry';
 import { legacyTools } from './legacy-adapter';
 import { sceneTools } from './tools-v2/scene';
 import { nodeTools } from './tools-v2/node';
+import { componentTools } from './tools-v2/component';
 import type { PreviewLogStore } from './preview-log-store';
 import type { ToolContext } from './context';
 
@@ -23,7 +23,6 @@ export interface ToolInstanceDeps {
 
 export function createToolInstances(deps: ToolInstanceDeps = {}): Record<string, any> {
     return {
-        component: new ComponentTools(),
         prefab: new PrefabTools(),
         project: new ProjectTools(),
         debug: new DebugTools(deps.logs),
@@ -49,6 +48,7 @@ export function composeTools(deps: ComposeDeps = {}): ToolRegistry {
     registry = new ToolRegistry([
         ...sceneTools,
         ...nodeTools,
+        ...componentTools,
         ...Object.entries(executors).flatMap(([category, executor]) => legacyTools(category, executor))
     ]);
     return registry;

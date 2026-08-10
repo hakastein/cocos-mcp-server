@@ -138,7 +138,7 @@ function coerceScalar(value: any, type: string): { value: any } | undefined {
  * Resolve aliases, check required arguments and coerce declared scalar types.
  *
  * Undeclared extra arguments are deliberately tolerated when every required argument is
- * present: several handlers (`set_component_ref`, `validate_scene`) take the whole args
+ * present: several handlers (`validate_scene`, `prefab_set_component_property`) take the whole args
  * object and read fields their schema never enumerates. Extras only become an error when something required is absent — which is
  * exactly the case where a misspelling is the likely cause and a suggestion helps.
  */

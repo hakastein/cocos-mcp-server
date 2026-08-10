@@ -1,0 +1,767 @@
+import { z } from 'zod';
+import { booleanArg, defineTool } from '../tool';
+import { ok, fail, ToolFail, ToolResult } from '../result';
+import { textOf } from './shared';
+import { settle } from '../settle';
+import { ANY_VALUE_TYPE, coerceJsonArg } from '../json-arg';
+import { PropertyDescriptor, isArrayDescriptor, resolveKind } from '../property/kind';
+import { projectDescriptor } from '../property/readers';
+import { readBack, WriteTarget } from '../property/writers';
+import { verifiedWrite, VerifiedWriteOptions } from '../property/verified-write';
+import type { RegisteredTool } from '../tool';
+import type { ToolContext } from '../context';
+import type { WriteReport } from '../scene-contract';
+
+export interface DumpComponent {
+    __type__?: string;
+    cid?: string;
+    type?: string;
+    enabled?: boolean;
+    value?: Record<string, PropertyDescriptor>;
+    [key: string]: unknown;
+}
+
+export function classNameOf(component: DumpComponent | undefined): string | null {
+    const named = (component?.value as any)?.name?.value ?? (component as any)?.name?.value;
+    const match = typeof named === 'string' ? named.match(/<([^>]+)>\s*$/) : null;
+    return match ? match[1] : null;
+}
+
+export function cidOf(component: DumpComponent | undefined): string {
+    return component?.__type__ || component?.cid || component?.type || 'Unknown';
+}
+
+export function componentMatches(component: DumpComponent, componentType: string): boolean {
+    if (!componentType) return false;
+    const ids = [component.type, component.__type__, component.cid];
+    if (ids.indexOf(componentType) !== -1) return true;
+    const className = classNameOf(component);
+    return !!className && (className === componentType || `cc.${className}` === componentType);
+}
+
+/** A custom script is registered under a cid, which no engine-side lookup accepts. */
+export function canonicalClassName(component: DumpComponent): string {
+    const declared = cidOf(component);
+    if (declared.indexOf('cc.') === 0) return declared;
+    return classNameOf(component) || declared;
+}
+
+export function resolveDumpPath(
+    properties: Record<string, PropertyDescriptor> | undefined, path: string
+): PropertyDescriptor | undefined {
+    const segments = path.split('.');
+    let current: any = properties ? (properties as any)[segments[0]] : undefined;
+    for (let index = 1; index < segments.length && current !== undefined && current !== null; index++) {
+        current = current.value ? current.value[segments[index]] : undefined;
+    }
+    return current === undefined || current === null ? undefined : current;
+}
+
+export function propertyFilterOf(filter: unknown): string[] | null {
+    const raw = coerceJsonArg(filter).value;
+    const list = Array.isArray(raw) ? raw : (typeof raw === 'string' && raw.trim() ? [raw] : null);
+    if (!list) return null;
+    const paths = list.map((entry: unknown) => String(entry).trim()).filter(Boolean);
+    return paths.length ? paths : null;
+}
+
+const PLAIN: string[] = [];
+
+const HINTS: Record<string, PropertyDescriptor> = {
+    string: { type: 'String', extends: PLAIN },
+    'cc.String': { type: 'String', extends: PLAIN },
+    number: { type: 'Number', extends: PLAIN },
+    integer: { type: 'Number', extends: PLAIN },
+    float: { type: 'Number', extends: PLAIN },
+    boolean: { type: 'Boolean', extends: PLAIN },
+    'cc.Boolean': { type: 'Boolean', extends: PLAIN },
+    enum: { type: 'Enum', extends: PLAIN },
+    color: { type: 'cc.Color', extends: PLAIN },
+    'cc.Color': { type: 'cc.Color', extends: PLAIN },
+    vec2: { type: 'cc.Vec2', extends: PLAIN },
+    'cc.Vec2': { type: 'cc.Vec2', extends: PLAIN },
+    vec3: { type: 'cc.Vec3', extends: PLAIN },
+    'cc.Vec3': { type: 'cc.Vec3', extends: PLAIN },
+    vec4: { type: 'cc.Vec4', extends: PLAIN },
+    'cc.Vec4': { type: 'cc.Vec4', extends: PLAIN },
+    size: { type: 'cc.Size', extends: PLAIN },
+    'cc.Size': { type: 'cc.Size', extends: PLAIN },
+    gradient: { type: 'cc.GradientRange', extends: PLAIN },
+    curve: { type: 'cc.CurveRange', extends: PLAIN },
+    node: { type: 'cc.Node', extends: PLAIN },
+    'cc.Node': { type: 'cc.Node', extends: PLAIN },
+    component: { type: 'cc.Component', extends: ['cc.Component'] },
+    'cc.Component': { type: 'cc.Component', extends: ['cc.Component'] },
+    asset: { type: 'cc.Asset', extends: ['cc.Asset'] },
+    prefab: { type: 'cc.Prefab', extends: ['cc.Asset'] },
+    spriteFrame: { type: 'cc.SpriteFrame', extends: ['cc.Asset'] },
+    nodeArray: { isArray: true, type: 'cc.Node', elementTypeData: { type: 'cc.Node', extends: PLAIN } },
+    colorArray: { isArray: true, type: 'cc.Color', elementTypeData: { type: 'cc.Color', extends: PLAIN } },
+    numberArray: { isArray: true, type: 'Number', elementTypeData: { type: 'Number', extends: PLAIN } },
+    stringArray: { isArray: true, type: 'String', elementTypeData: { type: 'String', extends: PLAIN } }
+};
+
+export function hintedDescriptor(
+    descriptor: PropertyDescriptor | undefined, propertyType?: string
+): PropertyDescriptor | undefined {
+    const hint = (propertyType || '').trim();
+    if (!hint) return descriptor;
+    const override = HINTS[hint]
+        || (hint.indexOf('cc.') === 0 ? { type: hint, extends: ['cc.Asset'] } : undefined);
+    if (!override) return descriptor || { type: hint };
+    return { ...(descriptor || {}), ...override };
+}
+
+/** JSON-looking text in a field DECLARED String is authored content, not a stringified object. */
+export function coerceValueArg(raw: unknown, descriptor?: PropertyDescriptor | null): unknown {
+    if (typeof raw !== 'string') return raw;
+    if (descriptor && descriptor.type === 'String' && !isArrayDescriptor(descriptor)) return raw;
+    return coerceJsonArg(raw).value;
+}
+
+export function valueFromArgs(args: Record<string, unknown>): { value: unknown } | { error: string } {
+    if (args.clear === true) return { value: null };
+    if (args.targetUuids !== undefined) return { value: args.targetUuids };
+    if (args.targetUuid !== undefined) return { value: args.targetUuid };
+    if ('value' in args && args.value !== undefined) return { value: args.value };
+    return {
+        error: 'no value was given: pass `value`, or `targetUuid`/`targetUuids` for a reference field, '
+            + 'or `clear: true` to empty it'
+    };
+}
+
+interface LocatedComponent {
+    index: number;
+    component: DumpComponent;
+    cid: string;
+    className: string;
+    componentUuid: string | null;
+    properties: Record<string, PropertyDescriptor>;
+}
+
+function componentsOf(raw: unknown): DumpComponent[] {
+    return ((raw as any)?.__comps__ || []) as DumpComponent[];
+}
+
+function locate(components: DumpComponent[], componentType: string): LocatedComponent | null {
+    const index = components.findIndex(component => componentMatches(component, componentType));
+    if (index === -1) return null;
+    const component = components[index];
+    return {
+        index,
+        component,
+        cid: cidOf(component),
+        className: canonicalClassName(component),
+        componentUuid: (component.value as any)?.uuid?.value ?? null,
+        properties: (component.value || {}) as Record<string, PropertyDescriptor>
+    };
+}
+
+function spelledTypes(components: DumpComponent[]): string {
+    return components
+        .map(component => {
+            const className = classNameOf(component);
+            return className ? `${className} (${cidOf(component)})` : cidOf(component);
+        })
+        .join(', ') || '(none)';
+}
+
+function enabledOf(component: DumpComponent): boolean {
+    const declared = (component.value as any)?.enabled?.value;
+    if (typeof declared === 'boolean') return declared;
+    return component.enabled === undefined ? true : component.enabled;
+}
+
+function describeProperty(descriptor: PropertyDescriptor): Record<string, unknown> {
+    const described: Record<string, unknown> = {
+        type: descriptor.type,
+        kind: resolveKind(descriptor),
+        value: projectDescriptor(descriptor)
+    };
+    if (isArrayDescriptor(descriptor)) described.isArray = true;
+    const options = descriptor.enumList || descriptor.bitmaskList;
+    if (Array.isArray(options) && options.length) described.options = options;
+    return described;
+}
+
+function projectAll(properties: Record<string, PropertyDescriptor>): Record<string, unknown> {
+    const projected: Record<string, unknown> = {};
+    for (const [name, descriptor] of Object.entries(properties)) {
+        projected[name] = projectDescriptor(descriptor);
+    }
+    return projected;
+}
+
+function pickProperties(
+    properties: Record<string, PropertyDescriptor>, paths: string[]
+): Record<string, unknown> {
+    const picked: Record<string, unknown> = {};
+    for (const path of paths) {
+        const descriptor = resolveDumpPath(properties, path);
+        picked[path] = descriptor
+            ? describeProperty(descriptor)
+            : {
+                error: `'${path}' is not present in this component's dump`,
+                availableProperties: Object.keys(properties)
+            };
+    }
+    return picked;
+}
+
+function describeAll(properties: Record<string, PropertyDescriptor>): Record<string, unknown> {
+    const described: Record<string, unknown> = {};
+    for (const [name, descriptor] of Object.entries(properties)) {
+        described[name] = describeProperty(descriptor);
+    }
+    return described;
+}
+
+async function queryComponents(ctx: ToolContext, nodeUuid: string): Promise<DumpComponent[]> {
+    return componentsOf(await ctx.editor.scene.queryNode(nodeUuid));
+}
+
+export interface ComponentInfoReport {
+    nodeUuid: string;
+    componentType: string;
+    componentIndex: number;
+    resolvedCid: string;
+    className: string;
+    componentUuid: string | null;
+    enabled: boolean;
+    requestedProperties?: string[];
+    properties: Record<string, unknown>;
+}
+
+export async function readComponentInfo(
+    ctx: ToolContext, nodeUuid: string, componentType: string, wanted?: string[] | null
+): Promise<ToolResult<ComponentInfoReport>> {
+    let components: DumpComponent[];
+    try {
+        components = await queryComponents(ctx, nodeUuid);
+    } catch (error) {
+        return fail('node_unreadable', `The editor did not answer for node ${nodeUuid}: ${textOf(error)}`);
+    }
+    const located = locate(components, componentType);
+    if (!located) {
+        return fail('component_not_found',
+            `No '${componentType}' on node ${nodeUuid}. Components there: ${spelledTypes(components)}`,
+            'Pass a cid, an @ccclass class name or a builtin type; component_get_components lists both.');
+    }
+    return ok({
+        nodeUuid,
+        componentType,
+        componentIndex: located.index,
+        resolvedCid: located.cid,
+        className: classNameOf(located.component) || located.className,
+        componentUuid: located.componentUuid,
+        enabled: enabledOf(located.component),
+        ...(wanted ? { requestedProperties: wanted } : {}),
+        properties: wanted ? pickProperties(located.properties, wanted) : describeAll(located.properties)
+    });
+}
+
+export interface PropertyWriteArgs {
+    nodeUuid: string;
+    componentType: string;
+    property: string;
+    value: unknown;
+    propertyType?: string;
+    targetComponentType?: string;
+    sameClassIndex?: number;
+    verify?: VerifiedWriteOptions['verify'];
+}
+
+const NODE_OWN_PROPERTIES = ['name', 'active', 'layer', 'mobility', 'parent', 'children', 'hideFlags'];
+const NODE_TRANSFORM_PROPERTIES = ['position', 'rotation', 'scale', 'eulerAngles', 'angle'];
+
+function nodePropertyRedirect(componentType: string, property: string): ToolFail | null {
+    if (componentType !== 'cc.Node' && componentType !== 'Node') return null;
+    if (NODE_TRANSFORM_PROPERTIES.indexOf(property) !== -1) {
+        return fail('node_property', `'${property}' belongs to the node, not to a component`,
+            `Use node_set_node_transform(uuid, ${property}: …) — it also knows what a 2D node may carry.`);
+    }
+    if (NODE_OWN_PROPERTIES.indexOf(property) !== -1) {
+        return fail('node_property', `'${property}' belongs to the node, not to a component`,
+            `Use node_set_node_property(uuid, property: '${property}', value: …).`);
+    }
+    return null;
+}
+
+/** Renderers expose no scalar `material`; the Inspector edits the sharedMaterials slots. */
+function effectiveProperty(properties: Record<string, PropertyDescriptor>, property: string): string {
+    if (resolveDumpPath(properties, property) !== undefined) return property;
+    const aliased = property === 'material' || property === 'materials';
+    return aliased && properties.sharedMaterials ? 'sharedMaterials' : property;
+}
+
+export async function writeComponentProperty(
+    ctx: ToolContext, args: PropertyWriteArgs
+): Promise<ToolResult<Record<string, unknown>>> {
+    const redirect = nodePropertyRedirect(args.componentType, args.property);
+    if (redirect) return redirect;
+
+    let raw: unknown;
+    try {
+        raw = await ctx.editor.scene.queryNode(args.nodeUuid);
+    } catch (error) {
+        return fail('node_unreadable', `The editor did not answer for node ${args.nodeUuid}: ${textOf(error)}`);
+    }
+    const components = componentsOf(raw);
+    const located = locate(components, args.componentType);
+    if (!located) {
+        return fail('component_not_found',
+            `No '${args.componentType}' on node ${args.nodeUuid}. Components there: ${spelledTypes(components)}`,
+            'Add it with component_add_component, or pass one of the spellings above.');
+    }
+
+    const propertyPath = effectiveProperty(located.properties, args.property);
+    const descriptor = hintedDescriptor(resolveDumpPath(located.properties, propertyPath), args.propertyType);
+    if (!descriptor) {
+        return fail('property_not_in_dump',
+            `'${args.property}' is not in ${located.className}'s dump and no propertyType was given, so its `
+            + `shape is unknown. Declared properties: ${Object.keys(located.properties).join(', ')}`,
+            args.property.indexOf('.') !== -1
+                ? 'A dotted path only resolves through values that already exist — write the parent array or '
+                    + 'block first, then address its members.'
+                : 'Pass propertyType to write a property the dump does not expose (a settable getter, for one).');
+    }
+
+    const target: WriteTarget = {
+        nodeUuid: args.nodeUuid,
+        componentType: located.className,
+        componentIndex: located.index,
+        propertyPath,
+        descriptor,
+        ...((raw as any)?._prefabInstance ? { prefabInstanceRoot: args.nodeUuid } : {}),
+        ...(args.targetComponentType !== undefined || args.sameClassIndex !== undefined
+            ? {
+                refOptions: {
+                    ...(args.targetComponentType !== undefined ? { targetComponentType: args.targetComponentType } : {}),
+                    ...(args.sameClassIndex !== undefined ? { sameClassIndex: args.sameClassIndex } : {})
+                }
+            }
+            : {})
+    };
+
+    const value = coerceValueArg(args.value, descriptor);
+    const report: WriteReport = await verifiedWrite(target, value, ctx, { verify: args.verify || 'serializer' });
+    const observed = await readBack(target, ctx).catch(() => undefined);
+    const data = {
+        nodeUuid: args.nodeUuid,
+        componentType: located.className,
+        componentIndex: located.index,
+        property: propertyPath,
+        ...(propertyPath === args.property ? {} : { requestedProperty: args.property }),
+        kind: resolveKind(descriptor),
+        requested: value,
+        actualValue: observed,
+        ...report
+    };
+
+    if (!report.written) {
+        return fail('write_refused', `${located.className}.${propertyPath} was not written: ${report.detail}`,
+            undefined, data);
+    }
+    if (!report.verified && observed !== undefined) {
+        return fail('write_unverified',
+            `${located.className}.${propertyPath} did not land as asked: ${report.detail}`, undefined, data);
+    }
+    const notes = [
+        report.verified ? '' : 'the dump does not expose it, so the write is unproven',
+        report.persisted ? '' : 'a save is NOT confirmed to carry it — see `detail`'
+    ].filter(Boolean);
+    return ok(data, `Set ${located.className}.${propertyPath}${notes.length ? ` (${notes.join('; ')})` : ''}`);
+}
+
+const jsonArrayArg = z.preprocess(value => coerceJsonArg(value).value, z.array(z.any()));
+const uuidListArg = z.preprocess(
+    value => {
+        const coerced = coerceJsonArg(value).value;
+        return typeof coerced === 'string' ? [coerced] : coerced;
+    },
+    z.array(z.string())
+);
+
+function anyValued(tool: RegisteredTool, parameter: string): RegisteredTool {
+    const declared = (tool.inputSchema as any)?.properties?.[parameter];
+    if (declared) declared.type = ANY_VALUE_TYPE;
+    return tool;
+}
+
+export const componentAddComponent = defineTool({
+    name: 'component_add_component',
+    description: 'Add a component to a node, idempotently: a node that already carries the type is reported '
+        + 'as such and nothing is added twice. Pass a builtin type ("cc.Sprite"), an @ccclass name, or the '
+        + 'db:// path of a script asset — a script is matched by its ASSET uuid, because a script component '
+        + 'registers in the scene under a class-id (cid) and never under its class name, which is why '
+        + 'checking for the name alone reported every script attachment as failed. The addition is polled '
+        + 'until the scene shows it, and the cid it registered under comes back in `resolvedCid` — that is '
+        + 'the spelling component_remove_component wants.',
+    schema: z.object({
+        nodeUuid: z.string().describe('Target node UUID'),
+        componentType: z.string().describe('Component type (cc.Sprite), an @ccclass name (Locomotion), or a '
+            + 'script asset path (db://assets/scripts/MyScript.ts)')
+    }),
+    aliases: { scriptPath: 'componentType', component: 'componentType', type: 'componentType' },
+    async handler(args, ctx) {
+        return args.componentType.indexOf('db://') === 0
+            ? attachScript(ctx, args.nodeUuid, args.componentType)
+            : addByType(ctx, args.nodeUuid, args.componentType);
+    }
+});
+
+function addedReport(nodeUuid: string, componentType: string, component: DumpComponent, existing: boolean) {
+    return {
+        nodeUuid,
+        componentType,
+        resolvedCid: cidOf(component),
+        className: classNameOf(component) || canonicalClassName(component),
+        componentUuid: (component.value as any)?.uuid?.value ?? null,
+        componentVerified: true,
+        existing
+    };
+}
+
+async function addByType(ctx: ToolContext, nodeUuid: string, componentType: string): Promise<ToolResult> {
+    let before: DumpComponent[];
+    try {
+        before = await queryComponents(ctx, nodeUuid);
+    } catch (error) {
+        return fail('node_unreadable', `The editor did not answer for node ${nodeUuid}: ${textOf(error)}`);
+    }
+    const existing = before.find(component => componentMatches(component, componentType));
+    if (existing) {
+        return ok(addedReport(nodeUuid, componentType, existing, true),
+            `'${componentType}' is already on the node (cid '${cidOf(existing)}')`);
+    }
+    const beforeCids = new Set(before.map(cidOf));
+
+    try {
+        await ctx.editor.scene.createComponent({ uuid: nodeUuid, component: componentType });
+    } catch (error) {
+        const fallback = await ctx.sceneScript.call('addComponentToNode', nodeUuid, componentType)
+            .catch(() => null);
+        if (!fallback || fallback.success !== true) {
+            return fail('create_component_failed',
+                `Neither the editor nor the scene script added '${componentType}': ${textOf(error)}`
+                + `${fallback ? `; ${fallback.error}` : ''}`);
+        }
+    }
+
+    let added: DumpComponent | undefined;
+    await settle(async () => {
+        const after = await queryComponents(ctx, nodeUuid).catch(() => [] as DumpComponent[]);
+        const appeared = after.filter(component => !beforeCids.has(cidOf(component)));
+        added = after.find(component => componentMatches(component, componentType))
+            || (appeared.length === 1 ? appeared[0] : undefined);
+        return !!added;
+    });
+    if (!added) {
+        const after = await queryComponents(ctx, nodeUuid).catch(() => [] as DumpComponent[]);
+        return fail('component_unverified',
+            `'${componentType}' is not on node ${nodeUuid} after adding it. Components there: `
+            + spelledTypes(after),
+            'The editor accepted the call without registering the component — check the spelling, and that '
+            + 'the script compiled.');
+    }
+    return ok(addedReport(nodeUuid, componentType, added, false),
+        `'${componentType}' added (registered as cid '${cidOf(added)}')`);
+}
+
+function scriptAssetOf(component: DumpComponent): string | undefined {
+    return (component.value as any)?.__scriptAsset?.value?.uuid;
+}
+
+async function attachScript(ctx: ToolContext, nodeUuid: string, scriptPath: string): Promise<ToolResult> {
+    const scriptUuid = await ctx.editor.assetDb.queryUuid(scriptPath).catch(() => null)
+        || (await ctx.editor.assetDb.queryAssetInfo(scriptPath).catch(() => null))?.uuid;
+    if (!scriptUuid) {
+        return fail('script_not_found', `No script asset at '${scriptPath}'`,
+            'Pass the db:// path of a .ts/.js script, e.g. db://assets/scripts/MyScript.ts');
+    }
+    const scriptName = (scriptPath.split('/').pop() || scriptPath).replace(/\.(ts|js)$/, '');
+
+    const carrying = (components: DumpComponent[]) =>
+        components.find(component => scriptAssetOf(component) === scriptUuid);
+
+    let before: DumpComponent[];
+    try {
+        before = await queryComponents(ctx, nodeUuid);
+    } catch (error) {
+        return fail('node_unreadable', `The editor did not answer for node ${nodeUuid}: ${textOf(error)}`);
+    }
+    const already = carrying(before);
+    if (already) {
+        return ok(
+            { ...addedReport(nodeUuid, scriptName, already, true), scriptUuid, scriptPath },
+            `Script '${scriptName}' is already attached (cid '${cidOf(already)}')`
+        );
+    }
+    const beforeCids = new Set(before.map(cidOf));
+
+    const create = (component: string) =>
+        ctx.editor.scene.createComponent({ uuid: nodeUuid, component }).catch(() => undefined);
+    let after: DumpComponent[] = before;
+    let attached: DumpComponent | undefined;
+    const look = async () => {
+        after = await queryComponents(ctx, nodeUuid).catch(() => after);
+        attached = carrying(after);
+        return !!attached;
+    };
+
+    await create(scriptName);
+    await settle(look);
+    // The uuid retry runs only while the component count has NOT grown, or it doubles the script.
+    if (!attached && after.length === before.length) {
+        await create(scriptUuid);
+        await settle(look);
+    }
+    if (!attached) {
+        const appeared = after.filter(component => !beforeCids.has(cidOf(component)));
+        if (appeared.length === 1) attached = appeared[0];
+    }
+    if (!attached) {
+        return fail('attach_failed', `Script '${scriptName}' did not attach to node ${nodeUuid}`,
+            'The class must be a compiled @ccclass cc.Component subclass and the project must have finished '
+            + 'importing — check the editor console, then retry.');
+    }
+    return ok(
+        { ...addedReport(nodeUuid, scriptName, attached, false), scriptUuid, scriptPath },
+        `Script '${scriptName}' attached (registered as cid '${cidOf(attached)}')`
+    );
+}
+
+export const componentRemoveComponent = defineTool({
+    name: 'component_remove_component',
+    description: 'Remove a component from a node. Addressed the same way as everywhere else — a cid, an '
+        + '@ccclass name or a builtin type — and removed by the COMPONENT\'s own scene uuid, which is the '
+        + 'only form 3.8 accepts for a script component. The removal is polled until the node stops '
+        + 'reporting the cid, so a component the editor declined to remove is reported instead of being '
+        + 'called a success.',
+    schema: z.object({
+        nodeUuid: z.string().describe('Node UUID'),
+        componentType: z.string().describe('Component cid, @ccclass class name or builtin type, e.g. '
+            + '"cc.Sprite" or "9b4a7ueT9xD6aRE+AlOusy1"')
+    }),
+    aliases: { component: 'componentType', type: 'componentType' },
+    async handler(args, ctx) {
+        let components: DumpComponent[];
+        try {
+            components = await queryComponents(ctx, args.nodeUuid);
+        } catch (error) {
+            return fail('node_unreadable',
+                `The editor did not answer for node ${args.nodeUuid}: ${textOf(error)}`);
+        }
+        const located = locate(components, args.componentType);
+        if (!located) {
+            return fail('component_not_found',
+                `No '${args.componentType}' on node ${args.nodeUuid}. Components there: `
+                + spelledTypes(components));
+        }
+
+        const payloads: Array<{ uuid: string; component?: string }> = [];
+        if (located.componentUuid) payloads.push({ uuid: located.componentUuid });
+        payloads.push({ uuid: args.nodeUuid, component: located.cid });
+
+        const stillThere = async () => {
+            const after = await queryComponents(ctx, args.nodeUuid).catch(() => components);
+            return after.some(component => cidOf(component) === located.cid);
+        };
+
+        let refusal = '';
+        for (const payload of payloads) {
+            try {
+                await ctx.editor.scene.removeComponent(payload);
+            } catch (error) {
+                refusal = textOf(error);
+                continue;
+            }
+            if (await settle(async () => !(await stillThere()))) {
+                return ok({
+                    nodeUuid: args.nodeUuid,
+                    componentType: args.componentType,
+                    resolvedCid: located.cid,
+                    componentUuid: located.componentUuid
+                }, `'${args.componentType}' (cid '${located.cid}') removed`);
+            }
+        }
+        return fail('remove_unverified',
+            `'${args.componentType}' (cid '${located.cid}') is still on node ${args.nodeUuid} after removing it`
+            + `${refusal ? `. Last refusal: ${refusal}` : ''}`);
+    }
+});
+
+export const componentGetComponents = defineTool({
+    name: 'component_get_components',
+    description: 'Every component on a node: its class-id (`type`), readable `className`, own scene uuid, '
+        + 'enabled flag and — unless you turn them off — its property VALUES, projected out of the editor '
+        + 'dump (a reference reads as its uuid, a colour as rgba, an unset reference as null). This is the '
+        + 'compact answer; component_get_component_info gives one component\'s declared types and enum '
+        + 'options. `index` is the component\'s position in the node\'s own list.',
+    schema: z.object({
+        nodeUuid: z.string().describe('Node UUID'),
+        includeProperties: booleanArg.optional().describe('Include each component\'s property values '
+            + '(default true); false gives just the identity of each component')
+    }),
+    async handler(args, ctx) {
+        const includeProperties = args.includeProperties !== false;
+        let components: DumpComponent[] | null = null;
+        let refusal = '';
+        try {
+            const raw = await ctx.editor.scene.queryNode(args.nodeUuid);
+            if (raw && (raw as any).__comps__) components = componentsOf(raw);
+            else refusal = `the editor reports no components for node ${args.nodeUuid}`;
+        } catch (error) {
+            refusal = textOf(error);
+        }
+
+        if (components) {
+            return ok({
+                nodeUuid: args.nodeUuid,
+                components: components.map((component, index) => ({
+                    index,
+                    type: cidOf(component),
+                    className: classNameOf(component) || undefined,
+                    uuid: (component.value as any)?.uuid?.value ?? null,
+                    enabled: enabledOf(component),
+                    ...(includeProperties
+                        ? { properties: projectAll((component.value || {}) as Record<string, PropertyDescriptor>) }
+                        : {})
+                }))
+            });
+        }
+
+        const fallback = await ctx.sceneScript.call('getNodeInfo', args.nodeUuid).catch(() => null);
+        if (!fallback || fallback.success !== true) {
+            return fail('components_unreadable',
+                `Editor API failed (${refusal}); scene script failed (${fallback?.error || 'no answer'})`);
+        }
+        return ok(
+            { nodeUuid: args.nodeUuid, components: fallback.data.components },
+            'Read through the scene script, which reports each component\'s type and enabled flag only'
+        );
+    }
+});
+
+export const componentGetComponentInfo = defineTool({
+    name: 'component_get_component_info',
+    description: 'One component in detail: for every property its declared `type`, the `kind` this bridge '
+        + 'writes it as (assetRef, nodeRef, componentRef, color, vec, enum, bitmask, nestedClass, '
+        + 'classArray, gradient, curve, plain), its current `value` and, for an enum or bitmask, the '
+        + '`options` the editor offers. Pass `properties` to fetch only the entries you asked about — a '
+        + 'component with nested serializable arrays describes tens of KB otherwise. Dotted paths address '
+        + 'nested fields and array indices, e.g. "waves.0.squads". Material slots are `sharedMaterials`.',
+    schema: z.object({
+        nodeUuid: z.string().describe('Node UUID'),
+        componentType: z.string().describe('Component cid, @ccclass class name or builtin type'),
+        properties: z.union([z.array(z.string()), z.string()]).optional()
+            .describe('Return only these property entries; dotted paths allowed. Omit for the whole component.')
+    }),
+    aliases: { component: 'componentType', type: 'componentType', property: 'properties' },
+    async handler(args, ctx) {
+        return readComponentInfo(ctx, args.nodeUuid, args.componentType, propertyFilterOf(args.properties));
+    }
+});
+
+export const componentSetComponentProperty = anyValued(defineTool({
+    name: 'component_set_component_property',
+    description: 'Write ONE property of a component — this is the only property writer for a scene. The '
+        + 'target\'s real shape comes from the component dump, so the same call writes primitives, '
+        + 'colours and vectors, enums and bitmasks, asset / node / component REFERENCES and arrays of '
+        + 'those, an inline serializable @ccclass, an ARRAY of a serializable @ccclass with references '
+        + 'inside its elements, particle gradients and curves, and nested members addressed by a DOTTED '
+        + 'PATH. An array is written whole: to add or remove an element, read it, edit it, set it back. An '
+        + 'inline @ccclass is the opposite — it PATCHES the members you name and leaves the rest alone, '
+        + 'and a misspelled member is an error rather than a silent no-op. Material slots are '
+        + '`sharedMaterials` (there is no scalar `material`); `material`/`materials` are accepted as '
+        + 'spellings of it. For a reference field you may pass the target as `value`, or as '
+        + '`targetUuid`/`targetUuids` — which also accept targetPath/targetPaths and survive a scene '
+        + 'reload. THE WRITE LANDS IN THE OPEN SCENE, NOT IN THE FILE: `written` says the editor took it, '
+        + '`verified` says the component reads it back, `persisted` says the editor\'s serializer — the '
+        + 'call a save runs — would carry it, and `detail` says which of those is in doubt and why. '
+        + 'Node properties (name, active, layer, position, rotation, scale) belong to node_set_node_* .',
+    schema: z.object({
+        nodeUuid: z.string().describe('UUID of the node holding the component that OWNS the property'),
+        componentType: z.string().describe('Component cid, @ccclass class name or builtin type, e.g. '
+            + 'cc.Label or Locomotion. component_get_components lists both spellings.'),
+        property: z.string().describe('Property name, or a DOTTED PATH into it: "fontSize", '
+            + '"rateOverTime.constant", "colorOverLifetimeModule.color", "waves.0.squads"'),
+        value: z.any().optional().describe('The value, in the shape the property declares: a number, a '
+            + 'string, true/false, {"r":255,"g":0,"b":0,"a":255} or "#FF0000" for a colour, {"x":..,"y":..} '
+            + 'for a vector, {"width":..,"height":..} for a size, a bare uuid for an asset / node / '
+            + 'component reference, an array of those for an array field, [{"prefab":"<uuid>","count":3}] '
+            + 'for an array of a serializable @ccclass, {"keyframes":[{"time":0,"value":1}],"mode":1} for a '
+            + 'curve, {"colorKeys":[…],"alphaKeys":[…],"mode":1} for a gradient. null clears a scalar '
+            + 'reference.'),
+        propertyType: z.string().optional().describe('OPTIONAL type hint. The shape is read from the dump, '
+            + 'so omit it and the value is typed correctly on its own; pass it to override the dump or to '
+            + 'write a property the dump does not expose. Open-ended: the keywords string, number, integer, '
+            + 'float, boolean, color, vec2, vec3, vec4, size, enum, node, component, asset, prefab, '
+            + 'spriteFrame, gradient, curve, nodeArray, colorArray, numberArray, stringArray, or any cc.* '
+            + 'class name.'),
+        targetUuid: z.string().optional().describe('For a REFERENCE property: the node or component uuid to '
+            + 'assign, instead of `value`'),
+        targetUuids: uuidListArg.optional().describe('For an ARRAY of references: the uuids to assign, '
+            + 'instead of `value`'),
+        targetComponentType: z.string().optional().describe('Assign THIS component of the target node '
+            + 'rather than the node itself, or rather than the component the field\'s declared type implies'),
+        componentIndex: z.coerce.number().optional().describe('Which component of the SAME class on the '
+            + 'owning node holds the field (default 0) — this is an index among same-class components, not '
+            + 'the position in the node\'s component list'),
+        clear: booleanArg.optional().describe('Empty the property instead of assigning: null for a scalar '
+            + 'reference, [] for an array of references'),
+        verify: z.enum(['readback', 'disk', 'serializer']).optional().describe('How far to check the write: '
+            + '"serializer" (default) compares against what a save would emit, "readback" reads the live '
+            + 'component only, "disk" additionally says whether the open scene now differs from its file')
+    }),
+    async handler(args, ctx) {
+        const chosen = valueFromArgs(args);
+        if ('error' in chosen) {
+            return fail('invalid_args', `component_set_component_property: ${chosen.error}`);
+        }
+        return writeComponentProperty(ctx, {
+            nodeUuid: args.nodeUuid,
+            componentType: args.componentType,
+            property: args.property,
+            value: chosen.value,
+            propertyType: args.propertyType,
+            targetComponentType: args.targetComponentType,
+            sameClassIndex: args.componentIndex,
+            verify: args.verify
+        });
+    }
+}), 'value');
+
+export const componentExecuteComponentMethod = defineTool({
+    name: 'component_execute_component_method',
+    description: 'Call a method on a live component in the open scene. `uuid` is the COMPONENT\'s own scene '
+        + 'uuid (component_get_components reports it as `uuid`), not the node\'s. The call runs against the '
+        + 'live object, so whatever it changes is an unrecorded scene change like any other engine-side '
+        + 'write.',
+    schema: z.object({
+        uuid: z.string().describe('Component UUID'),
+        name: z.string().describe('Method name'),
+        args: jsonArrayArg.optional().describe('Method arguments, in order')
+    }),
+    aliases: { method: 'name', componentUuid: 'uuid' },
+    async handler(args, ctx) {
+        try {
+            const result = await ctx.editor.scene.executeComponentMethod({
+                uuid: args.uuid, name: args.name, args: args.args || []
+            });
+            return ok({ uuid: args.uuid, method: args.name, result }, `Method '${args.name}' executed`);
+        } catch (error) {
+            return fail('method_failed', `'${args.name}' did not run on component ${args.uuid}: `
+                + textOf(error));
+        }
+    }
+});
+
+export const componentTools: RegisteredTool[] = [
+    componentAddComponent,
+    componentRemoveComponent,
+    componentGetComponents,
+    componentGetComponentInfo,
+    componentSetComponentProperty,
+    componentExecuteComponentMethod
+];

@@ -9,10 +9,10 @@ import assert from 'node:assert/strict';
 import ta from '../dist/tool-args.js';
 import { DebugTools } from '../dist/tools/debug-tools.js';
 import { ProjectTools } from '../dist/tools/project-tools.js';
-import { ComponentTools } from '../dist/tools/component-tools.js';
 import { PrefabTools } from '../dist/tools/prefab-tools.js';
 import { sceneTools } from '../dist/tools-v2/scene.js';
 import { nodeTools } from '../dist/tools-v2/node.js';
+import { componentTools } from '../dist/tools-v2/component.js';
 
 const { normalizeToolArgs } = ta;
 
@@ -92,11 +92,11 @@ const advertisedSchemas = () => [
     ...Object.entries({
         debug: new DebugTools(),
         project: new ProjectTools(),
-        component: new ComponentTools(),
         prefab: new PrefabTools()
     }).flatMap(([category, ex]) => ex.getTools()
         .map(tool => ({ name: `${category}_${tool.name}`, inputSchema: tool.inputSchema || {} }))),
-    ...[...sceneTools, ...nodeTools].map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }))
+    ...[...sceneTools, ...nodeTools, ...componentTools]
+        .map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }))
 ];
 
 test('every declared required argument is actually reachable under its own name', () => {
