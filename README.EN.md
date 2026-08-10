@@ -1,281 +1,270 @@
 # Cocos MCP Server
 
-An AI MCP (Model Context Protocol) server plugin for Cocos Creator 3.8.x, enabling AI assistants (Claude, Cursor, etc.) to directly control the Cocos Creator editor.
+An MCP (Model Context Protocol) server that runs as a Cocos Creator 3.8.x editor extension, so an AI
+client (Claude Code, Claude Desktop, Cursor) drives the editor: scenes, nodes, components, prefabs,
+assets, builds and the preview.
 
-## Features
-
-- **MCP Protocol**: Standard JSON-RPC 2.0 over HTTP transport
-- **130+ Tools**: Full coverage of scene, node, component, prefab, asset, and project operations
-- **Vue 3 Control Panel**: Built-in server control and tool management UI
-- **Tool Configuration**: Enable/disable tools on demand and save custom configurations
-- **Auto-start**: Optionally start the server automatically when the extension loads
-- **Bilingual UI**: English and Chinese interface
+This is a fork. The surface is **90 tools**, rewritten to answer honestly rather than broadly: a
+write is read back, a refusal says what it refused, and a value the editor would drop on save is
+reported as such instead of being called a success.
 
 ## Compatibility
 
 | Cocos Creator | Status |
 |---|---|
-| 3.8.x | Fully supported |
+| 3.8.x | Supported (developed against 3.8.8) |
 | 3.7.x | Untested |
 
 ## Installation
 
-### Option 1: Project-level Extension
-
-Copy the plugin folder into the `extensions` directory of your Cocos Creator project:
+Copy — or junction — the extension folder into the **project's** `extensions` directory:
 
 ```
 {your-project}/
 └── extensions/
-    └── cocos-mcp-server/    ← place the entire folder here
+    └── cocos-mcp-server/
 ```
 
-### Option 2: Global Extension
+The global directory `~/.CocosCreator/extensions/` does **not** work: Cocos only loads extensions
+from the project. Then **Extension → Extension Manager → Project**, find `cocos-mcp-server`, enable it.
 
-Copy the plugin folder to the global extensions directory:
-
-```
-~/.CocosCreator/extensions/cocos-mcp-server/
-```
-
-### Enable the Extension
-
-1. Open Cocos Creator 3.8.x
-2. Go to **Extension** → **Extension Manager** in the menu bar
-3. Find `cocos-mcp-server` under the **Project** or **Global** tab
-4. Click **Enable**
-
-## Development Build
-
-To build from source:
+### Build from source
 
 ```bash
-# Install dependencies
 npm install
-
-# Compile TypeScript
-npm run build
-
-# Development mode (file watching)
-npm run watch
+npm run build        # tsc → dist/
+npm run watch        # recompile on change
+npm test             # tsc, then node --test over test/
 ```
 
-Compiled output is placed in the `dist/` directory.
+After a rebuild the extension must be toggled **OFF and ON by hand** in the Extension Manager —
+nothing else busts Node's require cache.
 
 ## Usage
 
-### 1. Start the Server
-
-After enabling the extension, open the control panel via **Extension → Cocos MCP Server** in the menu bar, then click **Start Server**.
-
-Default server address: `http://127.0.0.1:3000/mcp`
-
-### 2. Connect an AI Client
+Open the control panel via **Extension → Cocos MCP Server** and click **Start Server**.
+Default address: `http://127.0.0.1:4000/mcp`.
 
 **Claude Code:**
 ```bash
-claude mcp add --transport http cocos-creator http://127.0.0.1:3000/mcp
+claude mcp add --transport http cocos http://127.0.0.1:4000/mcp
 ```
 
 **Claude Desktop** (`claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
-    "cocos-creator": {
-      "url": "http://127.0.0.1:3000/mcp",
-      "transport": "http"
-    }
+    "cocos": { "url": "http://127.0.0.1:4000/mcp", "transport": "http" }
   }
 }
 ```
 
-**Cursor / VS Code:**
-Add an HTTP-type MCP server in your MCP settings and set the URL to `http://127.0.0.1:3000/mcp`.
+**Cursor / VS Code:** add an HTTP-type MCP server pointing at `http://127.0.0.1:4000/mcp`.
 
-## Tool Reference
+## Response Envelope
 
-### Scene Tools (8)
+Every tool answers the same shape, delivered as one JSON text block with the protocol's `isError`
+set from `success`:
+
+```jsonc
+{ "success": true,  "data": { }, "message": "…" }
+{ "success": false, "error": { "code": "…", "message": "…", "hint": "…" }, "data": { } }
+```
+
+`code` is stable and worth branching on: `invalid_args`, `unknown_tool`, `node_path`, `tool_throw`,
+`scene_script`, `batch_failed`, plus per-tool codes such as `node_not_found` or `write_not_persisted`.
+A failure may still carry `data` — that is how a refused write reports what it observed.
+
+### Write reports
+
+A property write answers a `WriteReport`:
+
+| field | meaning |
+|---|---|
+| `written` | the write was issued |
+| `verified` | the value was read back |
+| `persisted` | `true` a save carries it, `false` a save does not, **`null` nobody looked** |
+| `channel` | `editor` (serializes) or `live` (the running scene only) |
+
+`persisted: null` is not a soft `false`: it means the check was not asked for or could not run, and
+claiming either answer would invent it. On `channel: "live"` a `persisted: false` is the expected
+state, not a defect — the live channel records nothing by construction.
+
+### Undo
+
+Scene writes are wrapped in the editor's undo recording, so **Ctrl+Z takes a bridge write back**.
+When the editor refuses to record, or leaves the step open, the result says so in `undoNote`.
+Note that creating a node and then setting its transform is **two undo entries**, not one.
+
+### Node addressing
+
+Any tool taking a node uuid also accepts `nodePath` — the slash path `scene_dump` prints, with
+same-named siblings suffixed `#1`/`#2`. The registry resolves it to a uuid before the tool runs, and
+a path matching nothing or several nodes fails loudly with code `node_path`.
+
+## Tool Reference (90)
+
+### Scene (15)
 | Tool | Description |
 |---|---|
-| `get_current_scene` | Get current scene information |
-| `get_scene_list` | List all scenes in the project |
-| `open_scene` | Open a scene by path |
-| `save_scene` | Save the current scene |
-| `create_scene` | Create a new scene |
-| `save_scene_as` | Save the current scene to a new path |
-| `close_scene` | Close the current scene |
-| `get_scene_hierarchy` | Get the full scene node hierarchy |
+| `scene_get_current_scene` | The open scene: name, uuid, db:// url, whether it exists on disk, load state, root count |
+| `scene_get_scene_list` | Every `.scene` asset in the project as name + path + uuid |
+| `scene_open_scene` | Open a scene by db:// path, replacing whatever is open |
+| `scene_save_scene` | Write the open scene to its file |
+| `scene_close_scene` | Close the open scene |
+| `scene_create_scene` | Create a `.scene` holding an empty scene — root and global settings, no Canvas or camera |
+| `scene_dump` | Every node as a flat list: uuid, name, full path, parent, active, child count, components |
+| `scene_checksum` | Scene-state signature (per-path active + component classes, plus a sha1) for regression checks |
+| `scene_find_component_owners` | Every node carrying a component of a given class |
+| `scene_query_dirty` | Whether the open scene holds changes its file does not |
+| `scene_query_ready` | Whether the editor finished loading the open scene |
+| `scene_soft_reload` | Reload the scene in place, which is how recompiled scripts reach it |
+| `scene_begin_undo_recording` | Open an undo step over a node and return its id |
+| `scene_end_undo_recording` | Commit that step, making everything since one Ctrl+Z away |
+| `scene_cancel_undo_recording` | Discard that step without pushing it onto the undo stack |
 
-### Node Tools (11)
+### Node (12)
 | Tool | Description |
 |---|---|
-| `create_node` | Create a new node |
-| `get_node_info` | Get detailed information about a node |
-| `find_nodes` | Find nodes by filter criteria |
-| `find_node_by_name` | Find a node by name |
-| `get_all_nodes` | Get all nodes in the scene |
-| `set_node_property` | Set a property on a node |
-| `set_node_transform` | Set node position, rotation, and scale |
-| `delete_node` | Delete a node |
-| `move_node` | Move a node to a new parent |
-| `duplicate_node` | Duplicate a node |
-| `detect_node_type` | Detect the type of a node |
+| `node_create_node` | Create a node: empty, with components, from an asset, or as a builtin primitive |
+| `node_get_node_info` | One node in full, plus the 2D/3D verdict, the reasons for it and the transform constraints it implies |
+| `node_find_nodes` | Nodes whose name matches, with the scene path that addresses each |
+| `node_set_node_property` | Write name / active / layer / mobility, read back, with the channel named |
+| `node_set_node_transform` | Set local position, rotation (euler) and/or scale, honouring 2D constraints |
+| `node_delete_node` | Remove a node and its whole subtree |
+| `node_move_node` | Reparent a node |
+| `node_duplicate_node` | Duplicate a node with its subtree, as a sibling |
+| `node_list_builtin_meshes` | The builtin primitive meshes with their sub-asset uuids |
+| `node_copy_node` | Put nodes on the editor clipboard for a later paste |
+| `node_cut_node` | Put nodes on the clipboard marked for a move |
+| `node_paste_node` | Paste clipboard nodes under a parent and return the uuids they got |
 
-### Component Tools
+### Component (6)
 | Tool | Description |
 |---|---|
-| `add_component` | Add a component to a node |
-| `remove_component` | Remove a component from a node |
-| `get_component_info` | Get component information |
-| `set_component_property` | Set a component property value |
-| `get_components` | Get all components on a node |
-| `reset_node_property` | Reset a node property to its default |
-| `reset_component` | Reset a component to its default values |
-| `execute_component_method` | Call a method on a component |
+| `component_add_component` | Add a component idempotently — a type already present is reported, not duplicated |
+| `component_remove_component` | Remove a component from a node |
+| `component_get_components` | Every component on a node with class id, class name, enabled flag and property values |
+| `component_get_component_info` | One component in detail: per property its declared type, the write `kind`, and its value |
+| `component_set_component_property` | The one property writer for a scene: verified, undo-bracketed, reports channel and persistence |
+| `component_execute_component_method` | Call a method on a live component in the open scene |
 
-### Prefab Tools
+### Prefab (14)
 | Tool | Description |
 |---|---|
-| `create_prefab` | Create a prefab asset from a node |
-| `instantiate_prefab` | Instantiate a prefab into the scene |
-| `edit_prefab` | Enter prefab editing mode |
-| `save_prefab` | Save the current prefab |
-| `exit_prefab_edit` | Exit prefab editing mode |
-| `revert_prefab` | Revert a prefab instance to the asset |
-| `apply_prefab` | Apply node changes back to the prefab asset |
+| `prefab_get_prefab_list` | Every `.prefab` under a folder as name + path + uuid |
+| `prefab_dump` | The node tree of a prefab **asset**, with each component's resolved class name |
+| `prefab_add_component` | Add a component to a node inside a prefab asset on disk |
+| `prefab_remove_component` | Remove a component from a node inside a prefab asset |
+| `prefab_get_component_property` | Read one serialized property off a prefab asset, as the file holds it |
+| `prefab_set_component_property` | Write one serialized property on a prefab asset |
+| `prefab_validate_prefab` | Structural check that a `.prefab` parses and holds a `cc.Prefab` entry and a node |
+| `prefab_instantiate_prefab` | Instantiate a prefab into the open scene as a **linked** instance |
+| `prefab_create_prefab` | Write a prefab asset from a scene node using the editor's own serializer |
+| `prefab_update_prefab` | Apply an instance's current state back onto the asset it tracks |
+| `prefab_revert_prefab` | Throw away an instance's local changes |
+| `prefab_restore_prefab_node` | Rebuild an instance node from its asset — the one prefab op that records an undo step |
+| `prefab_list_overrides` | Every property override on an instance, with its target and whether an asset uuid still resolves |
+| `prefab_remove_override` | Remove one override by property path, leaving the rest in place |
 
-### Asset Tools
+### Scene operations (8)
 | Tool | Description |
 |---|---|
-| `import_asset` | Import an asset file |
-| `get_asset_info` | Get information about an asset |
-| `get_assets` | List assets in the project |
-| `create_asset` | Create a new asset |
-| `copy_asset` | Copy an asset to a new path |
-| `move_asset` | Move an asset to a new path |
-| `delete_asset` | Delete an asset |
-| `refresh_assets` | Refresh the asset database |
-| `query_asset_path` | Query an asset path by UUID |
-| `query_asset_uuid` | Query an asset UUID by path |
-| `find_asset_by_name` | Search for assets by name |
+| `sceneAdvanced_reset_node_property` | Reset one node property to its declared default — or, on an instance, to the prefab's value |
+| `sceneAdvanced_reset_node_transform` | Reset position, rotation and scale in one call |
+| `sceneAdvanced_reset_component` | Reset every property of a component to its defaults |
+| `sceneAdvanced_move_array_element` | Move an array element by original index plus a signed offset |
+| `sceneAdvanced_remove_array_element` | Remove the element at an index of an array property |
+| `sceneAdvanced_query_scene_classes` | Every class registered with the engine, optionally only those extending a base |
+| `sceneAdvanced_query_scene_components` | Every component type the editor offers, with cid, menu path and script uuid |
+| `sceneAdvanced_query_nodes_by_asset_uuid` | Every node referencing an asset uuid — who uses this material/mesh/prefab |
 
-### Project Tools
+### Assets (16)
 | Tool | Description |
 |---|---|
-| `get_project_info` | Get basic project information |
-| `get_project_settings` | Get project settings |
-| `run_project` | Run the project preview |
-| `build_project` | Build the project |
-| `open_build_panel` | Open the build panel |
-| `check_builder_status` | Check the builder worker status |
+| `project_get_assets` | List assets under a folder, narrowed by type and name |
+| `project_get_asset_info` | Everything the database knows about one asset, including disk path, size and sub-assets |
+| `project_create_asset` | Create a file or folder, with `onConflict` = fail / overwrite / rename |
+| `project_delete_asset` | Delete an asset or a whole folder |
+| `project_copy_asset` | Copy an asset to another db:// location |
+| `project_move_asset` | Move or rename an asset |
+| `project_import_asset` | Copy a file from disk into the project and import it |
+| `project_reimport_asset` | Re-run the importer on one asset |
+| `project_refresh_assets` | Rescan a folder, importing what changed on disk |
+| `project_save_asset` | Overwrite an existing asset's content and reimport it |
+| `project_query_asset_uuid` | The uuid of the asset at a db:// url |
+| `project_query_asset_url` | The db:// url of an asset uuid |
+| `assetAdvanced_save_asset_meta` | Write a `.meta` file wholesale |
+| `assetAdvanced_generate_available_url` | The url a new asset would get here: the url itself, or a numbered variant |
+| `assetAdvanced_query_asset_db_ready` | Whether the asset database has finished starting up |
+| `assetAdvanced_validate_asset_references` | Read every uuid reference out of serialized assets and name the ones nothing answers |
 
-### Debug Tools (10)
+### Project and build (7)
 | Tool | Description |
 |---|---|
-| `get_console_logs` | Retrieve console log entries |
-| `clear_console` | Clear the editor console |
-| `log_message` | Write a log message to the console |
-| `get_editor_info` | Get editor version and environment info |
+| `project_build_project` | Run a real build and wait for it to finish |
+| `project_check_builder_status` | Builder readiness plus the build tasks that exist, queued, running or finished |
+| `project_get_build_settings` | How building through this bridge behaves, plus whether the worker is up |
+| `project_open_build_panel` | Open the editor's Build panel |
+| `project_run_project` | Start the in-editor preview — the editor's own Play button |
+| `project_get_project_info` | Which project is open: name, path, uuid, Creator version |
+| `project_get_project_settings` | One settings category: general, physics, render or assets |
 
-### Scene View Tools (18)
-Control gizmo tools, coordinate systems, view modes, grid display, and other scene viewport settings.
+### Debug (7)
+| Tool | Description |
+|---|---|
+| `debug_execute_script` | Execute JavaScript in scene context, with `cc`, `director` and `scene` in scope |
+| `debug_project_logs` | Read the editor's own `temp/logs/project.log` — tail without a query, search with one |
+| `debug_get_preview_logs` | Console output of the **running preview**, forwarded from the preview page |
+| `debug_clear_preview_logs` | Drop everything buffered from the preview page |
+| `debug_validate_scene` | Node-count health check over the open scene |
+| `debug_get_editor_info` | Which editor and project this bridge is attached to, plus process memory and uptime |
+| `debug_get_performance_stats` | Renderer counters — draw calls, triangles, memory (preview only) |
 
-### Advanced Scene Tools (18)
-Undo recording, node copy/paste/cut, scene snapshots, soft reload, and other advanced operations.
+### Batch, ECS, skeletal animation (5)
+| Tool | Description |
+|---|---|
+| `batch_run` | Execute a list of tool calls in one request, in order, with later calls able to read earlier results |
+| `ecs_component_census` | Per-component read/write/add/remove census over the project's TypeScript, from real syntax trees |
+| `skeletalAnimation_add_socket` | Attach a `SkeletalAnimation` socket to a bone, keeping baked animation working |
+| `skeletalAnimation_list_sockets` | The sockets on a node's `cc.SkeletalAnimation`, each with its bone path and target |
+| `skeletalAnimation_remove_socket` | Remove a socket by bone path, destroying its target node |
 
-### Reference Image Tools
-Add, remove, and transform reference images in the scene viewport.
+## Settings
 
-### Advanced Asset Tools
-Batch asset operations and asset dependency analysis.
-
-### Broadcast Tools (5)
-Send custom event broadcasts to the editor.
-
-### Server Tools (6)
-Query server status, connection information, and the active tool list.
-
-### Validation Tools (3)
-Scene integrity validation, asset dependency validation, and MCP response format validation.
-
-## Server Settings
+Stored in `{project}/settings/mcp-server.json`.
 
 | Setting | Default | Description |
 |---|---|---|
-| Port | `3000` | HTTP server listening port |
-| Auto Start | `false` | Start the server automatically on extension load |
-| Debug Log | `false` | Enable verbose debug logging |
-| Max Connections | `10` | Maximum number of simultaneous client connections |
+| Port | `4000` | HTTP listening port |
+| Auto Start | `false` | Start the server when the extension loads |
+| Debug Log | `false` | Verbose bridge logging into the editor console |
+| Max Connections | `10` | Maximum simultaneous clients |
 
-## Tool Management
+Every tool is always on: there is no per-tool enable/disable, and no tool-manager configuration file.
 
-The **Tool Management** tab in the control panel supports:
+## HTTP Endpoints
 
-- **Per-category control**: Enable or disable tools by category
-- **Bulk operations**: Select all / deselect all
-- **Persistent config**: Save the enabled/disabled state across sessions
-
-Disabling unused tools reduces the AI's tool context size and can improve response efficiency.
-
-## Project Structure
-
-```
-cocos-mcp-server/
-├── package.json              # Extension manifest
-├── tsconfig.json             # TypeScript configuration
-├── base.tsconfig.json        # Base TypeScript configuration
-├── i18n/
-│   ├── en.js                 # English localization
-│   └── zh.js                 # Chinese localization
-├── static/
-│   ├── icon.png              # Extension icon
-│   ├── style/default/        # Panel stylesheet
-│   └── template/             # Panel HTML templates
-├── source/
-│   ├── main.ts               # Extension entry point
-│   ├── mcp-server.ts         # HTTP MCP server core
-│   ├── scene.ts              # Scene script (engine API access)
-│   ├── settings.ts           # Settings persistence
-│   ├── types/index.ts        # TypeScript type definitions
-│   ├── panels/default/       # Vue 3 control panel
-│   └── tools/                # Tool modules (14 categories)
-└── dist/                     # Compiled JavaScript output
-```
-
-## Architecture
-
-```
-AI Client (Claude / Cursor)
-       │  HTTP JSON-RPC 2.0
-       ▼
-MCP HTTP Server (localhost:3000)
-       │  Editor.Message IPC
-       ▼
-Cocos Creator Editor Process
-       │  execute-scene-script
-       ▼
-Scene Script (engine API: cc.*)
-```
-
-- **Main process** (`main.ts`): Manages the server lifecycle and handles extension messages
-- **MCP server** (`mcp-server.ts`): Implements the JSON-RPC 2.0 protocol and routes tool calls
-- **Tool modules** (`tools/*.ts`): Wrap specific `Editor.Message` calls for each operation
-- **Scene script** (`scene.ts`): Runs in the engine context with direct access to `cc` APIs
-- **Control panel** (`panels/default/index.ts`): Vue 3 UI that communicates with the main process via IPC
+- `POST /mcp` — MCP Streamable HTTP, the only tool interface; other methods answer 405
+- `POST /preview-log` — console batches forwarded from a running preview page
+- `GET /preview-console.js` — the script preview pages inject to do that forwarding
 
 ## Troubleshooting
 
-**Q: The server fails to start with a "port in use" error.**
-A: Change the port number in the control panel (default is 3000) and restart the server.
+**The server will not start, port in use.** Change the port in the control panel and restart it.
 
-**Q: AI tool calls fail with "Scene not ready".**
-A: Make sure a scene is open in Cocos Creator. The scene script requires an active scene context to operate.
+**A tool answers `scene_script`.** The scene script bundle did not answer: no scene is open, or the
+extension was rebuilt without being toggled OFF and ON.
 
-**Q: The extension does not appear in the Extension Manager.**
-A: Verify that the plugin folder name matches the `name` field in `package.json` (`cocos-mcp-server`).
+**A tool answers `node_path`.** The path matched nothing or matched several nodes. Take the path
+from `scene_dump` or `node_find_nodes` verbatim, including any `#1`/`#2` suffix.
 
-**Q: How do I apply source code changes?**
-A: Run `npm run build`, then disable and re-enable the extension in the Extension Manager.
+**Source changes do not take effect.** `npm run build`, then toggle the extension OFF and ON in the
+Extension Manager. Disabling and re-enabling over IPC is not enough.
+
+**The extension is missing from the Extension Manager.** The folder name must match the `name` in
+`package.json` (`cocos-mcp-server`), and it must be under the project's `extensions/`, not the
+global directory.
 
 ## License
 
