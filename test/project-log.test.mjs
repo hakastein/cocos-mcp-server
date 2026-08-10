@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import pl from '../dist/project-log.js';
 
-const { groupLogLines, parseSince, filterEntries, levelAtLeast } = pl;
+const { groupLogLines, parseSince, filterEntries, levelAtLeast, maskOutsideEntries } = pl;
 
 // Shaped like a real temp/logs/project.log: a header line, then stack frames that belong to it.
 const LINES = [
@@ -84,6 +84,30 @@ test('absolute since values are accepted', () => {
 
 test('an unreadable since is an error, not a silently ignored filter', () => {
     assert.throws(() => parseSince('last tuesday', 0), /Cannot read 'since' value/);
+});
+
+test('masking blanks the lines outside the kept entries and leaves the others in place', () => {
+    const kept = filterEntries(groupLogLines(LINES), { minLevel: 'warn', level: 'warn' });
+    const masked = maskOutsideEntries(LINES, kept);
+
+    assert.equal(masked.length, LINES.length);
+    assert.equal(masked[7], '27.07.2026 09:05:12 - warn: texture not compressed');
+    assert.deepEqual(masked.filter(line => line !== ''), [masked[7]]);
+});
+
+test('a kept entry keeps its stack frames, blank line inside the span included', () => {
+    const kept = filterEntries(groupLogLines(LINES), { level: 'error' });
+    const masked = maskOutsideEntries(LINES, kept);
+
+    assert.deepEqual(masked, [
+        '', '',
+        '27.07.2026 09:05:11 - error: Module "../Joystick" not found',
+        '    at SkinnedMeshRenderer._tryBindAnimation (index.js:115295:23)',
+        '    at Scene._activate (index.js:63356:44)',
+        '',
+        '    at Director.runSceneImmediate (index.js:15538:17)',
+        '', ''
+    ]);
 });
 
 test('severity ordering', () => {

@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import ta from '../dist/tool-args.js';
-import { DebugTools } from '../dist/tools/debug-tools.js';
+import { debugTools } from '../dist/tools-v2/debug.js';
 import { assetTools } from '../dist/tools-v2/asset.js';
 import { buildTools } from '../dist/tools-v2/build.js';
 import { sceneTools } from '../dist/tools-v2/scene.js';
@@ -18,26 +18,15 @@ import { sceneOpsTools } from '../dist/tools-v2/scene-ops.js';
 
 const { normalizeToolArgs } = ta;
 
-const schemaOf = (executor, toolName) => {
-    const tool = executor.getTools().find(t => t.name === toolName);
-    assert.ok(tool, `tool ${toolName} not found`);
-    return tool.inputSchema;
-};
-
-test('Bug 1: search_project_logs accepts the keyword/limit spelling that silently match-alled', () => {
-    const schema = schemaOf(new DebugTools(), 'search_project_logs');
-    const r = normalizeToolArgs('debug_search_project_logs', schema, { keyword: '_sealed', limit: 6 });
-    assert.equal(r.ok, true, r.error);
-    assert.equal(r.args.pattern, '_sealed');
-    assert.equal(r.args.maxResults, 6);
-});
-
-test('Bug 1: search_project_logs with no pattern is rejected instead of returning the file head', () => {
-    const schema = schemaOf(new DebugTools(), 'search_project_logs');
-    const r = normalizeToolArgs('debug_search_project_logs', schema, { limit: 6 });
-    assert.equal(r.ok, false);
-    assert.match(r.error, /missing required argument/i);
-    assert.match(r.error, /pattern/);
+test('Bug 1: the query spellings a caller reaches for are advertised on debug_project_logs', () => {
+    const schema = debugTools.find(tool => tool.name === 'debug_project_logs').inputSchema;
+    assert.deepEqual(schema.required, undefined, 'a tail read takes no arguments at all');
+    for (const spelling of ['keyword', 'pattern', 'search', 'filterKeyword']) {
+        assert.ok(schema.properties.query['x-aliases'].includes(spelling), `query drops the ${spelling} spelling`);
+    }
+    for (const spelling of ['maxResults', 'max', 'lines']) {
+        assert.ok(schema.properties.limit['x-aliases'].includes(spelling), `limit drops the ${spelling} spelling`);
+    }
 });
 
 const assetToolNamed = (name) => {
@@ -127,16 +116,10 @@ test('find_component_owners without a class name is a clear validation error', a
     assert.match(result.error.message, /className/);
 });
 
-/** Every advertised schema on the surface, legacy and migrated alike, under its full tool name. */
-const advertisedSchemas = () => [
-    ...Object.entries({
-        debug: new DebugTools()
-    }).flatMap(([category, ex]) => ex.getTools()
-        .map(tool => ({ name: `${category}_${tool.name}`, inputSchema: tool.inputSchema || {} }))),
-    ...[...sceneTools, ...nodeTools, ...componentTools, ...prefabTools, ...sceneOpsTools,
-        ...assetTools, ...buildTools]
-        .map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }))
-];
+const advertisedSchemas = () =>
+    [...sceneTools, ...nodeTools, ...componentTools, ...prefabTools, ...sceneOpsTools,
+        ...assetTools, ...buildTools, ...debugTools]
+        .map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }));
 
 test('every declared required argument is actually reachable under its own name', () => {
     // guards the defect class: a schema advertising one name while the handler reads another

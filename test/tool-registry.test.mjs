@@ -5,7 +5,7 @@ import { composeTools, createToolInstances } from '../dist/tool-registry.js';
 
 test('the registry is the only category list, and it carries ecs', () => {
     const categories = Object.keys(createToolInstances());
-    const expected = ['skeletalAnimation', 'debug', 'ecs', 'batch'];
+    const expected = ['skeletalAnimation', 'ecs', 'batch'];
     assert.deepEqual(categories.sort(), expected.slice().sort());
 });
 
@@ -45,6 +45,10 @@ test('the whole advertised surface composes with no name collision across catego
         'the asset-advanced survivors are missing from the surface');
     assert.ok(names.includes('project_build_project'),
         'the migrated build category is missing from the surface');
+    assert.ok(names.includes('debug_execute_script'),
+        'the migrated debug category is missing from the surface');
+    assert.ok(names.includes('debug_project_logs'),
+        'the merged project-log reader is missing from the surface');
 });
 
 test('the tools the node category replaced are gone from the surface', () => {
@@ -55,7 +59,8 @@ test('the tools the node category replaced are gone from the surface', () => {
         'component_attach_script', 'component_set_component_ref',
         'component_set_materials', 'component_get_materials',
         'sceneAdvanced_execute_component_method',
-        'project_find_asset_by_name', 'project_get_asset_details', 'project_query_asset_path'
+        'project_find_asset_by_name', 'project_get_asset_details', 'project_query_asset_path',
+        'debug_search_project_logs', 'debug_get_project_logs', 'debug_get_log_file_info'
     ]) {
         assert.ok(!names.includes(retired), `${retired} is still advertised`);
     }

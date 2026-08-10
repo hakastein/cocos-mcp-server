@@ -1,4 +1,3 @@
-import { DebugTools } from './tools/debug-tools';
 import { SkeletalAnimationTools } from './tools/skeletal-animation-tools';
 import { BatchTools } from './tools/batch-tools';
 import { EcsTools } from './tools/ecs-tools';
@@ -11,19 +10,17 @@ import { prefabTools } from './tools-v2/prefab';
 import { sceneOpsTools } from './tools-v2/scene-ops';
 import { assetTools } from './tools-v2/asset';
 import { buildTools } from './tools-v2/build';
-import type { PreviewLogStore } from './preview-log-store';
+import { debugTools } from './tools-v2/debug';
 import type { ToolContext } from './context';
 
 export type ToolDispatcher = (toolName: string, args: any) => Promise<any>;
 
 export interface ToolInstanceDeps {
     dispatch?: ToolDispatcher;
-    logs?: PreviewLogStore;
 }
 
 export function createToolInstances(deps: ToolInstanceDeps = {}): Record<string, any> {
     return {
-        debug: new DebugTools(deps.logs),
         skeletalAnimation: new SkeletalAnimationTools(),
         ecs: new EcsTools(),
         batch: new BatchTools(deps.dispatch)
@@ -31,15 +28,13 @@ export function createToolInstances(deps: ToolInstanceDeps = {}): Record<string,
 }
 
 export interface ComposeDeps {
-    logs?: PreviewLogStore;
     ctx?: ToolContext;
 }
 
 export function composeTools(deps: ComposeDeps = {}): ToolRegistry {
     let registry: ToolRegistry;
     const executors = createToolInstances({
-        dispatch: (name, args) => registry.invoke(name, args, deps.ctx as ToolContext),
-        logs: deps.logs
+        dispatch: (name, args) => registry.invoke(name, args, deps.ctx as ToolContext)
     });
     registry = new ToolRegistry([
         ...sceneTools,
@@ -49,6 +44,7 @@ export function composeTools(deps: ComposeDeps = {}): ToolRegistry {
         ...sceneOpsTools,
         ...assetTools,
         ...buildTools,
+        ...debugTools,
         ...Object.entries(executors).flatMap(([category, executor]) => legacyTools(category, executor))
     ]);
     return registry;

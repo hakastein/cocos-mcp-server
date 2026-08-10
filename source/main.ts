@@ -22,7 +22,7 @@ function compose(settings: MCPServerSettings): BridgeServer {
         settings
     };
 
-    return new BridgeServer(composeTools({ logs: previewLogs, ctx }), ctx, settings);
+    return new BridgeServer(composeTools({ ctx }), ctx, settings);
 }
 
 export const methods: { [key: string]: (...any: any) => any } = {

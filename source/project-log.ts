@@ -136,6 +136,20 @@ export interface EntryFilter {
     contains?: string;
 }
 
+/**
+ * A copy of `lines` where every line outside the kept entries is blanked. Blanking rather than
+ * removing preserves 1-based line numbers and the surrounding-context slices of a search.
+ */
+export function maskOutsideEntries(lines: string[], kept: ProjectLogEntry[]): string[] {
+    const masked: string[] = new Array(lines.length).fill('');
+    for (const entry of kept) {
+        for (let i = entry.lineNumber - 1; i < entry.endLine && i < lines.length; i++) {
+            masked[i] = lines[i];
+        }
+    }
+    return masked;
+}
+
 export function filterEntries(entries: ProjectLogEntry[], f: EntryFilter): ProjectLogEntry[] {
     const needle = f.contains ? f.contains.toLowerCase() : null;
     return entries.filter((e) => {
