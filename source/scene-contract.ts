@@ -34,11 +34,16 @@ export interface QuatLike extends Vec3Like {
 export interface WriteReport {
     written: boolean;
     verified: boolean;
-    persisted: boolean;
     /**
-     * Which route carried the value. `persisted: false` means opposite things on the two: the
-     * editor channel serializes, so it is a write a save would drop; the live channel records
-     * nothing by construction, so it is the expected state.
+     * Whether a save would carry the value: `true` proven so, `false` proven otherwise, `null`
+     * UNPROVEN — the route does persist, but the check could not run or was not asked for. `null`
+     * is not a soft `false`: nobody looked, so claiming either way would invent the answer.
+     */
+    persisted: boolean | null;
+    /**
+     * Which route carried the value. It decides what `persisted: false` means: the editor channel
+     * serializes, so it is a write a save would drop; the live channel records nothing by
+     * construction, so it is the expected state there.
      */
     channel?: 'editor' | 'live';
     prefabOverride?: { targetPath: string };

@@ -179,8 +179,9 @@ async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: ToolCo
 
     const reads: ReadCheck[] = plan.reads || [{ property: target.propertyPath, expected: plan.expected }];
     const verified = await settle(() => readsMatch(target, reads, ctx));
+    // The editor channel does serialize; whether THIS value survives is the verify step's answer.
     const report: WriteReport = {
-        written: true, verified, persisted: true, channel: 'editor', ...prefabOverrideOf(target)
+        written: true, verified, persisted: null, channel: 'editor', ...prefabOverrideOf(target)
     };
     const notes = refused.length ? [`set-property refused ${refused.join('; ')}`] : [];
     if (!verified) notes.push(await readBackComplaint(target, reads, ctx));
@@ -712,7 +713,8 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: ToolCont
     const outcome = await ctx.sceneScript.call('componentReferenceOutcome', target.nodeUuid, componentIndex, property);
     if (!outcome || outcome.success !== true) {
         return {
-            written: true, verified: false, persisted: false, channel: live ? 'live' : 'editor',
+            written: true, verified: false, persisted: live ? false : null,
+            channel: live ? 'live' : 'editor',
             detail: `written, but the scene could not be re-read to check it (${sceneError(outcome)}); `
                 + 'treat the write as unproven'
         };
@@ -724,14 +726,16 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: ToolCont
     const report: WriteReport = {
         written: true,
         verified: sameSlots(outcome.data.live),
-        persisted: !live && outcome.data.projectionChecked && sameSlots(outcome.data.projected),
+        // Live assignment records nothing (false, and known). An unreadable prefab asset means
+        // nobody could look (null) — which is not the same answer as "the next load loses it".
+        persisted: live ? false : (outcome.data.projectionChecked ? sameSlots(outcome.data.projected) : null),
         channel: live ? 'live' : 'editor',
         ...(overridden ? { prefabOverride: { targetPath: path } } : prefabOverrideOf(target))
     };
     const notes: string[] = plan.data.warning ? [plan.data.warning] : [];
     if (live) {
         notes.push(LIVE_CHANNEL);
-    } else if (!outcome.data.projectionChecked) {
+    } else if (report.persisted === null) {
         notes.push('whether it survives a save was NOT established: the component sits inside a prefab '
             + 'instance whose asset could not be read');
     } else if (!report.persisted) {

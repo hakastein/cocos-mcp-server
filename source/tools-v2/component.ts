@@ -295,6 +295,22 @@ export async function readComponentInfo(
     });
 }
 
+export interface PersistenceVerdict {
+    failed: boolean;
+    note?: string;
+}
+
+export function persistenceVerdict(report: Pick<WriteReport, 'persisted' | 'channel'>): PersistenceVerdict {
+    if (report.persisted === true) return { failed: false };
+    if (report.persisted === null) {
+        return { failed: false, note: 'whether a save carries it was NOT established' };
+    }
+    if (report.channel === 'live') {
+        return { failed: false, note: 'assigned on the live object, which the editor does not record' };
+    }
+    return { failed: true };
+}
+
 export interface PropertyWriteArgs {
     nodeUuid: string;
     componentType: string;
@@ -402,7 +418,8 @@ export async function writeComponentProperty(
     if (!report.verified && observed !== undefined) {
         return fail('write_unverified', `${named} did not land as asked: ${report.detail}`, undefined, data);
     }
-    if (report.channel !== 'live' && !report.persisted) {
+    const persistence = persistenceVerdict(report);
+    if (persistence.failed) {
         return fail('write_not_persisted', `${named} was written but a save would not carry it: ${report.detail}`,
             'The value is on the live component only. A reference into a prefab instance needs a target '
             + 'override, and a property the serializer does not emit cannot be written from here at all.',
@@ -410,7 +427,7 @@ export async function writeComponentProperty(
     }
     const notes = [
         report.verified ? '' : 'the dump does not expose it, so the write is unproven',
-        report.persisted ? '' : 'assigned on the live object, which a save does not record'
+        persistence.note || ''
     ].filter(Boolean);
     return ok(data, `Set ${named}${notes.length ? ` (${notes.join('; ')})` : ''}`);
 }
@@ -732,12 +749,15 @@ export const componentSetComponentProperty = anyValued(defineTool({
         + 'spellings of it. For a reference field you may pass the target as `value`, or as '
         + '`targetUuid`/`targetUuids` — which also accept targetPath/targetPaths and survive a scene '
         + 'reload. THE WRITE LANDS IN THE OPEN SCENE, NOT IN THE FILE: `written` says the editor took it, '
-        + '`verified` says the component reads it back, `persisted` says the editor\'s serializer — the '
-        + 'call a save runs — would carry it, `channel` says which route took the value, and `detail` says '
-        + 'which of those is in doubt and why. A write through the editor channel that a save would NOT '
-        + 'carry FAILS the call. A gradient, a curve, or a reference the channel refused goes through the '
-        + 'live object instead: those report channel "live" with persisted false BY DESIGN and succeed — '
-        + 'the value is real, the editor simply recorded nothing, so the scene must be saved by hand. '
+        + '`verified` says the component reads it back, `channel` says which route took the value, and '
+        + '`detail` says what is in doubt and why. `persisted` has THREE states: true — the editor\'s '
+        + 'serializer, the call a save runs, emits the value; false — it does not; null — nobody could '
+        + 'check (the prefab asset was unreadable, the serializer does not name the field, or verify was '
+        + 'set to readback). A PROVEN false on the editor channel FAILS the call. null succeeds with the '
+        + 'reason said out loud — an unproven write is not a bad one. A gradient, a curve, or a reference '
+        + 'the editor channel refused goes through the live object instead and reports channel "live" with '
+        + 'persisted false BY DESIGN: the value is real, the editor recorded nothing, so the person at the '
+        + 'editor has to save. '
         + 'Node properties (name, active, layer, position, rotation, scale) belong to node_set_node_* .',
     schema: z.object({
         nodeUuid: z.string().describe('UUID of the node holding the component that OWNS the property'),

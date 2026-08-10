@@ -239,3 +239,87 @@ test('an object that only looks like a reference keeps its members', () => {
     assert.deepEqual(withoutUuidWrappers({ x: 1, y: 2 }), { x: 1, y: 2 });
     assert.deepEqual(withoutUuidWrappers({}), {});
 });
+
+const writerNamed = (name) => WRITERS.find(writer => writer.name === name);
+
+function referenceCtx({ projectionChecked = true, projected = [NODE], refuseSetProperty = false } = {}) {
+    const answers = {
+        resolveComponentReference: {
+            success: true,
+            data: {
+                componentIndex: 2, property: 'target', isArray: false, dumpType: 'cc.Node',
+                uuids: [NODE], expected: [NODE], assignedKind: 'node', assignedNames: [''],
+                assignedTypes: [''], declaredType: 'cc.Node', inferredType: null
+            }
+        },
+        applyComponentReference: { success: true, data: { property: 'target', assigned: [NODE] } },
+        pruneComponentReferenceOverrides: { success: true, data: { removed: 0, paths: [] } },
+        componentReferenceOutcome: {
+            success: true,
+            data: {
+                live: [NODE], serialized: projected, projected, projectionChecked,
+                componentInSceneGraph: true, overrides: []
+            }
+        }
+    };
+    return {
+        sceneScript: { call: async (method) => answers[method] },
+        editor: {
+            scene: {
+                setProperty: async () => {
+                    if (refuseSetProperty) throw new Error('set-property refused');
+                    return true;
+                }
+            }
+        }
+    };
+}
+
+test('a reference the next load rebuilds intact is persisted, and the editor channel is named', async () => {
+    const report = await writerNamed('node-ref').write(targetFor('nodeRef'), NODE, referenceCtx());
+    assert.equal(report.persisted, true);
+    assert.equal(report.channel, 'editor');
+    assert.equal(report.verified, true);
+});
+
+test('a reference the next load loses is persisted:false — proven, so a caller may fail on it', async () => {
+    const report = await writerNamed('node-ref')
+        .write(targetFor('nodeRef'), NODE, referenceCtx({ projected: [null] }));
+    assert.equal(report.persisted, false);
+    assert.equal(report.channel, 'editor');
+    assert.match(report.detail, /the next load builds/);
+});
+
+test('an unreadable prefab asset is persisted:null — nobody looked, which is not "it is lost"', async () => {
+    const report = await writerNamed('node-ref')
+        .write(targetFor('nodeRef'), NODE, referenceCtx({ projectionChecked: false }));
+    assert.equal(report.persisted, null);
+    assert.equal(report.channel, 'editor');
+    assert.match(report.detail, /NOT established/);
+});
+
+test('the live fallback is persisted:false on the live channel, which is that channel working', async () => {
+    const report = await writerNamed('node-ref')
+        .write(targetFor('nodeRef'), NODE, referenceCtx({ refuseSetProperty: true }));
+    assert.equal(report.persisted, false);
+    assert.equal(report.channel, 'live');
+});
+
+test('the editor channel alone claims nothing about a save: persisted stays null until checked', async () => {
+    const target = targetFor('number');
+    let written;
+    const ctx = {
+        editor: {
+            scene: {
+                setProperty: async ({ dump }) => { written = dump.value; return true; },
+                queryNode: async () => ({
+                    __comps__: [{}, {}, { value: { [target.propertyPath]: { type: 'Number', value: written } } }]
+                })
+            }
+        }
+    };
+    const report = await writerNamed('typed:plain').write(target, 2.5, ctx);
+    assert.equal(report.verified, true);
+    assert.equal(report.persisted, null);
+    assert.equal(report.channel, 'editor');
+});

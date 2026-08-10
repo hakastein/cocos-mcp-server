@@ -101,7 +101,9 @@ async function withSerializerVerdict(
     const serialized = withoutUuidWrappers(projectValue(kindOf(target), found.value));
     const live = withoutUuidWrappers(await readBack(target, ctx));
     const mismatches = readBackMismatches(serialized, live, target.propertyPath);
-    if (mismatches.length === 0) return report;
+    if (mismatches.length === 0) {
+        return report.persisted === null ? { ...report, persisted: true } : report;
+    }
     return addDetail({ ...report, persisted: false },
         `a save would not carry this write — the serializer emits ${mismatches.join('; ')}`);
 }

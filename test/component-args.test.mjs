@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import {
     canonicalClassName, classNameOf, coerceValueArg, componentMatches, hintedDescriptor, matchesOf,
-    propertyFilterOf, resolveDumpPath, valueFromArgs
+    persistenceVerdict, propertyFilterOf, resolveDumpPath, valueFromArgs
 } from '../dist/tools-v2/component.js';
 import { resolveKind, isArrayDescriptor } from '../dist/property/kind.js';
 
@@ -132,6 +132,30 @@ test('a call naming no value at all is an error, not a write of undefined', () =
     const answer = valueFromArgs({});
     assert.match(answer.error, /value/);
     assert.equal('value' in answer, false);
+});
+
+test('only a PROVEN unpersisted write on the serializing channel fails the call', () => {
+    assert.deepEqual(persistenceVerdict({ persisted: false, channel: 'editor' }), { failed: true });
+});
+
+test('an unproven write succeeds and says so — nobody looked is not "it is lost"', () => {
+    for (const channel of ['editor', 'live', undefined]) {
+        const verdict = persistenceVerdict({ persisted: null, channel });
+        assert.equal(verdict.failed, false, String(channel));
+        assert.match(verdict.note, /NOT established/);
+    }
+});
+
+test('the live channel not recording anything is that channel working, not a failure', () => {
+    const verdict = persistenceVerdict({ persisted: false, channel: 'live' });
+    assert.equal(verdict.failed, false);
+    assert.match(verdict.note, /live object/);
+});
+
+test('a proven persisted write carries no note at all', () => {
+    for (const channel of ['editor', 'live']) {
+        assert.deepEqual(persistenceVerdict({ persisted: true, channel }), { failed: false });
+    }
 });
 
 const properties = {
