@@ -4,7 +4,7 @@ An MCP (Model Context Protocol) server that runs as a Cocos Creator 3.8.x editor
 client (Claude Code, Claude Desktop, Cursor) drives the editor: scenes, nodes, components, prefabs,
 assets, builds and the preview.
 
-This is a fork. The surface is **90 tools**, rewritten to answer honestly rather than broadly: a
+This is a fork. The surface is **88 tools**, rewritten to answer honestly rather than broadly: a
 write is read back, a refusal says what it refused, and a value the editor would drop on save is
 reported as such instead of being called a success.
 
@@ -102,7 +102,7 @@ Any tool taking a node uuid also accepts `nodePath` — the slash path `scene_du
 same-named siblings suffixed `#1`/`#2`. The registry resolves it to a uuid before the tool runs, and
 a path matching nothing or several nodes fails loudly with code `node_path`.
 
-## Tool Reference (90)
+## Tool Reference (88)
 
 ### Scene (15)
 | Tool | Description |
@@ -179,7 +179,7 @@ a path matching nothing or several nodes fails loudly with code `node_path`.
 | `sceneAdvanced_query_scene_components` | Every component type the editor offers, with cid, menu path and script uuid |
 | `sceneAdvanced_query_nodes_by_asset_uuid` | Every node referencing an asset uuid — who uses this material/mesh/prefab |
 
-### Assets (16)
+### Assets (14)
 | Tool | Description |
 |---|---|
 | `project_get_assets` | List assets under a folder, narrowed by type and name |
@@ -192,8 +192,6 @@ a path matching nothing or several nodes fails loudly with code `node_path`.
 | `project_reimport_asset` | Re-run the importer on one asset |
 | `project_refresh_assets` | Rescan a folder, importing what changed on disk |
 | `project_save_asset` | Overwrite an existing asset's content and reimport it |
-| `project_query_asset_uuid` | The uuid of the asset at a db:// url |
-| `project_query_asset_url` | The db:// url of an asset uuid |
 | `assetAdvanced_save_asset_meta` | Write a `.meta` file wholesale |
 | `assetAdvanced_generate_available_url` | The url a new asset would get here: the url itself, or a numbered variant |
 | `assetAdvanced_query_asset_db_ready` | Whether the asset database has finished starting up |

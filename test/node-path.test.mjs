@@ -14,6 +14,7 @@ import { prefabTools } from '../dist/tools-v2/prefab.js';
 import { sceneTools } from '../dist/tools-v2/scene.js';
 import { nodeTools } from '../dist/tools-v2/node.js';
 import { componentTools } from '../dist/tools-v2/component.js';
+import { sceneOpsTools } from '../dist/tools-v2/scene-ops.js';
 import { ToolRegistry } from '../dist/registry.js';
 
 const {
@@ -307,7 +308,7 @@ test('the augmented schema carries its pairs under an x- keyword, inert for sche
     assert.ok(Array.isArray(refSchema[UUID_OR_PATH_KEY]));
 });
 
-test('set_node_transform takes a nodePath, while a bare uuid meaning an ASSET does not', async () => {
+test('set_node_transform takes a nodePath, while a uuid that is not a node does not', async () => {
     const registry = new ToolRegistry(nodeTools);
     const nodeSchema = registry.list().find(t => t.name === 'node_set_node_transform').inputSchema;
     assert.ok(nodeSchema.properties.nodePath, 'set_node_transform should accept nodePath');
@@ -334,8 +335,14 @@ test('set_node_transform takes a nodePath, while a bare uuid meaning an ASSET do
     assert.equal(queried, 'uuid-1', 'the path reached the handler as the uuid it names');
     assert.equal(result.error.code, 'node_not_found', 'neither validation nor path resolution refused it');
 
+    const componentSchema = new ToolRegistry(sceneOpsTools).list()
+        .find(t => t.name === 'sceneAdvanced_reset_component').inputSchema;
+    assert.ok(componentSchema.properties.uuid, 'reset_component still takes a bare uuid');
+    assert.equal(componentSchema.properties.nodePath, undefined);
+    assert.equal(pairsOf(componentSchema).length, 0);
+
     const assetSchema = new ToolRegistry(assetTools).list()
-        .find(t => t.name === 'project_query_asset_url').inputSchema;
+        .find(t => t.name === 'project_get_asset_info').inputSchema;
     assert.equal(assetSchema.properties.nodePath, undefined);
     assert.equal(pairsOf(assetSchema).length, 0);
 });

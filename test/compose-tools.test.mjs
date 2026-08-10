@@ -7,7 +7,7 @@ test('the whole advertised surface composes with no name collision across catego
     const names = composeTools().list().map(tool => tool.name);
 
     assert.equal(new Set(names).size, names.length);
-    assert.equal(names.length, 90, `the surface is ${names.length} tools: ${names.join(', ')}`);
+    assert.equal(names.length, 88, `the surface is ${names.length} tools: ${names.join(', ')}`);
     assert.ok(names.includes('scene_dump'), 'the migrated scene category is missing from the surface');
     assert.ok(names.includes('node_create_node'), 'the migrated node category is missing from the surface');
     assert.ok(names.includes('component_set_component_property'),
@@ -45,6 +45,7 @@ test('the tools the migrated categories replaced are gone from the surface', () 
         'component_set_materials', 'component_get_materials',
         'sceneAdvanced_execute_component_method',
         'project_find_asset_by_name', 'project_get_asset_details', 'project_query_asset_path',
+        'project_query_asset_uuid', 'project_query_asset_url',
         'debug_search_project_logs', 'debug_get_project_logs', 'debug_get_log_file_info'
     ]) {
         assert.ok(!names.includes(retired), `${retired} is still advertised`);

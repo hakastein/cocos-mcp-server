@@ -138,12 +138,14 @@ export const projectGetAssets = defineTool({
 
 export const projectGetAssetInfo = defineTool({
     name: 'project_get_asset_info',
-    description: 'Everything the asset database knows about ONE asset, addressed by db:// url or by '
+    description: 'Everything the asset database knows about ONE asset, addressed by db:// url OR by '
         + 'uuid: uuid, url, type, importer, absolute disk path, byte size, and its sub-assets grouped '
-        + 'by importer. For an FBX/glTF model the groups are meshes / materials / animationClips / '
-        + 'skeletons / textures / modelPrefab, so a MeshRenderer can be built from a mesh or a clip '
-        + 'resolved without guessing sub-id suffixes — instantiate `grouped.modelPrefab`, not the .fbx '
-        + 'main asset.',
+        + 'by importer. It answers uuid and url TOGETHER whichever one it was given, so this is also '
+        + 'the translation both ways — a path a human wrote into the identity scenes and prefabs store, '
+        + 'and a uuid read out of a .scene back into something locatable. For an FBX/glTF model the '
+        + 'groups are meshes / materials / animationClips / skeletons / textures / modelPrefab, so a '
+        + 'MeshRenderer can be built from a mesh or a clip resolved without guessing sub-id suffixes — '
+        + 'instantiate `grouped.modelPrefab`, not the .fbx main asset.',
     schema: z.object({
         assetPath: z.string().describe('Asset db:// url (db://assets/...) or a uuid'),
         includeSubAssets: booleanArg.optional().describe('Enumerate sub-assets (default true)')
@@ -517,35 +519,6 @@ export const assetAdvancedQueryAssetDbReady = defineTool({
     async handler(_args, ctx) {
         const ready = await ctx.editor.assetDb.queryReady();
         return ok({ ready }, ready ? 'Asset database is ready' : 'Asset database is not ready');
-    }
-});
-
-export const projectQueryAssetUuid = defineTool({
-    name: 'project_query_asset_uuid',
-    description: 'The uuid of the asset at a db:// url. Scenes and prefabs store references as uuids, '
-        + 'so this is the translation from a path a human wrote to the identity the files carry.',
-    schema: z.object({
-        url: z.string().describe('Asset URL (db://assets/...)')
-    }),
-    aliases: URL_ALIASES,
-    async handler(args, ctx) {
-        const uuid = await ctx.editor.assetDb.queryUuid(args.url);
-        if (!uuid) return fail('asset_not_found', `No asset at '${args.url}'`);
-        return ok({ url: args.url, uuid });
-    }
-});
-
-export const projectQueryAssetUrl = defineTool({
-    name: 'project_query_asset_url',
-    description: 'The db:// url of an asset uuid — the way a reference read out of a scene or prefab '
-        + 'file is turned back into something a human can locate.',
-    schema: z.object({
-        uuid: z.string().describe('Asset UUID')
-    }),
-    async handler(args, ctx) {
-        const url = await ctx.editor.assetDb.queryUrl(args.uuid);
-        if (!url) return fail('asset_not_found', `No asset with uuid '${args.uuid}'`);
-        return ok({ uuid: args.uuid, url });
     }
 });
 
@@ -932,8 +905,6 @@ export const assetTools: RegisteredTool[] = [
     projectReimportAsset,
     projectRefreshAssets,
     projectSaveAsset,
-    projectQueryAssetUuid,
-    projectQueryAssetUrl,
     assetAdvancedSaveAssetMeta,
     assetAdvancedGenerateAvailableUrl,
     assetAdvancedQueryAssetDbReady,
