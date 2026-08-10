@@ -6,7 +6,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import ta from '../dist/tool-args.js';
 import { debugTools } from '../dist/tools-v2/debug.js';
 import { assetTools } from '../dist/tools-v2/asset.js';
 import { buildTools } from '../dist/tools-v2/build.js';
@@ -18,8 +17,6 @@ import { sceneOpsTools } from '../dist/tools-v2/scene-ops.js';
 import { batchTools } from '../dist/tools-v2/batch.js';
 import { ecsTools } from '../dist/tools-v2/ecs.js';
 import { skeletalTools } from '../dist/tools-v2/skeletal.js';
-
-const { normalizeToolArgs } = ta;
 
 test('Bug 1: the query spellings a caller reaches for are advertised on debug_project_logs', () => {
     const schema = debugTools.find(tool => tool.name === 'debug_project_logs').inputSchema;
@@ -119,26 +116,52 @@ test('find_component_owners without a class name is a clear validation error', a
     assert.match(result.error.message, /className/);
 });
 
-const advertisedSchemas = () =>
+const everyTool = () =>
     [...sceneTools, ...nodeTools, ...componentTools, ...prefabTools, ...sceneOpsTools,
         ...assetTools, ...buildTools, ...debugTools, ...batchTools(async () => ({ success: true })),
-        ...ecsTools, ...skeletalTools]
-        .map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }));
+        ...ecsTools, ...skeletalTools];
 
-test('every declared required argument is actually reachable under its own name', () => {
+const advertisedSchemas = () =>
+    everyTool().map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }));
+
+/** A value of the declared type, so a rejection can only be about the argument SET, not its types. */
+function placeholderFor(property) {
+    if (Array.isArray(property?.enum) && property.enum.length) return property.enum[0];
+    const type = Array.isArray(property?.type) ? property.type[0] : property?.type;
+    if (type === 'number' || type === 'integer') return 1;
+    if (type === 'boolean') return true;
+    if (type === 'array') return [];
+    if (type === 'object') return {};
+    return 'x';
+}
+
+/** Every property access throws, so a handler cannot get past its first use of the context. */
+const noContext = new Proxy({}, {
+    get(_target, property) {
+        throw new Error(`the contract test supplies no ctx.${String(property)}`);
+    }
+});
+
+test('every declared required argument is actually reachable under its own name', async () => {
     // guards the defect class: a schema advertising one name while the handler reads another
-    for (const { name: toolName, inputSchema } of advertisedSchemas()) {
+    for (const tool of everyTool()) {
+        const inputSchema = tool.inputSchema || {};
         const required = Array.isArray(inputSchema.required) ? inputSchema.required : [];
         if (!required.length) continue;
-        const props = Object.keys(inputSchema.properties || {});
+        const properties = inputSchema.properties || {};
         for (const name of required) {
-            assert.ok(props.includes(name), `${toolName}: required '${name}' is not declared in properties`);
+            assert.ok(name in properties, `${tool.name}: required '${name}' is not declared in properties`);
         }
-        // a call supplying exactly the required set must validate
-        const args = Object.fromEntries(required.map(n => [n, 'x']));
-        const r = normalizeToolArgs(toolName, inputSchema, args);
-        assert.ok(r.ok || /must be of type/.test(r.error),
-            `${toolName}: supplying all required args was rejected: ${r.error}`);
+        // z.any() accepts undefined, so its parameter never reaches `required` and its tool guards
+        // it in the handler — what must not happen is a complaint about a name the call did supply
+        const args = Object.fromEntries(required.map(name => [name, placeholderFor(properties[name])]));
+        const result = await tool.invoke(args, noContext);
+        if (result.error?.code !== 'invalid_args') continue;
+        const complaint = result.error.message.replace(new RegExp(`^${tool.name}:\\s*`), '');
+        for (const name of required) {
+            assert.doesNotMatch(complaint, new RegExp(`(^|[^\\w])${name}([^\\w]|$)`),
+                `${tool.name}: supplying every required argument still drew '${complaint}'`);
+        }
     }
 });
 

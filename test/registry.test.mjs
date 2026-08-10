@@ -160,6 +160,20 @@ test('arguments failing the schema fail with code invalid_args and never reach t
     assert.match(result.error.message, /count/);
 });
 
+test('a handler that throws is answered as tool_throw, never propagated out of invoke', async () => {
+    const tool = defineTool({
+        name: 'echo',
+        description: 'Echoes its arguments',
+        schema: z.object({ text: z.string() }),
+        handler: async () => { throw new Error('the scene worker is gone'); }
+    });
+    const result = await new ToolRegistry([tool]).invoke('echo', { text: 'hi' }, context);
+
+    assert.equal(result.success, false);
+    assert.equal(result.error.code, 'tool_throw');
+    assert.equal(result.error.message, 'the scene worker is gone');
+});
+
 test('list advertises the JSON Schema of every tool', () => {
     const registry = new ToolRegistry([echoTool()]);
     assert.deepEqual(registry.list(), [{

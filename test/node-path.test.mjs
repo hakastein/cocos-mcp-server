@@ -15,9 +15,6 @@ import { sceneTools } from '../dist/tools-v2/scene.js';
 import { nodeTools } from '../dist/tools-v2/node.js';
 import { componentTools } from '../dist/tools-v2/component.js';
 import { ToolRegistry } from '../dist/registry.js';
-import ta from '../dist/tool-args.js';
-
-const { normalizeToolArgs } = ta;
 
 const {
     augmentToolDefinition, applyResolvedPaths, requestedPaths, pairsOf,
@@ -310,17 +307,32 @@ test('the augmented schema carries its pairs under an x- keyword, inert for sche
     assert.ok(Array.isArray(refSchema[UUID_OR_PATH_KEY]));
 });
 
-test('set_node_transform takes a nodePath, while a bare uuid meaning an ASSET does not', () => {
-    const nodeSchema = new ToolRegistry(nodeTools).list()
-        .find(t => t.name === 'node_set_node_transform').inputSchema;
+test('set_node_transform takes a nodePath, while a bare uuid meaning an ASSET does not', async () => {
+    const registry = new ToolRegistry(nodeTools);
+    const nodeSchema = registry.list().find(t => t.name === 'node_set_node_transform').inputSchema;
     assert.ok(nodeSchema.properties.nodePath, 'set_node_transform should accept nodePath');
     assert.equal(nodeSchema.required.includes('uuid'), false, 'the path alone is enough');
     assert.deepEqual(pairsOf(nodeSchema).find(p => p.uuid === 'uuid'),
         { uuid: 'uuid', path: 'nodePath', array: false, required: true });
 
-    const r = normalizeToolArgs('node_set_node_transform', nodeSchema,
-        { nodePath: 'Stage_3_Hookah/Hookah_model_v2', scale: { x: 1, y: 1, z: 1 } });
-    assert.equal(r.ok, true, r.error);
+    const sceneScript = {
+        call: () => Promise.resolve({
+            success: true,
+            data: {
+                resolutions: {
+                    'Stage_3_Hookah/Hookah_model_v2':
+                        { uuid: 'uuid-1', matchedPath: 'Stage_3_Hookah/Hookah_model_v2' }
+                }
+            }
+        })
+    };
+    let queried;
+    const editor = { scene: { queryNode: async (uuid) => { queried = uuid; return null; } } };
+    const result = await registry.invoke('node_set_node_transform',
+        { nodePath: 'Stage_3_Hookah/Hookah_model_v2', scale: { x: 1, y: 1, z: 1 } },
+        { sceneScript, editor, settings: { enableDebugLog: false } });
+    assert.equal(queried, 'uuid-1', 'the path reached the handler as the uuid it names');
+    assert.equal(result.error.code, 'node_not_found', 'neither validation nor path resolution refused it');
 
     const assetSchema = new ToolRegistry(assetTools).list()
         .find(t => t.name === 'project_query_asset_url').inputSchema;
