@@ -2,16 +2,12 @@ import {
     WriteTarget, componentCid, componentPath, kindOf, readBack, readBackMismatches, writerFor
 } from './writers';
 import { projectValue } from './readers';
+import { withUndoBracket } from '../undo-bracket';
 import type { ToolContext } from '../context';
 import type { SceneDirtyReport, SceneResult, WriteReport } from '../scene-contract';
 
 export interface VerifiedWriteOptions {
     verify?: 'readback' | 'disk' | 'serializer';
-}
-
-interface UndoBracket {
-    id: string | null;
-    reason?: string;
 }
 
 export async function verifiedWrite(
@@ -28,53 +24,15 @@ export async function verifiedWrite(
         };
     }
 
-    const undo = await beginRecording(target.nodeUuid, ctx);
-    let report: WriteReport;
-    try {
-        report = await writer.write(target, value, ctx);
-    } catch (error) {
-        await cancelRecording(undo, ctx);
-        throw error;
-    }
-
-    const ended = await endRecording(undo, ctx);
-    if (undo.id === null) {
-        report = addDetail(report, `the editor refused to record an undo step (${undo.reason}), `
-            + 'so Ctrl+Z does not take this write back');
-    } else if (ended !== null) {
-        report = addDetail(report, `the undo step was left open (${ended}), so Ctrl+Z may take back `
-            + 'more than this write');
-    }
+    const bracketed = await withUndoBracket(ctx, target.nodeUuid,
+        () => writer.write(target, value, ctx));
+    let report = bracketed.undoNote === null
+        ? bracketed.result
+        : addDetail(bracketed.result, bracketed.undoNote);
 
     if (opts.verify === 'disk') return addDetail(report, await diskVerdict(ctx));
     if (opts.verify === 'serializer') return await withSerializerVerdict(report, target, ctx);
     return report;
-}
-
-async function beginRecording(nodeUuid: string, ctx: ToolContext): Promise<UndoBracket> {
-    try {
-        return { id: await ctx.editor.scene.beginRecording(nodeUuid) };
-    } catch (error) {
-        return { id: null, reason: messageOf(error) };
-    }
-}
-
-async function endRecording(undo: UndoBracket, ctx: ToolContext): Promise<string | null> {
-    if (undo.id === null) return null;
-    try {
-        await ctx.editor.scene.endRecording(undo.id);
-        return null;
-    } catch (error) {
-        return messageOf(error);
-    }
-}
-
-async function cancelRecording(undo: UndoBracket, ctx: ToolContext): Promise<void> {
-    if (undo.id === null) return;
-    try {
-        await ctx.editor.scene.cancelRecording(undo.id);
-    } catch {
-    }
 }
 
 /**

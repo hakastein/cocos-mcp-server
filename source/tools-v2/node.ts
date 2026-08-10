@@ -3,6 +3,7 @@ import { booleanArg, defineTool } from '../tool';
 import { ok, fail, ToolResult } from '../result';
 import { fromScene, textOf } from './shared';
 import { settle } from '../settle';
+import { withUndoBracket } from '../undo-bracket';
 import { siblingLabels } from '../node-path';
 import { coerceJsonArg } from '../json-arg';
 import {
@@ -151,6 +152,7 @@ function sameVec3(observed: Vec3, expected: Vec3): boolean {
 interface TransformOutcome {
     applied: TransformKind[];
     warnings: string[];
+    undoNote?: string;
     unapplied?: { kind: TransformKind; expected: Vec3; observed: Vec3 | null };
 }
 
@@ -162,26 +164,29 @@ async function writeTransform(
     nodeType: NodeType
 ): Promise<TransformOutcome> {
     const outcome: TransformOutcome = { applied: [], warnings: [] };
-    for (const kind of ['position', 'rotation', 'scale'] as TransformKind[]) {
-        const given = requested[kind];
-        if (!given) continue;
-        const normalized = normalizedTransform(given, snapshot[kind], kind, nodeType);
-        if (normalized.warning) outcome.warnings.push(normalized.warning);
+    const bracketed = await withUndoBracket(ctx, uuid, async () => {
+        for (const kind of ['position', 'rotation', 'scale'] as TransformKind[]) {
+            const given = requested[kind];
+            if (!given) continue;
+            const normalized = normalizedTransform(given, snapshot[kind], kind, nodeType);
+            if (normalized.warning) outcome.warnings.push(normalized.warning);
 
-        await ctx.editor.scene.setProperty({ uuid, path: kind, dump: { value: normalized.value } as any });
+            await ctx.editor.scene.setProperty({ uuid, path: kind, dump: { value: normalized.value } as any });
 
-        let observed: Vec3 | null = null;
-        const settled = await settle(async () => {
-            const fresh = await snapshotOf(ctx, uuid);
-            observed = fresh ? fresh[kind] : null;
-            return !!observed && sameVec3(observed, normalized.value);
-        });
-        if (!settled) {
-            outcome.unapplied = { kind, expected: normalized.value, observed };
-            return outcome;
+            let observed: Vec3 | null = null;
+            const settled = await settle(async () => {
+                const fresh = await snapshotOf(ctx, uuid);
+                observed = fresh ? fresh[kind] : null;
+                return !!observed && sameVec3(observed, normalized.value);
+            });
+            if (!settled) {
+                outcome.unapplied = { kind, expected: normalized.value, observed };
+                return;
+            }
+            outcome.applied.push(kind);
         }
-        outcome.applied.push(kind);
-    }
+    });
+    if (bracketed.undoNote !== null) outcome.undoNote = bracketed.undoNote;
     return outcome;
 }
 
@@ -251,7 +256,8 @@ async function ensureColorMaterial(ctx: ToolContext, color: number[], unlit: boo
 }
 
 async function setLayer(ctx: ToolContext, uuid: string, layer: number): Promise<void> {
-    await ctx.editor.scene.setProperty({ uuid, path: 'layer', dump: { value: layer } as any });
+    await withUndoBracket(ctx, uuid,
+        () => ctx.editor.scene.setProperty({ uuid, path: 'layer', dump: { value: layer } as any }));
 }
 
 async function hasCanvasAncestor(ctx: ToolContext, uuid: string): Promise<boolean> {
@@ -294,12 +300,14 @@ async function setupCanvas(ctx: ToolContext, canvasUuid: string): Promise<string
         const write = (property: string, value: number) => ctx.editor.scene.setProperty({
             uuid: cameraUuid, path: `__comps__.${cameraIndex}.${property}`, dump: { value } as any
         });
-        await write('projection', 0);
-        await write('clearFlags', 6);
-        await write('visibility', 41943040);
-        await write('priority', 1073741824);
-        await write('near', 1);
-        await write('far', 2000);
+        await withUndoBracket(ctx, cameraUuid, async () => {
+            await write('projection', 0);
+            await write('clearFlags', 6);
+            await write('visibility', 41943040);
+            await write('priority', 1073741824);
+            await write('near', 1);
+            await write('far', 2000);
+        });
     }
 
     if (cameraIndex < 0) {
@@ -513,6 +521,7 @@ export const nodeCreateNode = defineTool({
             ...(args.primitive ? { primitive: args.primitive, meshUuid, materialUuid } : {}),
             appliedTransform: transform.applied,
             ...(transform.warnings.length ? { warnings: transform.warnings } : {}),
+            ...(transform.undoNote ? { undoNote: transform.undoNote } : {}),
             ...(verdict ? verdict.fields : {}),
             node: await snapshotOf(ctx, uuid).catch(() => null)
         };
@@ -586,7 +595,9 @@ export const nodeSetNodeProperty = defineTool({
     description: 'Write one property of the node itself — name, active, layer, mobility. Position, rotation '
         + 'and scale belong to node_set_node_transform, which knows what a 2D node may not carry. The write '
         + 'is read back: a property the node dump exposes and that did not change is reported as a failure, '
-        + 'not as a success.',
+        + 'not as a success. It goes through the editor and is one Ctrl+Z step; a write the editor refuses '
+        + 'falls back to the live node in the scene process, and the result says so — `channel: "live"` does '
+        + 'not survive a save.',
     schema: z.object({
         uuid: z.string().describe('Node UUID'),
         property: z.string().describe('Property name, e.g. active, name, layer'),
@@ -597,8 +608,11 @@ export const nodeSetNodeProperty = defineTool({
             return fail('invalid_args', 'node_set_node_property: value: Required');
         }
         const value = coerceJsonArg(args.value).value;
+        let undoNote: string | null = null;
         try {
-            await ctx.editor.scene.setProperty({ uuid: args.uuid, path: args.property, dump: { value } as any });
+            undoNote = (await withUndoBracket(ctx, args.uuid, () => ctx.editor.scene.setProperty({
+                uuid: args.uuid, path: args.property, dump: { value } as any
+            }))).undoNote;
         } catch (error) {
             const fallback = await ctx.sceneScript
                 .call('setNodeProperty', args.uuid, args.property, value)
@@ -607,14 +621,21 @@ export const nodeSetNodeProperty = defineTool({
                 return fail('set_property_failed',
                     `Neither the editor nor the scene script wrote '${args.property}': ${textOf(error)}`);
             }
-            return fromScene(fallback);
+            const live = fromScene(fallback);
+            if (!live.success) return live;
+            return ok({ uuid: args.uuid, property: args.property, value, channel: 'live', persisted: false },
+                `'${args.property}' was written straight into the live node because the editor refused the `
+                + 'write: a save does not carry it and Ctrl+Z does not take it back');
         }
 
         const raw: any = await ctx.editor.scene.queryNode(args.uuid).catch(() => null);
         const observed = raw && Object.prototype.hasOwnProperty.call(raw, args.property)
             ? raw[args.property]?.value
             : undefined;
-        const data = { uuid: args.uuid, property: args.property, value, observed };
+        const data = {
+            uuid: args.uuid, property: args.property, value, observed,
+            channel: 'editor', ...(undoNote ? { undoNote } : {})
+        };
         const differs = typeof value === 'object' && value !== null
             ? JSON.stringify(observed) !== JSON.stringify(value)
             : observed !== value;
@@ -663,6 +684,7 @@ export const nodeSetNodeTransform = defineTool({
             transformConstraints: classification.transformConstraints,
             appliedProperties: outcome.applied,
             ...(outcome.warnings.length ? { warnings: outcome.warnings } : {}),
+            ...(outcome.undoNote ? { undoNote: outcome.undoNote } : {}),
             before: { position: snapshot.position, rotation: snapshot.rotation, scale: snapshot.scale },
             after: await snapshotOf(ctx, args.uuid).catch(() => null)
         };
