@@ -90,6 +90,12 @@ async function snapshotOf(ctx: ToolContext, uuid: string): Promise<NodeSnapshot 
     };
 }
 
+function carriesComponent(snapshot: NodeSnapshot, requested: string): boolean {
+    const bare = requested.startsWith('cc.') ? requested.slice(3) : requested;
+    return snapshot.components.some(component =>
+        component.type === requested || component.className === requested || component.className === bare);
+}
+
 function classificationOf(snapshot: NodeSnapshot) {
     const verdict = classifyNode(snapshot.components.map(component => component.type), snapshot.layer);
     return { ...verdict, transformConstraints: transformConstraintsOf(verdict.nodeType) };
@@ -108,16 +114,32 @@ function normalizedTransform(
     if (nodeType !== '2d') return { value };
 
     if (kind === 'position') {
-        const dropped = given.z !== undefined && Math.abs(given.z) > 0.001;
+        const forced = value.z;
         value.z = 0;
-        return dropped ? { value, warning: `2D node: z position (${given.z}) ignored, set to 0` } : { value };
+        if (given.z !== undefined && Math.abs(given.z) > 0.001) {
+            return { value, warning: `2D node: z position (${given.z}) ignored, set to 0` };
+        }
+        if (Math.abs(forced) > 0.001) {
+            return { value, warning: `2D node: z position was ${forced} and is forced to 0 by this write` };
+        }
+        return { value };
     }
     if (kind === 'rotation') {
-        const dropped = (given.x !== undefined && Math.abs(given.x) > 0.001)
-            || (given.y !== undefined && Math.abs(given.y) > 0.001);
+        const forced = { x: value.x, y: value.y };
         value.x = 0;
         value.y = 0;
-        return dropped ? { value, warning: '2D node: x,y rotations ignored, only z rotation applied' } : { value };
+        if ((given.x !== undefined && Math.abs(given.x) > 0.001)
+            || (given.y !== undefined && Math.abs(given.y) > 0.001)) {
+            return { value, warning: '2D node: x,y rotations ignored, only z rotation applied' };
+        }
+        if (Math.abs(forced.x) > 0.001 || Math.abs(forced.y) > 0.001) {
+            return {
+                value,
+                warning: `2D node: x,y rotation was (${forced.x}, ${forced.y}) and is forced to (0, 0) `
+                    + 'by this write'
+            };
+        }
+        return { value };
     }
     return { value };
 }
@@ -251,14 +273,14 @@ async function findComponentIndex(ctx: ToolContext, uuid: string, type: string):
     return comps.findIndex(comp => (comp.__type__ || comp.cid || comp.type) === type);
 }
 
-async function setupCanvas(ctx: ToolContext, canvasUuid: string): Promise<void> {
+async function setupCanvas(ctx: ToolContext, canvasUuid: string): Promise<string | null> {
     await setLayer(ctx, canvasUuid, LAYER_UI_2D);
 
     const canvasInfo: any = await componentTools.execute('get_component_info', {
         nodeUuid: canvasUuid, componentType: 'cc.Canvas'
     });
     const properties: any = canvasInfo?.data?.properties || {};
-    if (properties.cameraComponent?.value?.uuid || properties._cameraComponent?.value?.uuid) return;
+    if (properties.cameraComponent?.value?.uuid || properties._cameraComponent?.value?.uuid) return null;
 
     const created = await ctx.editor.scene.createNode({ name: 'Camera', parent: canvasUuid });
     const cameraUuid = Array.isArray(created) ? created[0] : created;
@@ -283,21 +305,29 @@ async function setupCanvas(ctx: ToolContext, canvasUuid: string): Promise<void> 
         await write('far', 2000);
     }
 
-    await componentTools.execute('set_component_property', {
+    if (cameraIndex < 0) {
+        return `The UI camera node ${cameraUuid} carries no cc.Camera, so the Canvas has nothing to wire`;
+    }
+    const wired: any = await componentTools.execute('set_component_property', {
         nodeUuid: canvasUuid, componentType: 'cc.Canvas',
         property: 'cameraComponent', propertyType: 'component', value: cameraUuid
     });
+    if (!wired?.success) {
+        return `cc.Canvas.cameraComponent was not wired to the UI camera ${cameraUuid}: `
+            + `${wired?.error || 'unknown'} — the UI renders invisibly until it is`;
+    }
+    return null;
 }
 
-async function ensureUiSetup(ctx: ToolContext, uuid: string, components: string[]): Promise<void> {
+async function ensureUiSetup(ctx: ToolContext, uuid: string, components: string[]): Promise<string | null> {
     if (components.includes('cc.Canvas')) {
-        await setupCanvas(ctx, uuid);
-        return;
+        return await setupCanvas(ctx, uuid);
     }
     const carriesUi = components.some(component => UI_COMPONENT_TYPES.includes(component));
     if (carriesUi || await hasCanvasAncestor(ctx, uuid)) {
         await setLayer(ctx, uuid, LAYER_UI_2D);
     }
+    return null;
 }
 
 function orphan(uuid: string, code: string, message: string, hint?: string): ToolResult {
@@ -402,7 +432,8 @@ export const nodeCreateNode = defineTool({
         }
 
         for (const component of components) {
-            const before = (await snapshotOf(ctx, uuid))?.components.length ?? 0;
+            const before = await snapshotOf(ctx, uuid).catch(() => null);
+            if (before && carriesComponent(before, component)) continue;
             try {
                 await ctx.editor.scene.createComponent({ uuid, component });
             } catch (error) {
@@ -411,7 +442,7 @@ export const nodeCreateNode = defineTool({
             }
             const added = await settle(async () => {
                 const fresh = await snapshotOf(ctx, uuid).catch(() => null);
-                return !!fresh && fresh.components.length > before;
+                return !!fresh && carriesComponent(fresh, component);
             });
             if (!added) {
                 return orphan(uuid, 'component_unverified',
@@ -464,7 +495,13 @@ export const nodeCreateNode = defineTool({
             }
         }
 
-        await ensureUiSetup(ctx, uuid, components);
+        try {
+            const uiError = await ensureUiSetup(ctx, uuid, components);
+            if (uiError) return orphan(uuid, 'ui_setup_failed', uiError);
+        } catch (error) {
+            return orphan(uuid, 'ui_setup_failed',
+                `The UI wiring for this node did not complete: ${textOf(error)}`);
+        }
 
         const linkage = assetUuid ? await verifyPrefabLinkage(uuid) : null;
         const verdict = linkage ? linkageVerdict(linkage, assetType, unlinkPrefab) : null;
@@ -582,7 +619,10 @@ export const nodeSetNodeProperty = defineTool({
             ? raw[args.property]?.value
             : undefined;
         const data = { uuid: args.uuid, property: args.property, value, observed };
-        if (observed !== undefined && observed !== value) {
+        const differs = typeof value === 'object' && value !== null
+            ? JSON.stringify(observed) !== JSON.stringify(value)
+            : observed !== value;
+        if (observed !== undefined && differs) {
             return fail('property_unapplied',
                 `'${args.property}' still reads ${JSON.stringify(observed)} after writing `
                 + `${JSON.stringify(value)}`, undefined, data);
@@ -596,10 +636,11 @@ export const nodeSetNodeProperty = defineTool({
 export const nodeSetNodeTransform = defineTool({
     name: 'node_set_node_transform',
     description: 'Set local position, rotation (euler) and/or scale. An axis left out keeps the value the '
-        + 'node already has — nothing is zeroed on your behalf. On a 2D node (decided by the same classifier '
-        + 'node_get_node_info reports) z position and x/y rotation are dropped, and dropping a value you '
-        + 'passed is reported as a warning. Each write is read back and a value that did not land fails the '
-        + 'call.',
+        + 'node already has — EXCEPT on a 2D node, where writing position forces z to 0 and writing rotation '
+        + 'forces x and y to 0 whether or not you passed them: a 2D node has no other transform. Which kind '
+        + 'of node it is comes from the classifier node_get_node_info reports. Every forced zero that '
+        + 'changed a value is reported in `warnings`. Each write is read back and a value that did not land '
+        + 'fails the call.',
     schema: z.object({
         uuid: z.string().describe('Node UUID'),
         position: vec3Arg.optional().describe('Local position; z ignored on a 2D node'),
