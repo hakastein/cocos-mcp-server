@@ -25,7 +25,7 @@ export class ComponentTools implements ToolExecutor {
                     properties: {
                         nodeUuid: {
                             type: 'string',
-                            description: 'Target node UUID. REQUIRED: You must specify the exact node to add the component to. Use scene_dump or find_node_by_name to get the UUID of the desired node.'
+                            description: 'Target node UUID. REQUIRED: You must specify the exact node to add the component to. Use scene_dump or node_find_nodes to get the UUID of the desired node.'
                         },
                         componentType: {
                             type: 'string',
@@ -171,7 +171,7 @@ export class ComponentTools implements ToolExecutor {
                                 '• size: {"width":100,"height":50} (size dimensions)\n\n' +
                                 '🔗 Reference Types (using UUID strings):\n' +
                                 '• node: "target-node-uuid" (node reference)\n' +
-                                '  How to get: Use scene_dump or find_node_by_name to get node UUIDs\n' +
+                                '  How to get: Use scene_dump or node_find_nodes to get node UUIDs\n' +
                                 '• component: "target-node-uuid" (component reference)\n' +
                                 '  How it works: \n' +
                                 '    1. Provide the UUID of the NODE that contains the target component\n' +
@@ -984,7 +984,7 @@ export class ComponentTools implements ToolExecutor {
                 return {
                     success: false,
                     error: `Failed to get components for node '${nodeUuid}': ${componentsResponse.error}`,
-                    instruction: `Please verify that node UUID '${nodeUuid}' is correct. Use scene_dump or find_node_by_name to get the correct node UUID.`
+                    instruction: `Please verify that node UUID '${nodeUuid}' is correct. Use scene_dump or node_find_nodes to get the correct node UUID.`
                 };
             }
 

@@ -14,7 +14,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ComponentTools } from '../dist/tools/component-tools.js';
-import { NodeTools } from '../dist/tools/node-tools.js';
+import { nodeTools } from '../dist/tools-v2/node.js';
+import { ToolRegistry } from '../dist/registry.js';
 import { ProjectTools } from '../dist/tools/project-tools.js';
 import { pairsOf, augmentToolDefinition } from '../dist/node-path.js';
 import ta from '../dist/tool-args.js';
@@ -181,7 +182,8 @@ const augmentedSchema = (executor, name) =>
     augmentToolDefinition(executor.getTools().find(t => t.name === name)).inputSchema;
 
 test('set_node_transform takes a nodePath, while a bare uuid meaning an ASSET does not', () => {
-    const nodeSchema = augmentedSchema(new NodeTools(), 'set_node_transform');
+    const nodeSchema = new ToolRegistry(nodeTools).list()
+        .find(t => t.name === 'node_set_node_transform').inputSchema;
     assert.ok(nodeSchema.properties.nodePath, 'set_node_transform should accept nodePath');
     assert.equal(nodeSchema.required.includes('uuid'), false, 'the path alone is enough');
     assert.deepEqual(pairsOf(nodeSchema).find(p => p.uuid === 'uuid'),

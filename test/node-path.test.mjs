@@ -10,9 +10,10 @@ import assert from 'node:assert/strict';
 
 import np from '../dist/node-path.js';
 import { ComponentTools } from '../dist/tools/component-tools.js';
-import { NodeTools } from '../dist/tools/node-tools.js';
 import { PrefabTools } from '../dist/tools/prefab-tools.js';
 import { sceneTools } from '../dist/tools-v2/scene.js';
+import { nodeTools } from '../dist/tools-v2/node.js';
+import { ToolRegistry } from '../dist/registry.js';
 
 const {
     augmentToolDefinition, applyResolvedPaths, requestedPaths, pairsOf,
@@ -155,9 +156,9 @@ test('a uuid that was required is no longer required on its own, but the pair st
 });
 
 test('a uuid that was optional stays optional', () => {
-    const augmented = augmentToolDefinition(toolNamed(new NodeTools(), 'create_node'));
+    const augmented = new ToolRegistry(nodeTools).list().find(t => t.name === 'node_create_node');
     const pair = pairsOf(augmented.inputSchema).find(p => p.uuid === 'parentUuid');
-    assert.ok(pair, 'create_node should accept parentPath');
+    assert.ok(pair, 'node_create_node should accept parentPath');
     assert.equal(pair.required, false);
     const applied = applyResolvedPaths('node_create_node', augmented.inputSchema, { name: 'X' }, {});
     assert.equal(applied.ok, true, applied.error);
@@ -169,8 +170,12 @@ test('augmenting a tool with no node arguments changes nothing', () => {
 });
 
 test('every tool taking a node uuid gains the matching path, across all categories', () => {
-    const executors = [new ComponentTools(), new NodeTools(), new PrefabTools()];
-    const surveyed = [...executors.flatMap(executor => executor.getTools()), ...sceneTools];
+    const executors = [new ComponentTools(), new PrefabTools()];
+    const surveyed = [
+        ...executors.flatMap(executor => executor.getTools()),
+        ...sceneTools,
+        ...new ToolRegistry(nodeTools).list()
+    ];
     let covered = 0;
     for (const tool of surveyed) {
         const uuidParams = Object.keys(tool.inputSchema?.properties || {})

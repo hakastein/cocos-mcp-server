@@ -56,6 +56,7 @@ const PAIR_SPELLINGS: Array<{ uuid: string; path: string; array: boolean; tools?
     { uuid: 'nodeUuid', path: 'nodePath', array: false },
     { uuid: 'targetUuid', path: 'targetPath', array: false },
     { uuid: 'parentUuid', path: 'parentPath', array: false },
+    { uuid: 'newParentUuid', path: 'newParentPath', array: false },
     { uuid: 'rootUuid', path: 'rootPath', array: false },
     { uuid: 'targetUuids', path: 'targetPaths', array: true },
     { uuid: 'uuid', path: 'nodePath', array: false, tools: BARE_UUID_NODE_TOOLS }

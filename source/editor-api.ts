@@ -2,8 +2,17 @@ import type {
     AssetInfo as EditorAssetInfo,
     AssetOperationOption,
 } from '@cocos/creator-types/editor/packages/asset-db/@types/public';
+import type {
+    CreateComponentOptions,
+    CreateNodeOptions,
+    CutNodeOptions,
+    INode,
+    PasteNodeOptions,
+    RemoveNodeOptions,
+    SetPropertyOptions,
+} from '@cocos/creator-types/editor/packages/scene/@types/public';
 
-export type { EditorAssetInfo, AssetOperationOption };
+export type { EditorAssetInfo, AssetOperationOption, INode };
 
 export interface SceneScriptCall {
     name: string;
@@ -45,6 +54,36 @@ export class EditorApi {
         queryNodeTree: (): Promise<SceneNodeTree | null> =>
             this.request('scene', 'query-node-tree') as unknown as Promise<SceneNodeTree | null>,
 
+        queryNode: (uuid: string): Promise<INode | null> =>
+            this.request('scene', 'query-node', uuid) as unknown as Promise<INode | null>,
+
+        createNode: (options: CreateNodeOptions): Promise<string | string[]> =>
+            this.request('scene', 'create-node', options) as unknown as Promise<string | string[]>,
+
+        removeNode: (options: RemoveNodeOptions): Promise<void> =>
+            this.request('scene', 'remove-node', options),
+
+        duplicateNode: (uuids: string | string[]): Promise<string | string[]> =>
+            this.request('scene', 'duplicate-node', uuids) as unknown as Promise<string | string[]>,
+
+        setParent: (options: CutNodeOptions): Promise<string[]> =>
+            this.request('scene', 'set-parent', options),
+
+        setProperty: (options: SetPropertyOptions): Promise<boolean> =>
+            this.request('scene', 'set-property', options),
+
+        createComponent: (options: CreateComponentOptions): Promise<void> =>
+            this.request('scene', 'create-component', options),
+
+        copyNode: (uuids: string | string[]): Promise<string[]> =>
+            this.request('scene', 'copy-node', uuids),
+
+        cutNode: (uuids: string | string[]): Promise<void> =>
+            this.request('scene', 'cut-node', uuids),
+
+        pasteNode: (options: PasteNodeOptions): Promise<string[]> =>
+            this.request('scene', 'paste-node', options),
+
         openScene: (uuid: string): Promise<void> =>
             this.request('scene', 'open-scene', uuid),
 
@@ -82,6 +121,10 @@ export class EditorApi {
 
         queryUrl: (uuid: string): Promise<string | null> =>
             this.request('asset-db', 'query-url', uuid),
+
+        queryAssetMeta: (uuidOrUrl: string): Promise<Record<string, any> | null> =>
+            this.request('asset-db', 'query-asset-meta', uuidOrUrl) as unknown as
+                Promise<Record<string, any> | null>,
 
         queryAssets: (pattern: string): Promise<EditorAssetInfo[]> =>
             this.request('asset-db', 'query-assets', { pattern }),

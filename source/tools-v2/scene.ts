@@ -1,21 +1,11 @@
 import { z } from 'zod';
 import { booleanArg, defineTool } from '../tool';
-import { ok, fail, ToolResult } from '../result';
+import { ok, fail } from '../result';
+import { fromScene, textOf } from './shared';
 import { signatureOf, hashSignature, diffSignatures, SignatureDiff } from '../scene-signature';
 import type { RegisteredTool } from '../tool';
 import type { ToolContext } from '../context';
-import type { SceneDirtyReport, SceneResult } from '../scene-contract';
-
-function textOf(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-}
-
-function fromScene<T>(result: SceneResult<T>): ToolResult<T> {
-    if (!result || typeof result.success !== 'boolean') {
-        return fail('scene_script', 'scene script did not answer; is the extension scene script loaded?');
-    }
-    return result.success ? ok(result.data, result.message) : fail('scene_script', result.error);
-}
+import type { SceneDirtyReport } from '../scene-contract';
 
 async function waitSceneReady(ctx: ToolContext, maxWaitMs = 1500): Promise<boolean> {
     for (let waited = 0; waited <= maxWaitMs; waited += 150) {

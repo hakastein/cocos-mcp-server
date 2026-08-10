@@ -73,66 +73,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                 }
             },
             {
-                name: 'copy_node',
-                description: 'Copy node for later paste operation',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        uuids: {
-                            oneOf: [
-                                { type: 'string' },
-                                { type: 'array', items: { type: 'string' } }
-                            ],
-                            description: 'Node UUID or array of UUIDs to copy'
-                        }
-                    },
-                    required: ['uuids']
-                }
-            },
-            {
-                name: 'paste_node',
-                description: 'Paste previously copied nodes',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        target: {
-                            type: 'string',
-                            description: 'Target parent node UUID'
-                        },
-                        uuids: {
-                            oneOf: [
-                                { type: 'string' },
-                                { type: 'array', items: { type: 'string' } }
-                            ],
-                            description: 'Node UUIDs to paste'
-                        },
-                        keepWorldTransform: {
-                            type: 'boolean',
-                            description: 'Keep world transform coordinates',
-                            default: false
-                        }
-                    },
-                    required: ['target', 'uuids']
-                }
-            },
-            {
-                name: 'cut_node',
-                description: 'Cut node (copy + mark for move)',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        uuids: {
-                            oneOf: [
-                                { type: 'string' },
-                                { type: 'array', items: { type: 'string' } }
-                            ],
-                            description: 'Node UUID or array of UUIDs to cut'
-                        }
-                    },
-                    required: ['uuids']
-                }
-            },
-            {
                 name: 'reset_node_transform',
                 description: 'Reset node position, rotation and scale',
                 inputSchema: {
@@ -229,12 +169,7 @@ export class SceneAdvancedTools implements ToolExecutor {
                 return await this.moveArrayElement(args.uuid, args.path, args.target, args.offset);
             case 'remove_array_element':
                 return await this.removeArrayElement(args.uuid, args.path, args.index);
-            case 'copy_node':
-                return await this.copyNode(args.uuids);
-            case 'paste_node':
-                return await this.pasteNode(args.target, args.uuids, args.keepWorldTransform);
-            case 'cut_node':
-                return await this.cutNode(args.uuids);
+
             case 'reset_node_transform':
                 return await this.resetNodeTransform(args.uuid);
             case 'reset_component':
@@ -297,58 +232,6 @@ export class SceneAdvancedTools implements ToolExecutor {
                 resolve({
                     success: true,
                     message: `Array element at index ${index} removed`
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
-    private async copyNode(uuids: string | string[]): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'copy-node', uuids).then((result: string | string[]) => {
-                resolve({
-                    success: true,
-                    data: {
-                        copiedUuids: result,
-                        message: 'Node(s) copied successfully'
-                    }
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
-    private async pasteNode(target: string, uuids: string | string[], keepWorldTransform: boolean = false): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'paste-node', {
-                target,
-                uuids,
-                keepWorldTransform
-            }).then((result: string | string[]) => {
-                resolve({
-                    success: true,
-                    data: {
-                        newUuids: result,
-                        message: 'Node(s) pasted successfully'
-                    }
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
-    }
-
-    private async cutNode(uuids: string | string[]): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'cut-node', uuids).then((result: any) => {
-                resolve({
-                    success: true,
-                    data: {
-                        cutUuids: result,
-                        message: 'Node(s) cut successfully'
-                    }
                 });
             }).catch((err: Error) => {
                 resolve({ success: false, error: err.message });
