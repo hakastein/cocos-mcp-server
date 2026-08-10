@@ -7,7 +7,8 @@ export interface BatchCall {
 export interface PriorResult {
     index: number;
     label?: string;
-    result: any;
+    result?: any;
+    failed?: boolean;
 }
 
 const WHOLE_TOKEN = /^\{\{([^{}]+)\}\}$/;
@@ -22,6 +23,9 @@ function lookup(prior: PriorResult[], expr: string): any {
     if (!entry) {
         const known = prior.map((p) => (p.label ? `${p.index}/${p.label}` : String(p.index))).join(', ') || 'none';
         throw new Error(`{{${expr}}}: no earlier call '${head}' (available: ${known})`);
+    }
+    if (entry.failed) {
+        throw new Error(`{{${expr}}}: call '${head}' failed, so it has no result to read`);
     }
     let value = entry.result;
     for (const key of parts.slice(1)) {
@@ -50,6 +54,94 @@ export function resolveArgs(args: any, prior: PriorResult[]): any {
         return out;
     }
     return args;
+}
+
+export type BatchDispatch = (tool: string, args: any) => Promise<any>;
+
+export interface BatchCallResult {
+    index: number;
+    label?: string;
+    tool: string;
+    skipped?: boolean;
+    success?: boolean;
+    data?: any;
+    message?: string;
+    error?: any;
+}
+
+export interface BatchReport {
+    total: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+    haltedEarly: boolean;
+    results: BatchCallResult[];
+}
+
+function textOf(error: any): string {
+    return (error && error.message) || String(error);
+}
+
+export async function runPlan(
+    plan: BatchCall[],
+    dispatch: BatchDispatch,
+    stopOnError: boolean
+): Promise<BatchReport> {
+    const prior: PriorResult[] = [];
+    const results: BatchCallResult[] = [];
+    let succeeded = 0;
+    let failed = 0;
+    let halted = false;
+
+    for (let i = 0; i < plan.length; i++) {
+        const call = plan[i];
+        if (halted) {
+            results.push({ index: i, label: call.label, tool: call.tool, skipped: true });
+            continue;
+        }
+
+        let callArgs: any;
+        try {
+            callArgs = resolveArgs(call.args, prior);
+        } catch (err: any) {
+            failed++;
+            results.push({ index: i, label: call.label, tool: call.tool, success: false, error: `argument template: ${textOf(err)}` });
+            prior.push({ index: i, label: call.label, failed: true });
+            if (stopOnError) halted = true;
+            continue;
+        }
+
+        try {
+            const res = await dispatch(call.tool, callArgs);
+            const ok = !(res && res.success === false);
+            if (ok) succeeded++; else failed++;
+            results.push({
+                index: i,
+                label: call.label,
+                tool: call.tool,
+                success: ok,
+                data: res && res.data,
+                message: res && res.message,
+                error: res && res.error
+            });
+            prior.push({ index: i, label: call.label, result: res });
+            if (!ok && stopOnError) halted = true;
+        } catch (err: any) {
+            failed++;
+            results.push({ index: i, label: call.label, tool: call.tool, success: false, error: textOf(err) });
+            prior.push({ index: i, label: call.label, failed: true });
+            if (stopOnError) halted = true;
+        }
+    }
+
+    return {
+        total: plan.length,
+        succeeded,
+        failed,
+        skipped: results.filter((r) => r.skipped).length,
+        haltedEarly: halted,
+        results
+    };
 }
 
 export function validatePlan(calls: any): BatchCall[] {

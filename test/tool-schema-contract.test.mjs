@@ -15,6 +15,9 @@ import { nodeTools } from '../dist/tools-v2/node.js';
 import { componentTools } from '../dist/tools-v2/component.js';
 import { prefabTools } from '../dist/tools-v2/prefab.js';
 import { sceneOpsTools } from '../dist/tools-v2/scene-ops.js';
+import { batchTools } from '../dist/tools-v2/batch.js';
+import { ecsTools } from '../dist/tools-v2/ecs.js';
+import { skeletalTools } from '../dist/tools-v2/skeletal.js';
 
 const { normalizeToolArgs } = ta;
 
@@ -118,7 +121,8 @@ test('find_component_owners without a class name is a clear validation error', a
 
 const advertisedSchemas = () =>
     [...sceneTools, ...nodeTools, ...componentTools, ...prefabTools, ...sceneOpsTools,
-        ...assetTools, ...buildTools, ...debugTools]
+        ...assetTools, ...buildTools, ...debugTools, ...batchTools(async () => ({ success: true })),
+        ...ecsTools, ...skeletalTools]
         .map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }));
 
 test('every declared required argument is actually reachable under its own name', () => {

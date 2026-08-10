@@ -1,36 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { composeTools, createToolInstances } from '../dist/tool-registry.js';
-
-test('the registry is the only category list, and it carries ecs', () => {
-    const categories = Object.keys(createToolInstances());
-    const expected = ['skeletalAnimation', 'ecs', 'batch'];
-    assert.deepEqual(categories.sort(), expected.slice().sort());
-});
-
-test('ecs_component_census is a real tool with a schema, not just a class', () => {
-    const tools = createToolInstances().ecs.getTools();
-    const census = tools.find(tool => tool.name === 'component_census');
-    assert.ok(census, `EcsTools advertises ${tools.map(t => t.name).join(', ')} — no component_census`);
-    assert.ok(census.inputSchema && census.inputSchema.type === 'object');
-});
-
-test('every category answers getTools() with named, described tools', () => {
-    for (const [category, executor] of Object.entries(createToolInstances())) {
-        const tools = executor.getTools();
-        assert.ok(Array.isArray(tools) && tools.length, `${category} advertises nothing`);
-        for (const tool of tools) {
-            assert.ok(tool.name, `${category}: a tool has no name`);
-            assert.ok(tool.description, `${category}_${tool.name} has no description`);
-        }
-    }
-});
+import { composeTools } from '../dist/tools-v2/index.js';
 
 test('the whole advertised surface composes with no name collision across categories', () => {
     const names = composeTools().list().map(tool => tool.name);
 
     assert.equal(new Set(names).size, names.length);
+    assert.equal(names.length, 89, `the surface is ${names.length} tools: ${names.join(', ')}`);
     assert.ok(names.includes('scene_dump'), 'the migrated scene category is missing from the surface');
     assert.ok(names.includes('node_create_node'), 'the migrated node category is missing from the surface');
     assert.ok(names.includes('component_set_component_property'),
@@ -49,9 +26,15 @@ test('the whole advertised surface composes with no name collision across catego
         'the migrated debug category is missing from the surface');
     assert.ok(names.includes('debug_project_logs'),
         'the merged project-log reader is missing from the surface');
+    assert.ok(names.includes('batch_run'), 'the migrated batch category is missing from the surface');
+    assert.ok(names.includes('ecs_component_census'), 'the migrated ecs category is missing from the surface');
+    for (const socket of ['add_socket', 'list_sockets', 'remove_socket']) {
+        assert.ok(names.includes(`skeletalAnimation_${socket}`),
+            `skeletalAnimation_${socket} is missing from the surface`);
+    }
 });
 
-test('the tools the node category replaced are gone from the surface', () => {
+test('the tools the migrated categories replaced are gone from the surface', () => {
     const names = composeTools().list().map(tool => tool.name);
     for (const retired of [
         'node_create_primitive', 'node_find_node_by_name', 'node_detect_node_type',
@@ -64,4 +47,16 @@ test('the tools the node category replaced are gone from the surface', () => {
     ]) {
         assert.ok(!names.includes(retired), `${retired} is still advertised`);
     }
+});
+
+test('a batch call reaches the composed registry, and an unknown tool inside it fails only that call', async () => {
+    const registry = composeTools();
+    const result = await registry.invoke('batch_run', {
+        calls: [{ tool: 'no_such_tool' }, { tool: 'debug_clear_preview_logs' }]
+    }, { logs: { clear() {} }, settings: { enableDebugLog: false } });
+
+    assert.equal(result.success, false);
+    assert.equal(result.error.code, 'batch_failed');
+    assert.equal(result.data.results[0].error.code, 'unknown_tool');
+    assert.deepEqual(result.data.results[1], { index: 1, label: undefined, tool: 'debug_clear_preview_logs', skipped: true });
 });

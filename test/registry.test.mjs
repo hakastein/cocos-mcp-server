@@ -4,13 +4,11 @@ import { z } from 'zod';
 
 import toolModule from '../dist/tool.js';
 import registryModule from '../dist/registry.js';
-import adapterModule from '../dist/legacy-adapter.js';
 import nodePathModule from '../dist/node-path.js';
 
 const { UUID_OR_PATH_KEY } = nodePathModule;
 const { defineTool } = toolModule;
 const { ToolRegistry } = registryModule;
-const { legacyTools } = adapterModule;
 
 const context = { settings: { enableDebugLog: false } };
 
@@ -201,7 +199,7 @@ test('list hands out deep copies, down to the schema a caller could otherwise re
     assert.deepEqual(fresh.inputSchema.required, ['text']);
 });
 
-test('a native tool under a category prefix is augmented like its legacy neighbours', async () => {
+test('a tool under a category prefix is augmented through its bare name', async () => {
     let seen;
     const tool = defineTool({
         name: 'node_probe_tool',
@@ -319,212 +317,4 @@ test('a scene script that does not answer is reported as a transport failure', a
     assert.equal(result.success, false);
     assert.equal(result.error.code, 'node_path');
     assert.match(result.error.message, /scene worker is gone/);
-});
-
-function legacyExecutor(execute) {
-    return {
-        getTools: () => [{
-            name: 'reimport_asset',
-            description: 'Reimports an asset',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    url: { type: 'string', 'x-aliases': ['assetPath'] },
-                    depth: { type: 'number' }
-                },
-                required: ['url']
-            }
-        }],
-        execute
-    };
-}
-
-test('a legacy tool is registered under its category prefix and answers in the new envelope', async () => {
-    const seen = [];
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async (name, args) => {
-        seen.push({ name, args });
-        return { success: true, data: { url: args.url }, message: 'reimported' };
-    })));
-
-    assert.deepEqual(registry.list().map(t => t.name), ['project_reimport_asset']);
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.deepEqual(seen, [{ name: 'reimport_asset', args: { url: 'db://assets/a.png' } }]);
-    assert.deepEqual(result, { success: true, data: { url: 'db://assets/a.png' }, message: 'reimported' });
-});
-
-test('a legacy alias is applied and a declared scalar is coerced before the executor runs', async () => {
-    let seen;
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async (name, args) => {
-        seen = args;
-        return { success: true, data: null };
-    })));
-    await registry.invoke('project_reimport_asset', { assetPath: 'db://assets/a.png', depth: '3' }, context);
-
-    assert.deepEqual(seen, { url: 'db://assets/a.png', depth: 3 });
-});
-
-test('a legacy call missing a required argument fails with invalid_args and never reaches the executor', async () => {
-    let executorRan = false;
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => {
-        executorRan = true;
-        return { success: true, data: null };
-    })));
-    const result = await registry.invoke('project_reimport_asset', { depth: 1 }, context);
-
-    assert.equal(executorRan, false);
-    assert.equal(result.success, false);
-    assert.equal(result.error.code, 'invalid_args');
-    assert.match(result.error.message, /url/);
-});
-
-test('a legacy failure becomes a fail with code legacy carrying its error text', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
-        success: false, error: 'asset not found'
-    }))));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.equal(result.success, false);
-    assert.deepEqual(result.error, { code: 'legacy', message: 'asset not found' });
-});
-
-test('a legacy failure spelling its reason as a message is not reported as empty', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
-        success: false, message: 'no scene is open'
-    }))));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.equal(result.error.message, 'no scene is open');
-});
-
-test('a legacy failure spelling both error and message keeps both, and its instruction becomes the hint', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
-        success: false,
-        error: 'asset not found',
-        message: 'db://assets/a.png was never imported',
-        instruction: 'call refresh_assets first'
-    }))));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.deepEqual(result.error, {
-        code: 'legacy',
-        message: 'asset not found — db://assets/a.png was never imported',
-        hint: 'call refresh_assets first'
-    });
-});
-
-test('a legacy failure keeps the payload it reported beside its error', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
-        success: false,
-        error: 'the write did not take',
-        data: { actualValue: 3, serializerNote: 'clamped' }
-    }))));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.deepEqual(result, {
-        success: false,
-        error: { code: 'legacy', message: 'the write did not take' },
-        data: { actualValue: 3, serializerNote: 'clamped' }
-    });
-});
-
-test('a legacy failure that names no reason still hands over its results', async () => {
-    const batch = {
-        total: 2, succeeded: 1, failed: 1, skipped: 0, haltedEarly: true,
-        results: [{ index: 0, success: true }, { index: 1, success: false, error: 'no scene is open' }]
-    };
-    const registry = new ToolRegistry(legacyTools('batch', {
-        getTools: () => [{ name: 'run', description: 'Runs a plan', inputSchema: { type: 'object', properties: {} } }],
-        execute: async () => ({ success: false, data: batch })
-    }));
-    const result = await registry.invoke('batch_run', {}, context);
-
-    assert.equal(result.success, false);
-    assert.equal(result.error.code, 'legacy');
-    assert.equal(/without naming it/.test(result.error.message), false);
-    assert.match(result.error.message, /see data/);
-    assert.deepEqual(result.data, batch);
-});
-
-test('a legacy failure with nothing but an error carries no data key', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
-        success: false, error: 'asset not found'
-    }))));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.equal('data' in result, false);
-});
-
-test('a legacy failure repeating one text in both fields does not say it twice', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
-        success: false, error: 'asset not found', message: 'asset not found'
-    }))));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.deepEqual(result.error, { code: 'legacy', message: 'asset not found' });
-});
-
-test('a legacy throw becomes a fail with code legacy_throw', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => {
-        throw new Error('editor said no');
-    })));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.equal(result.success, false);
-    assert.deepEqual(result.error, { code: 'legacy_throw', message: 'editor said no' });
-});
-
-test('a legacy answer carrying fields beside data merges them into one payload', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
-        success: true, data: { uuid: 'u1' }, warning: 'partial', updatedProperties: ['position']
-    }))));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.deepEqual(result, {
-        success: true,
-        data: { uuid: 'u1', warning: 'partial', updatedProperties: ['position'] }
-    });
-});
-
-test('a legacy answer whose data is a list keeps the list under data beside its siblings', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
-        success: true, data: ['a.png', 'b.png'], warning: 'truncated'
-    }))));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.deepEqual(result, {
-        success: true,
-        data: { data: ['a.png', 'b.png'], warning: 'truncated' }
-    });
-});
-
-test('a legacy answer that is nothing but data is unwrapped', async () => {
-    const registry = new ToolRegistry(legacyTools('project', legacyExecutor(async () => ({
-        success: true, data: ['a.png']
-    }))));
-    const result = await registry.invoke('project_reimport_asset', { url: 'db://assets/a.png' }, context);
-
-    assert.deepEqual(result, { success: true, data: ['a.png'] });
-});
-
-test('a legacy node tool takes a scene path through the same resolution', async () => {
-    let seen;
-    const executor = {
-        getTools: () => [{
-            name: 'get_node_info',
-            description: 'Reads a node',
-            inputSchema: { type: 'object', properties: { uuid: { type: 'string' } }, required: ['uuid'] }
-        }],
-        execute: async (name, args) => {
-            seen = args;
-            return { success: true, data: null };
-        }
-    };
-    const sceneScript = sceneScriptReturning({ 'Root/Pad': { uuid: 'uuid-1', matchedPath: 'Root/Pad' } });
-    const registry = new ToolRegistry(legacyTools('node', executor));
-
-    assert.equal(registry.list()[0].inputSchema.properties.nodePath.type, 'string');
-    assert.match(registry.list()[0].description, /SCENE PATH/);
-    await registry.invoke('node_get_node_info', { nodePath: 'Root/Pad' }, { ...context, sceneScript });
-    assert.deepEqual(seen, { uuid: 'uuid-1' });
 });

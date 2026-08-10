@@ -3,7 +3,7 @@ import { MCPServerSettings } from './types';
 import { EditorApi } from './editor-api';
 import { SceneScriptClient } from './scene-script-client';
 import { PreviewLogStore } from './preview-log-store';
-import { composeTools } from './tool-registry';
+import { composeTools } from './tools-v2';
 import { BridgeServer } from './server';
 import type { ToolContext } from './context';
 

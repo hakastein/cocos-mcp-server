@@ -11,23 +11,6 @@ export interface ServerStatus {
     clients: number;
 }
 
-export interface ToolDefinition {
-    name: string;
-    description: string;
-    inputSchema: any;
-}
-
-export interface ToolResponse {
-    success: boolean;
-    data?: any;
-    message?: string;
-    error?: string;
-    instruction?: string;
-    warning?: string;
-    verificationData?: any;
-    updatedProperties?: string[];
-}
-
 export interface NodeInfo {
     uuid: string;
     name: string;
@@ -106,10 +89,5 @@ export interface ValidationResult {
     valid: boolean;
     issueCount: number;
     issues: ValidationIssue[];
-}
-
-export interface ToolExecutor {
-    getTools(): ToolDefinition[];
-    execute(toolName: string, args: any): Promise<ToolResponse>;
 }
 
