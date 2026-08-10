@@ -57,6 +57,31 @@
             "extends": ["cc.Asset", "Eventified", "cc.Object"]
         }
     },
+    "materialArrayDescriptorElements": {
+        "name": "sharedMaterials",
+        "value": [
+            {
+                "name": "[0]", "type": "cc.Material",
+                "value": { "uuid": "1a2b3c4d-0001-4a2b-9c31-6b5f2a7de011" },
+                "readonly": false, "visible": true, "animatable": true,
+                "extends": ["cc.Asset", "Eventified", "cc.Object"]
+            },
+            {
+                "name": "[1]", "type": "cc.Material",
+                "value": { "uuid": "1a2b3c4d-0002-4a2b-9c31-6b5f2a7de011" },
+                "readonly": false, "visible": true, "animatable": true,
+                "extends": ["cc.Asset", "Eventified", "cc.Object"]
+            }
+        ],
+        "default": [], "type": "cc.Material", "isArray": true,
+        "readonly": false, "visible": true, "animatable": true,
+        "extends": ["cc.Asset", "Eventified", "cc.Object"],
+        "elementTypeData": {
+            "name": "sharedMaterials", "value": { "uuid": "" }, "default": null, "type": "cc.Material",
+            "readonly": false, "visible": true, "animatable": true,
+            "extends": ["cc.Asset", "Eventified", "cc.Object"]
+        }
+    },
     "nodeRef": {
         "name": "target", "value": { "uuid": "cd6e4f10-8a11-4d0e-8c22-0b3a9e77aa01" },
         "default": null, "type": "cc.Node",
@@ -68,6 +93,30 @@
         "value": [
             { "uuid": "cd6e4f10-0001-4d0e-8c22-0b3a9e77aa01" },
             { "uuid": "cd6e4f10-0002-4d0e-8c22-0b3a9e77aa01" }
+        ],
+        "default": [], "type": "cc.Node", "isArray": true,
+        "readonly": false, "visible": true, "animatable": true, "extends": [],
+        "elementTypeData": {
+            "name": "waypoints", "value": { "uuid": "" }, "default": null, "type": "cc.Node",
+            "readonly": false, "visible": true, "animatable": true,
+            "extends": ["Eventified", "cc.Object"]
+        }
+    },
+    "nodeArrayDescriptorElements": {
+        "name": "waypoints",
+        "value": [
+            {
+                "name": "[0]", "type": "cc.Node",
+                "value": { "uuid": "cd6e4f10-0001-4d0e-8c22-0b3a9e77aa01" },
+                "readonly": false, "visible": true, "animatable": true,
+                "extends": ["Eventified", "cc.Object"]
+            },
+            {
+                "name": "[1]", "type": "cc.Node",
+                "value": { "uuid": "" },
+                "readonly": false, "visible": true, "animatable": true,
+                "extends": ["Eventified", "cc.Object"]
+            }
         ],
         "default": [], "type": "cc.Node", "isArray": true,
         "readonly": false, "visible": true, "animatable": true, "extends": [],

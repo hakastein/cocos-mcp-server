@@ -7,7 +7,7 @@ export function projectDescriptor(descriptor?: PropertyDescriptor | null): unkno
 
 export function projectValue(kind: PropertyKind, dumpValue: unknown): unknown {
     if (Array.isArray(dumpValue) && kind !== 'classArray') {
-        return dumpValue.map(item => projectValue(kind, item));
+        return dumpValue.map(item => projectValue(kind, isDumpDescriptor(item) ? item.value : item));
     }
     switch (kind) {
         case 'assetRef':

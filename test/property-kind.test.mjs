@@ -26,8 +26,10 @@ test('every descriptor shape the editor emits resolves to its kind', () => {
         spriteFrame: 'assetRef',
         emptySpriteFrame: 'assetRef',
         materialArray: 'assetRef',
+        materialArrayDescriptorElements: 'assetRef',
         nodeRef: 'nodeRef',
         nodeArray: 'nodeRef',
+        nodeArrayDescriptorElements: 'nodeRef',
         componentRef: 'componentRef',
         nestedClass: 'nestedClass',
         classArray: 'classArray',
@@ -71,6 +73,27 @@ test('an array with no element descriptor falls back to its own declared type', 
     assert.equal(resolveKind({ isArray: true, type: 'cc.Node', value: [] }), 'nodeRef');
     assert.equal(resolveKind({ isArray: true, type: 'Number', value: [1, 2] }), 'plain');
     assert.equal(resolveKind({ isArray: true, type: 'cc.Color', value: [] }), 'color');
+});
+
+test('an array value without the isArray flag is still an array', () => {
+    const noFlag = { ...fixtures.materialArray };
+    delete noFlag.isArray;
+    assert.equal(resolveKind(noFlag), 'assetRef');
+    assert.deepEqual(projectDescriptor(noFlag), [
+        '1a2b3c4d-0001-4a2b-9c31-6b5f2a7de011',
+        '1a2b3c4d-0002-4a2b-9c31-6b5f2a7de011'
+    ]);
+});
+
+test('an array element reads the same whether the editor wrapped it in a descriptor or not', () => {
+    const materials = [
+        '1a2b3c4d-0001-4a2b-9c31-6b5f2a7de011',
+        '1a2b3c4d-0002-4a2b-9c31-6b5f2a7de011'
+    ];
+    assert.deepEqual(projectDescriptor(fixtures.materialArray), materials);
+    assert.deepEqual(projectDescriptor(fixtures.materialArrayDescriptorElements), materials);
+    assert.deepEqual(projectDescriptor(fixtures.nodeArrayDescriptorElements),
+        ['cd6e4f10-0001-4d0e-8c22-0b3a9e77aa01', null]);
 });
 
 test('a node reference, a component reference and an asset reference are told apart by declaration', () => {

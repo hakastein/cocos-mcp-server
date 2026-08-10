@@ -31,8 +31,9 @@ const CURVE_TYPES = ['cc.CurveRange', 'cc.RealCurve', 'cc.AnimationCurve'];
 const VEC_TYPES = ['cc.Vec2', 'cc.Vec3', 'cc.Vec4', 'cc.Quat', 'cc.Size'];
 
 export function isDumpDescriptor(candidate: unknown): candidate is PropertyDescriptor {
-    return !!candidate && typeof candidate === 'object' && !Array.isArray(candidate)
-        && 'value' in (candidate as Record<string, unknown>);
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+    const entry = candidate as Record<string, unknown>;
+    return 'value' in entry && ('type' in entry || 'name' in entry);
 }
 
 export function isAssetDescriptor(descriptor?: PropertyDescriptor | null): boolean {
@@ -47,12 +48,9 @@ export function isComponentDescriptor(descriptor?: PropertyDescriptor | null): b
     return Array.isArray(descriptor?.extends) && descriptor!.extends!.includes('cc.Component');
 }
 
-/**
- * A serializable class stored inline: its `value` is a map of dump descriptors. cc.Color and the
- * vectors are excluded by that alone — their `value` holds plain numbers.
- */
+/** Sound only in cascade position: after gradient/curve, the references and the named cc.* types. */
 export function isClassDescriptor(descriptor?: PropertyDescriptor | null): boolean {
-    if (!descriptor || descriptor.isArray === true) return false;
+    if (!descriptor || isArrayDescriptor(descriptor)) return false;
     const fields = descriptor.value;
     if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return false;
     const members = Object.values(fields as Record<string, unknown>);
@@ -70,7 +68,7 @@ export function resolveKind(descriptor?: PropertyDescriptor | null): PropertyKin
     if (GRADIENT_TYPES.includes(type)) return 'gradient';
     if (CURVE_TYPES.includes(type)) return 'curve';
 
-    if (descriptor.isArray === true) {
+    if (isArrayDescriptor(descriptor)) {
         if (isClassDescriptor(descriptor.elementTypeData)) return 'classArray';
         return resolveKind(descriptor.elementTypeData || asScalar(descriptor));
     }
@@ -84,6 +82,10 @@ export function resolveKind(descriptor?: PropertyDescriptor | null): PropertyKin
     if (type === 'Enum' || hasEntries(descriptor.enumList)) return 'enum';
     if (isClassDescriptor(descriptor)) return 'nestedClass';
     return 'plain';
+}
+
+export function isArrayDescriptor(descriptor?: PropertyDescriptor | null): boolean {
+    return descriptor?.isArray === true || Array.isArray(descriptor?.value);
 }
 
 function asScalar(descriptor: PropertyDescriptor): PropertyDescriptor {
