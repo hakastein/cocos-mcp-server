@@ -56,6 +56,17 @@ test('Bug 2: a genuinely wrong argument name is a validation error naming the ex
     assert.doesNotMatch(r.error, /startsWith/);
 });
 
+test('propertyType stays optional and open-ended — a closed enum read as "no such capability"', () => {
+    const schema = componentTools.find(t => t.name === 'component_set_component_property').inputSchema;
+    assert.equal(schema.required.includes('propertyType'), false);
+    assert.equal(schema.required.includes('value'), false, 'targetUuid/targetUuids/clear can supply it');
+    assert.equal(schema.properties.propertyType.enum, undefined);
+    assert.match(schema.properties.propertyType.description, /OPTIONAL/);
+    assert.match(schema.properties.propertyType.description, /cc\.\* class name/);
+    assert.deepEqual(schema.properties.value.type,
+        ['object', 'array', 'string', 'number', 'boolean', 'null']);
+});
+
 const sceneToolNamed = (name) => {
     const tool = sceneTools.find(t => t.name === name);
     assert.ok(tool, `tool ${name} not found`);

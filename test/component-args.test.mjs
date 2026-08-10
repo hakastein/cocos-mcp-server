@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    canonicalClassName, classNameOf, coerceValueArg, componentMatches, hintedDescriptor,
+    canonicalClassName, classNameOf, coerceValueArg, componentMatches, hintedDescriptor, matchesOf,
     propertyFilterOf, resolveDumpPath, valueFromArgs
 } from '../dist/tools-v2/component.js';
 import { resolveKind, isArrayDescriptor } from '../dist/property/kind.js';
@@ -96,6 +96,15 @@ test('an unknown cc.* name with no dump entry is taken as an asset reference', (
     assert.equal(hinted.type, 'cc.Material');
 });
 
+test('an asset hint says only THAT the field is an asset — the class stays the dump\'s', () => {
+    const mesh = { name: 'mesh', type: 'cc.Mesh', value: { uuid: '' }, extends: ['cc.Asset', 'cc.Object'] };
+    for (const hint of ['asset', 'prefab', 'spriteFrame', 'cc.Prefab']) {
+        const hinted = hintedDescriptor(mesh, hint);
+        assert.equal(hinted.type, 'cc.Mesh', hint);
+        assert.equal(resolveKind(hinted), 'assetRef', hint);
+    }
+});
+
 test('a hint spelled as a keyword and as its cc.* class name mean the same thing', () => {
     assert.equal(resolveKind(hintedDescriptor(undefined, 'cc.Color')), 'color');
     assert.equal(resolveKind(hintedDescriptor(undefined, 'cc.Vec2')), 'vec');
@@ -167,6 +176,13 @@ test('a component answers to its cid, its class name and the cc. spelling of it'
     assert.equal(componentMatches(script, 'Locomotion'), true);
     assert.equal(componentMatches(script, 'cc.Sprite'), false);
     assert.equal(componentMatches(builtin, ''), false);
+});
+
+test('same-class components are listed in node order, so index 1 is the second one', () => {
+    const other = { __type__: 'cc.Sprite', value: { name: { value: 'Icon2<Sprite>' } } };
+    assert.deepEqual(matchesOf([builtin, script, other], 'cc.Sprite'), [0, 2]);
+    assert.deepEqual(matchesOf([builtin, script, other], 'Locomotion'), [1]);
+    assert.deepEqual(matchesOf([builtin, script, other], 'cc.Label'), []);
 });
 
 test('the name handed to the scene process is a class the engine can look up, never a cid', () => {

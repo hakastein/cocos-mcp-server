@@ -179,7 +179,9 @@ async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: ToolCo
 
     const reads: ReadCheck[] = plan.reads || [{ property: target.propertyPath, expected: plan.expected }];
     const verified = await settle(() => readsMatch(target, reads, ctx));
-    const report: WriteReport = { written: true, verified, persisted: true, ...prefabOverrideOf(target) };
+    const report: WriteReport = {
+        written: true, verified, persisted: true, channel: 'editor', ...prefabOverrideOf(target)
+    };
     const notes = refused.length ? [`set-property refused ${refused.join('; ')}`] : [];
     if (!verified) notes.push(await readBackComplaint(target, reads, ctx));
     if (notes.length) report.detail = notes.join('; ');
@@ -512,7 +514,7 @@ const gradientWriter: PropertyWriter = {
         if (!result || result.success !== true) return unwritten(sceneError(result));
         const applied = Number(result.data.colorKeys) > 0;
         return {
-            written: true, verified: applied, persisted: false,
+            written: true, verified: applied, persisted: false, channel: 'live',
             detail: `${result.data.colorKeys} colour / ${result.data.alphaKeys} alpha key(s); ${LIVE_CHANNEL}`
         };
     }
@@ -532,7 +534,7 @@ const curveWriter: PropertyWriter = {
         if (!result || result.success !== true) return unwritten(sceneError(result));
         const applied = Number(result.data.keyCount) > 0;
         return {
-            written: true, verified: applied, persisted: false,
+            written: true, verified: applied, persisted: false, channel: 'live',
             detail: `${result.data.keyCount} key(s), eval 0→1: ${result.data.eval0}→${result.data.eval1}; ${LIVE_CHANNEL}`
         };
     }
@@ -710,7 +712,7 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: ToolCont
     const outcome = await ctx.sceneScript.call('componentReferenceOutcome', target.nodeUuid, componentIndex, property);
     if (!outcome || outcome.success !== true) {
         return {
-            written: true, verified: false, persisted: false,
+            written: true, verified: false, persisted: false, channel: live ? 'live' : 'editor',
             detail: `written, but the scene could not be re-read to check it (${sceneError(outcome)}); `
                 + 'treat the write as unproven'
         };
@@ -723,6 +725,7 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: ToolCont
         written: true,
         verified: sameSlots(outcome.data.live),
         persisted: !live && outcome.data.projectionChecked && sameSlots(outcome.data.projected),
+        channel: live ? 'live' : 'editor',
         ...(overridden ? { prefabOverride: { targetPath: path } } : prefabOverrideOf(target))
     };
     const notes: string[] = plan.data.warning ? [plan.data.warning] : [];

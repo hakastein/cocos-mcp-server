@@ -66,6 +66,13 @@ export function propertyFilterOf(filter: unknown): string[] | null {
 }
 
 const PLAIN: string[] = [];
+const ASSET: string[] = ['cc.Asset'];
+Object.freeze(PLAIN);
+Object.freeze(ASSET);
+
+const ASSET_HINTS: Record<string, string> = {
+    asset: 'cc.Asset', prefab: 'cc.Prefab', spriteFrame: 'cc.SpriteFrame'
+};
 
 const HINTS: Record<string, PropertyDescriptor> = {
     string: { type: 'String', extends: PLAIN },
@@ -92,9 +99,6 @@ const HINTS: Record<string, PropertyDescriptor> = {
     'cc.Node': { type: 'cc.Node', extends: PLAIN },
     component: { type: 'cc.Component', extends: ['cc.Component'] },
     'cc.Component': { type: 'cc.Component', extends: ['cc.Component'] },
-    asset: { type: 'cc.Asset', extends: ['cc.Asset'] },
-    prefab: { type: 'cc.Prefab', extends: ['cc.Asset'] },
-    spriteFrame: { type: 'cc.SpriteFrame', extends: ['cc.Asset'] },
     nodeArray: { isArray: true, type: 'cc.Node', elementTypeData: { type: 'cc.Node', extends: PLAIN } },
     colorArray: { isArray: true, type: 'cc.Color', elementTypeData: { type: 'cc.Color', extends: PLAIN } },
     numberArray: { isArray: true, type: 'Number', elementTypeData: { type: 'Number', extends: PLAIN } },
@@ -106,10 +110,14 @@ export function hintedDescriptor(
 ): PropertyDescriptor | undefined {
     const hint = (propertyType || '').trim();
     if (!hint) return descriptor;
-    const override = HINTS[hint]
-        || (hint.indexOf('cc.') === 0 ? { type: hint, extends: ['cc.Asset'] } : undefined);
-    if (!override) return descriptor || { type: hint };
-    return { ...(descriptor || {}), ...override };
+    const override = HINTS[hint];
+    if (override) return { ...(descriptor || {}), ...override };
+
+    const named = ASSET_HINTS[hint] || (hint.indexOf('cc.') === 0 ? hint : undefined);
+    if (named === undefined) return descriptor || { type: hint };
+    // The hint says only "this is an asset"; the concrete class is the dump's when it has one,
+    // and it is what the editor set-property call is typed with.
+    return { ...(descriptor || {}), extends: ASSET, type: descriptor?.type || named };
 }
 
 /** JSON-looking text in a field DECLARED String is authored content, not a stringified object. */
@@ -143,9 +151,24 @@ function componentsOf(raw: unknown): DumpComponent[] {
     return ((raw as any)?.__comps__ || []) as DumpComponent[];
 }
 
-function locate(components: DumpComponent[], componentType: string): LocatedComponent | null {
-    const index = components.findIndex(component => componentMatches(component, componentType));
-    if (index === -1) return null;
+export function matchesOf(components: DumpComponent[], componentType: string): number[] {
+    const found: number[] = [];
+    components.forEach((component, index) => {
+        if (componentMatches(component, componentType)) found.push(index);
+    });
+    return found;
+}
+
+/**
+ * `sameClassIndex` counts components of the SAME class, the index space
+ * `resolveComponentReference` uses; the position it lands on is the one every read and every
+ * write path here then addresses.
+ */
+function locate(
+    components: DumpComponent[], componentType: string, sameClassIndex = 0
+): LocatedComponent | null {
+    const index = matchesOf(components, componentType)[sameClassIndex];
+    if (index === undefined) return null;
     const component = components[index];
     return {
         index,
@@ -155,6 +178,17 @@ function locate(components: DumpComponent[], componentType: string): LocatedComp
         componentUuid: (component.value as any)?.uuid?.value ?? null,
         properties: (component.value || {}) as Record<string, PropertyDescriptor>
     };
+}
+
+function componentMiss(
+    components: DumpComponent[], nodeUuid: string, componentType: string, sameClassIndex?: number
+): string {
+    const found = matchesOf(components, componentType).length;
+    if (sameClassIndex !== undefined && found > 0) {
+        return `Node ${nodeUuid} carries ${found} '${componentType}' component(s), so there is none at `
+            + `componentIndex ${sameClassIndex} — that index counts components of the SAME class, from 0`;
+    }
+    return `No '${componentType}' on node ${nodeUuid}. Components there: ${spelledTypes(components)}`;
 }
 
 function spelledTypes(components: DumpComponent[]): string {
@@ -233,7 +267,8 @@ export interface ComponentInfoReport {
 }
 
 export async function readComponentInfo(
-    ctx: ToolContext, nodeUuid: string, componentType: string, wanted?: string[] | null
+    ctx: ToolContext, nodeUuid: string, componentType: string, wanted?: string[] | null,
+    sameClassIndex?: number
 ): Promise<ToolResult<ComponentInfoReport>> {
     let components: DumpComponent[];
     try {
@@ -241,10 +276,10 @@ export async function readComponentInfo(
     } catch (error) {
         return fail('node_unreadable', `The editor did not answer for node ${nodeUuid}: ${textOf(error)}`);
     }
-    const located = locate(components, componentType);
+    const located = locate(components, componentType, sameClassIndex || 0);
     if (!located) {
         return fail('component_not_found',
-            `No '${componentType}' on node ${nodeUuid}. Components there: ${spelledTypes(components)}`,
+            componentMiss(components, nodeUuid, componentType, sameClassIndex),
             'Pass a cid, an @ccclass class name or a builtin type; component_get_components lists both.');
     }
     return ok({
@@ -307,10 +342,10 @@ export async function writeComponentProperty(
         return fail('node_unreadable', `The editor did not answer for node ${args.nodeUuid}: ${textOf(error)}`);
     }
     const components = componentsOf(raw);
-    const located = locate(components, args.componentType);
+    const located = locate(components, args.componentType, args.sameClassIndex || 0);
     if (!located) {
         return fail('component_not_found',
-            `No '${args.componentType}' on node ${args.nodeUuid}. Components there: ${spelledTypes(components)}`,
+            componentMiss(components, args.nodeUuid, args.componentType, args.sameClassIndex),
             'Add it with component_add_component, or pass one of the spellings above.');
     }
 
@@ -345,7 +380,10 @@ export async function writeComponentProperty(
 
     const value = coerceValueArg(args.value, descriptor);
     const report: WriteReport = await verifiedWrite(target, value, ctx, { verify: args.verify || 'serializer' });
-    const observed = await readBack(target, ctx).catch(() => undefined);
+    const observed = report.written && !report.verified
+        ? await readBack(target, ctx).catch(() => undefined)
+        : undefined;
+    const named = `${located.className}.${propertyPath}`;
     const data = {
         nodeUuid: args.nodeUuid,
         componentType: located.className,
@@ -354,23 +392,27 @@ export async function writeComponentProperty(
         ...(propertyPath === args.property ? {} : { requestedProperty: args.property }),
         kind: resolveKind(descriptor),
         requested: value,
-        actualValue: observed,
+        ...(observed === undefined ? {} : { actualValue: observed }),
         ...report
     };
 
     if (!report.written) {
-        return fail('write_refused', `${located.className}.${propertyPath} was not written: ${report.detail}`,
-            undefined, data);
+        return fail('write_refused', `${named} was not written: ${report.detail}`, undefined, data);
     }
     if (!report.verified && observed !== undefined) {
-        return fail('write_unverified',
-            `${located.className}.${propertyPath} did not land as asked: ${report.detail}`, undefined, data);
+        return fail('write_unverified', `${named} did not land as asked: ${report.detail}`, undefined, data);
+    }
+    if (report.channel !== 'live' && !report.persisted) {
+        return fail('write_not_persisted', `${named} was written but a save would not carry it: ${report.detail}`,
+            'The value is on the live component only. A reference into a prefab instance needs a target '
+            + 'override, and a property the serializer does not emit cannot be written from here at all.',
+            data);
     }
     const notes = [
         report.verified ? '' : 'the dump does not expose it, so the write is unproven',
-        report.persisted ? '' : 'a save is NOT confirmed to carry it — see `detail`'
+        report.persisted ? '' : 'assigned on the live object, which a save does not record'
     ].filter(Boolean);
-    return ok(data, `Set ${located.className}.${propertyPath}${notes.length ? ` (${notes.join('; ')})` : ''}`);
+    return ok(data, `Set ${named}${notes.length ? ` (${notes.join('; ')})` : ''}`);
 }
 
 const jsonArrayArg = z.preprocess(value => coerceJsonArg(value).value, z.array(z.any()));
@@ -537,11 +579,13 @@ export const componentRemoveComponent = defineTool({
         + '@ccclass name or a builtin type — and removed by the COMPONENT\'s own scene uuid, which is the '
         + 'only form 3.8 accepts for a script component. The removal is polled until the node stops '
         + 'reporting the cid, so a component the editor declined to remove is reported instead of being '
-        + 'called a success.',
+        + 'called a success. With several components of one class on the node, componentIndex picks which.',
     schema: z.object({
         nodeUuid: z.string().describe('Node UUID'),
         componentType: z.string().describe('Component cid, @ccclass class name or builtin type, e.g. '
-            + '"cc.Sprite" or "9b4a7ueT9xD6aRE+AlOusy1"')
+            + '"cc.Sprite" or "9b4a7ueT9xD6aRE+AlOusy1"'),
+        componentIndex: z.coerce.number().optional().describe('Which component of the SAME class to remove '
+            + '(default 0). Counts only components of that class, not the position in the node\'s list.')
     }),
     aliases: { component: 'componentType', type: 'componentType' },
     async handler(args, ctx) {
@@ -552,20 +596,26 @@ export const componentRemoveComponent = defineTool({
             return fail('node_unreadable',
                 `The editor did not answer for node ${args.nodeUuid}: ${textOf(error)}`);
         }
-        const located = locate(components, args.componentType);
+        const located = locate(components, args.componentType, args.componentIndex || 0);
         if (!located) {
             return fail('component_not_found',
-                `No '${args.componentType}' on node ${args.nodeUuid}. Components there: `
-                + spelledTypes(components));
+                componentMiss(components, args.nodeUuid, args.componentType, args.componentIndex));
         }
 
         const payloads: Array<{ uuid: string; component?: string }> = [];
         if (located.componentUuid) payloads.push({ uuid: located.componentUuid });
         payloads.push({ uuid: args.nodeUuid, component: located.cid });
 
+        // A sibling of the same class carries the same cid, so only the component's own uuid can
+        // say whether THIS one went; without it, the count of that cid has to drop.
+        const carried = components.filter(component => cidOf(component) === located.cid).length;
         const stillThere = async () => {
             const after = await queryComponents(ctx, args.nodeUuid).catch(() => components);
-            return after.some(component => cidOf(component) === located.cid);
+            if (located.componentUuid) {
+                return after.some(component =>
+                    (component.value as any)?.uuid?.value === located.componentUuid);
+            }
+            return after.filter(component => cidOf(component) === located.cid).length >= carried;
         };
 
         let refusal = '';
@@ -597,7 +647,9 @@ export const componentGetComponents = defineTool({
         + 'enabled flag and — unless you turn them off — its property VALUES, projected out of the editor '
         + 'dump (a reference reads as its uuid, a colour as rgba, an unset reference as null). This is the '
         + 'compact answer; component_get_component_info gives one component\'s declared types and enum '
-        + 'options. `index` is the component\'s position in the node\'s own list.',
+        + 'options. `index` is the component\'s position in the node\'s own list. If the editor cannot '
+        + 'answer, the reply falls back to the scene script, which reports each component as `type` and '
+        + '`enabled` only — no className, no uuid, no properties; the message says so when that happens.',
     schema: z.object({
         nodeUuid: z.string().describe('Node UUID'),
         includeProperties: booleanArg.optional().describe('Include each component\'s property values '
@@ -655,11 +707,14 @@ export const componentGetComponentInfo = defineTool({
         nodeUuid: z.string().describe('Node UUID'),
         componentType: z.string().describe('Component cid, @ccclass class name or builtin type'),
         properties: z.union([z.array(z.string()), z.string()]).optional()
-            .describe('Return only these property entries; dotted paths allowed. Omit for the whole component.')
+            .describe('Return only these property entries; dotted paths allowed. Omit for the whole component.'),
+        componentIndex: z.coerce.number().optional().describe('Which component of the SAME class to read '
+            + '(default 0) — the same index component_set_component_property writes through')
     }),
     aliases: { component: 'componentType', type: 'componentType', property: 'properties' },
     async handler(args, ctx) {
-        return readComponentInfo(ctx, args.nodeUuid, args.componentType, propertyFilterOf(args.properties));
+        return readComponentInfo(ctx, args.nodeUuid, args.componentType,
+            propertyFilterOf(args.properties), args.componentIndex);
     }
 });
 
@@ -678,7 +733,11 @@ export const componentSetComponentProperty = anyValued(defineTool({
         + '`targetUuid`/`targetUuids` — which also accept targetPath/targetPaths and survive a scene '
         + 'reload. THE WRITE LANDS IN THE OPEN SCENE, NOT IN THE FILE: `written` says the editor took it, '
         + '`verified` says the component reads it back, `persisted` says the editor\'s serializer — the '
-        + 'call a save runs — would carry it, and `detail` says which of those is in doubt and why. '
+        + 'call a save runs — would carry it, `channel` says which route took the value, and `detail` says '
+        + 'which of those is in doubt and why. A write through the editor channel that a save would NOT '
+        + 'carry FAILS the call. A gradient, a curve, or a reference the channel refused goes through the '
+        + 'live object instead: those report channel "live" with persisted false BY DESIGN and succeed — '
+        + 'the value is real, the editor simply recorded nothing, so the scene must be saved by hand. '
         + 'Node properties (name, active, layer, position, rotation, scale) belong to node_set_node_* .',
     schema: z.object({
         nodeUuid: z.string().describe('UUID of the node holding the component that OWNS the property'),
@@ -709,7 +768,9 @@ export const componentSetComponentProperty = anyValued(defineTool({
             + 'owning node holds the field (default 0) — this is an index among same-class components, not '
             + 'the position in the node\'s component list'),
         clear: booleanArg.optional().describe('Empty the property instead of assigning: null for a scalar '
-            + 'reference, [] for an array of references'),
+            + 'reference, [] for an array of references. An ARRAY OF ASSETS (sharedMaterials and the like) '
+            + 'cannot be emptied or shortened here — the editor channel writes slots, never the array\'s '
+            + 'length; assign the slots you want instead.'),
         verify: z.enum(['readback', 'disk', 'serializer']).optional().describe('How far to check the write: '
             + '"serializer" (default) compares against what a save would emit, "readback" reads the live '
             + 'component only, "disk" additionally says whether the open scene now differs from its file')

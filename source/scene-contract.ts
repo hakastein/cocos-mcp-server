@@ -35,6 +35,12 @@ export interface WriteReport {
     written: boolean;
     verified: boolean;
     persisted: boolean;
+    /**
+     * Which route carried the value. `persisted: false` means opposite things on the two: the
+     * editor channel serializes, so it is a write a save would drop; the live channel records
+     * nothing by construction, so it is the expected state.
+     */
+    channel?: 'editor' | 'live';
     prefabOverride?: { targetPath: string };
     detail?: string;
 }

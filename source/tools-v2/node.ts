@@ -452,8 +452,7 @@ export const nodeCreateNode = defineTool({
         let materialUuid: string | null = null;
         if (meshUuid) {
             const meshWrite = await writeComponentProperty(ctx, {
-                nodeUuid: uuid, componentType: 'cc.MeshRenderer',
-                property: 'mesh', propertyType: 'asset', value: meshUuid
+                nodeUuid: uuid, componentType: 'cc.MeshRenderer', property: 'mesh', value: meshUuid
             });
             if (!meshWrite.success) {
                 return orphan(uuid, 'mesh_failed',
@@ -464,7 +463,7 @@ export const nodeCreateNode = defineTool({
                 if (materialUuid) {
                     const materialWrite = await writeComponentProperty(ctx, {
                         nodeUuid: uuid, componentType: 'cc.MeshRenderer',
-                        property: 'sharedMaterials', propertyType: 'asset', value: materialUuid
+                        property: 'sharedMaterials', value: materialUuid
                     });
                     if (!materialWrite.success) {
                         return orphan(uuid, 'material_failed',
