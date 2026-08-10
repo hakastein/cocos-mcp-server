@@ -9,8 +9,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import np from '../dist/node-path.js';
-import { PrefabTools } from '../dist/tools/prefab-tools.js';
 import { ProjectTools } from '../dist/tools/project-tools.js';
+import { prefabTools } from '../dist/tools-v2/prefab.js';
 import { sceneTools } from '../dist/tools-v2/scene.js';
 import { nodeTools } from '../dist/tools-v2/node.js';
 import { componentTools } from '../dist/tools-v2/component.js';
@@ -175,7 +175,7 @@ test('augmenting a tool with no node arguments changes nothing', () => {
 
 test('every tool taking a node uuid gains the matching path, across all categories', () => {
     const surveyed = [
-        ...new PrefabTools().getTools(),
+        ...prefabTools,
         ...sceneTools,
         ...componentTools,
         ...new ToolRegistry(nodeTools).list()

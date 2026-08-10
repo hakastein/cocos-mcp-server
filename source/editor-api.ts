@@ -8,9 +8,14 @@ import type {
     CutNodeOptions,
     ExecuteComponentMethodOptions,
     INode,
+    MoveArrayOptions,
     PasteNodeOptions,
+    QueryClassesOptions,
+    RemoveArrayOptions,
     RemoveComponentOptions,
     RemoveNodeOptions,
+    ResetComponentOptions,
+    ResetNodeOptions,
     SetPropertyOptions,
 } from '@cocos/creator-types/editor/packages/scene/@types/public';
 
@@ -74,6 +79,30 @@ export class EditorApi {
         setProperty: (options: SetPropertyOptions): Promise<boolean> =>
             this.request('scene', 'set-property', options),
 
+        resetProperty: (options: SetPropertyOptions): Promise<boolean> =>
+            this.request('scene', 'reset-property', options),
+
+        resetNode: (options: ResetNodeOptions): Promise<boolean> =>
+            this.request('scene', 'reset-node', options),
+
+        resetComponent: (options: ResetComponentOptions): Promise<void> =>
+            this.request('scene', 'reset-component', options),
+
+        moveArrayElement: (options: MoveArrayOptions): Promise<boolean> =>
+            this.request('scene', 'move-array-element', options),
+
+        removeArrayElement: (options: RemoveArrayOptions): Promise<boolean> =>
+            this.request('scene', 'remove-array-element', options),
+
+        queryClasses: (options: QueryClassesOptions): Promise<Array<{ name: string }>> =>
+            this.request('scene', 'query-classes', options),
+
+        queryComponents: (): Promise<Array<{ name: string; cid: string; path: string; assetUuid: string }>> =>
+            this.request('scene', 'query-components'),
+
+        queryNodesByAssetUuid: (assetUuid: string): Promise<string[]> =>
+            this.request('scene', 'query-nodes-by-asset-uuid', assetUuid),
+
         createComponent: (options: CreateComponentOptions): Promise<void> =>
             this.request('scene', 'create-component', options),
 
@@ -103,6 +132,10 @@ export class EditorApi {
 
         closeScene: (): Promise<boolean> =>
             this.request('scene', 'close-scene'),
+
+        /** Positional per the editor's own example; the cast is because its type map says otherwise. */
+        restorePrefab: (nodeUuid: string, assetUuid: string): Promise<boolean> =>
+            (this.request as any)('scene', 'restore-prefab', nodeUuid, assetUuid),
 
         executeSceneScript: (payload: SceneScriptCall): Promise<unknown> =>
             this.request('scene', 'execute-scene-script', payload),

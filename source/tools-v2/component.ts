@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { booleanArg, defineTool } from '../tool';
 import { ok, fail, ToolFail, ToolResult } from '../result';
-import { textOf } from './shared';
+import { anyValued, textOf } from './shared';
 import { settle } from '../settle';
-import { ANY_VALUE_TYPE, coerceJsonArg } from '../json-arg';
+import { coerceJsonArg } from '../json-arg';
 import { PropertyDescriptor, isArrayDescriptor, resolveKind } from '../property/kind';
 import { projectDescriptor } from '../property/readers';
 import { readBack, WriteTarget } from '../property/writers';
@@ -440,12 +440,6 @@ const uuidListArg = z.preprocess(
     },
     z.array(z.string())
 );
-
-function anyValued(tool: RegisteredTool, parameter: string): RegisteredTool {
-    const declared = (tool.inputSchema as any)?.properties?.[parameter];
-    if (declared) declared.type = ANY_VALUE_TYPE;
-    return tool;
-}
 
 export const componentAddComponent = defineTool({
     name: 'component_add_component',

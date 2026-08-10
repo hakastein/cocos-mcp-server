@@ -1,7 +1,5 @@
-import { PrefabTools } from './tools/prefab-tools';
 import { ProjectTools } from './tools/project-tools';
 import { DebugTools } from './tools/debug-tools';
-import { SceneAdvancedTools } from './tools/scene-advanced-tools';
 import { AssetAdvancedTools } from './tools/asset-advanced-tools';
 import { SkeletalAnimationTools } from './tools/skeletal-animation-tools';
 import { BatchTools } from './tools/batch-tools';
@@ -11,6 +9,8 @@ import { legacyTools } from './legacy-adapter';
 import { sceneTools } from './tools-v2/scene';
 import { nodeTools } from './tools-v2/node';
 import { componentTools } from './tools-v2/component';
+import { prefabTools } from './tools-v2/prefab';
+import { sceneOpsTools } from './tools-v2/scene-ops';
 import type { PreviewLogStore } from './preview-log-store';
 import type { ToolContext } from './context';
 
@@ -23,10 +23,8 @@ export interface ToolInstanceDeps {
 
 export function createToolInstances(deps: ToolInstanceDeps = {}): Record<string, any> {
     return {
-        prefab: new PrefabTools(),
         project: new ProjectTools(),
         debug: new DebugTools(deps.logs),
-        sceneAdvanced: new SceneAdvancedTools(),
         assetAdvanced: new AssetAdvancedTools(),
         skeletalAnimation: new SkeletalAnimationTools(),
         ecs: new EcsTools(),
@@ -49,6 +47,8 @@ export function composeTools(deps: ComposeDeps = {}): ToolRegistry {
         ...sceneTools,
         ...nodeTools,
         ...componentTools,
+        ...prefabTools,
+        ...sceneOpsTools,
         ...Object.entries(executors).flatMap(([category, executor]) => legacyTools(category, executor))
     ]);
     return registry;

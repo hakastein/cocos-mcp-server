@@ -5,7 +5,7 @@ import { composeTools, createToolInstances } from '../dist/tool-registry.js';
 
 test('the registry is the only category list, and it carries ecs', () => {
     const categories = Object.keys(createToolInstances());
-    const expected = ['prefab', 'project', 'assetAdvanced', 'sceneAdvanced', 'skeletalAnimation', 'debug', 'ecs', 'batch'];
+    const expected = ['project', 'assetAdvanced', 'skeletalAnimation', 'debug', 'ecs', 'batch'];
     assert.deepEqual(categories.sort(), expected.slice().sort());
 });
 
@@ -35,6 +35,10 @@ test('the whole advertised surface composes with no name collision across catego
     assert.ok(names.includes('node_create_node'), 'the migrated node category is missing from the surface');
     assert.ok(names.includes('component_set_component_property'),
         'the migrated component category is missing from the surface');
+    assert.ok(names.includes('prefab_set_component_property'),
+        'the migrated prefab category is missing from the surface');
+    assert.ok(names.includes('sceneAdvanced_move_array_element'),
+        'the migrated scene-ops category is missing from the surface');
 });
 
 test('the tools the node category replaced are gone from the surface', () => {

@@ -1,4 +1,6 @@
-import type { OverrideValueDescription, PrefabTargetInfo, SceneMethods } from '../scene-contract';
+import type {
+    OverrideValueDescription, PrefabSyncReport, PrefabTargetInfo, SceneMethods, SceneResult
+} from '../scene-contract';
 import { findNodeByUuid, requireActiveScene } from './engine';
 
 declare const cce: any;
@@ -83,6 +85,53 @@ export const createPrefabFromNode2: SceneMethods['createPrefabFromNode2'] = (nod
         return { success: false, error: error.message };
     }
 };
+
+/**
+ * Apply and revert go through `cce.Prefab` rather than an editor message: `scene:revert-prefab`
+ * is not a message this editor registers at all, and `scene:apply-prefab` is undocumented and
+ * declares no argument shape, while `cce.Prefab.applyPrefab(nodeUuid)` /
+ * `cce.Prefab.revertPrefab(nodeUuid)` are the calls those messages exist to reach. Neither
+ * records an undo step, as with every other write this bridge makes.
+ */
+async function syncPrefabInstance(
+    nodeUuid: string,
+    operation: 'applyPrefab' | 'revertPrefab'
+): Promise<SceneResult<PrefabSyncReport>> {
+    try {
+        const scene = requireActiveScene();
+        const node = findNodeByUuid(scene, nodeUuid);
+        const prefab = node._prefab;
+        if (!prefab || !prefab.instance) {
+            const root = findPrefabInstanceRoot(node);
+            const hint = root
+                ? ` The enclosing prefab instance root is '${root.name}' (uuid ${root.uuid}) — pass that.`
+                : ' This node is not the root of a prefab instance.';
+            return { success: false, error: `Node '${node.name}' carries no PrefabInstance.${hint}` };
+        }
+        if (typeof cce === 'undefined' || typeof cce?.Prefab?.[operation] !== 'function') {
+            return { success: false, error: `cce.Prefab.${operation} is unavailable in this editor build` };
+        }
+        const accepted = await cce.Prefab[operation](node.uuid);
+        return {
+            success: true,
+            data: {
+                nodeUuid: node.uuid,
+                nodeName: node.name,
+                prefabAsset: (prefab.asset && prefab.asset._uuid) || null,
+                instanceRoot: true,
+                accepted: accepted !== false
+            }
+        };
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+}
+
+export const applyPrefabToAsset: SceneMethods['applyPrefabToAsset'] =
+    (nodeUuid) => syncPrefabInstance(nodeUuid, 'applyPrefab');
+
+export const revertPrefabInstance: SceneMethods['revertPrefabInstance'] =
+    (nodeUuid) => syncPrefabInstance(nodeUuid, 'revertPrefab');
 
 /**
  * Describe every property override on a prefab-instance node. The records live on

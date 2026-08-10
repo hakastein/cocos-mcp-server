@@ -9,10 +9,11 @@ import assert from 'node:assert/strict';
 import ta from '../dist/tool-args.js';
 import { DebugTools } from '../dist/tools/debug-tools.js';
 import { ProjectTools } from '../dist/tools/project-tools.js';
-import { PrefabTools } from '../dist/tools/prefab-tools.js';
 import { sceneTools } from '../dist/tools-v2/scene.js';
 import { nodeTools } from '../dist/tools-v2/node.js';
 import { componentTools } from '../dist/tools-v2/component.js';
+import { prefabTools } from '../dist/tools-v2/prefab.js';
+import { sceneOpsTools } from '../dist/tools-v2/scene-ops.js';
 
 const { normalizeToolArgs } = ta;
 
@@ -102,11 +103,10 @@ test('find_component_owners without a class name is a clear validation error', a
 const advertisedSchemas = () => [
     ...Object.entries({
         debug: new DebugTools(),
-        project: new ProjectTools(),
-        prefab: new PrefabTools()
+        project: new ProjectTools()
     }).flatMap(([category, ex]) => ex.getTools()
         .map(tool => ({ name: `${category}_${tool.name}`, inputSchema: tool.inputSchema || {} }))),
-    ...[...sceneTools, ...nodeTools, ...componentTools]
+    ...[...sceneTools, ...nodeTools, ...componentTools, ...prefabTools, ...sceneOpsTools]
         .map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }))
 ];
 

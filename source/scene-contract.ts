@@ -270,6 +270,14 @@ export interface RemovedPrefabOverride extends OverrideValueDescription {
     target: PrefabTargetInfo | null;
 }
 
+export interface PrefabSyncReport {
+    nodeUuid: string;
+    nodeName: string;
+    prefabAsset: string | null;
+    instanceRoot: boolean;
+    accepted: boolean;
+}
+
 export interface PrefabOverrideRemoval {
     nodeUuid: string;
     removed: RemovedPrefabOverride;
@@ -392,6 +400,8 @@ export interface SceneMethods {
     addSkeletalSocket(nodeUuid: string, bonePath: string, targetName?: string): SceneResult<AddedSkeletalSocket>;
     listSkeletalSockets(nodeUuid: string): SceneResult<SkeletalSocketList>;
     removeSkeletalSocket(nodeUuid: string, bonePath: string): SceneResult<RemovedSkeletalSocket>;
+    applyPrefabToAsset(nodeUuid: string): Promise<SceneResult<PrefabSyncReport>>;
+    revertPrefabInstance(nodeUuid: string): Promise<SceneResult<PrefabSyncReport>>;
     listPrefabOverrides(nodeUuid: string): SceneResult<PrefabOverrideReport>;
     removePrefabOverride(
         nodeUuid: string,
