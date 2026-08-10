@@ -6,6 +6,12 @@ import { projectDescriptor, projectValue } from './readers';
 import type { ToolContext } from '../context';
 import type { WriteReport } from '../scene-contract';
 
+export interface ReferenceOptions {
+    targetComponentType?: string;
+    /** Index among the node's components OF THE SAME CLASS — not the `__comps__` index. */
+    sameClassIndex?: number;
+}
+
 export interface WriteTarget {
     nodeUuid: string;
     componentType: string;
@@ -13,12 +19,13 @@ export interface WriteTarget {
     propertyPath: string;
     descriptor: PropertyDescriptor;
     prefabInstanceRoot?: string;
+    refOptions?: ReferenceOptions;
 }
 
 export interface PropertyWriter {
     readonly name: string;
     readonly kind: PropertyKind;
-    claims(target: WriteTarget): boolean;
+    claims(target: WriteTarget, value: unknown): boolean;
     write(target: WriteTarget, value: unknown, ctx: ToolContext): Promise<WriteReport>;
 }
 
@@ -43,9 +50,16 @@ interface ChannelStep {
     dump: unknown;
 }
 
+interface ReadCheck {
+    property: string;
+    expected: unknown;
+}
+
 interface ChannelPlan {
     steps: ChannelStep[];
     expected: unknown;
+    /** Properties to read back, when they are not the one the caller named. */
+    reads?: ReadCheck[];
 }
 
 const REFERENCE_KINDS: PropertyKind[] = ['assetRef', 'nodeRef', 'componentRef'];
@@ -61,8 +75,8 @@ export function componentPath(target: WriteTarget, property?: string): string {
     return `__comps__.${target.componentIndex}.${property === undefined ? target.propertyPath : property}`;
 }
 
-export function writerFor(target: WriteTarget): PropertyWriter | undefined {
-    return WRITERS.find(writer => writer.claims(target));
+export function writerFor(target: WriteTarget, value: unknown): PropertyWriter | undefined {
+    return WRITERS.find(writer => writer.claims(target, value));
 }
 
 // ----- Read-back comparison ----------------------------------------------------------------
@@ -71,7 +85,6 @@ export function readBackMatches(expected: unknown, actual: unknown): boolean {
     return readBackMismatches(expected, actual).length === 0;
 }
 
-/** Keys absent from `expected` are not compared, so a patch is judged as a patch. */
 export function readBackMismatches(expected: unknown, actual: unknown, path = 'value'): string[] {
     const mismatches: string[] = [];
     if (expected === undefined) return mismatches;
@@ -111,10 +124,13 @@ function scalarEquals(expected: unknown, actual: unknown): boolean {
     if (expected === actual) return true;
     if (expected === null || expected === undefined) return actual === null || actual === undefined;
     if (actual === null || actual === undefined) return false;
-    const expectedNumber = Number(expected);
-    const actualNumber = Number(actual);
-    if (Number.isFinite(expectedNumber) && Number.isFinite(actualNumber)) {
-        return Math.abs(expectedNumber - actualNumber) < 1e-5;
+    if (typeof expected === 'boolean' || typeof actual === 'boolean') return false;
+    if (expected !== '' && actual !== '') {
+        const expectedNumber = Number(expected);
+        const actualNumber = Number(actual);
+        if (Number.isFinite(expectedNumber) && Number.isFinite(actualNumber)) {
+            return Math.abs(expectedNumber - actualNumber) < 1e-5;
+        }
     }
     return String(expected) === String(actual);
 }
@@ -125,10 +141,10 @@ function show(value: unknown): string {
 
 // ----- Read-back through the editor dump ---------------------------------------------------
 
-export async function readBack(target: WriteTarget, ctx: ToolContext): Promise<unknown> {
+export async function readBack(target: WriteTarget, ctx: ToolContext, property?: string): Promise<unknown> {
     const node = await ctx.editor.scene.queryNode(target.nodeUuid) as any;
     const component = node && node.__comps__ && node.__comps__[target.componentIndex];
-    const segments = target.propertyPath.split('.');
+    const segments = (property === undefined ? target.propertyPath : property).split('.');
     let current: any = component && component.value && component.value[segments[0]];
     for (let index = 1; index < segments.length && current !== undefined && current !== null; index++) {
         current = current.value ? current.value[segments[index]] : undefined;
@@ -137,36 +153,60 @@ export async function readBack(target: WriteTarget, ctx: ToolContext): Promise<u
     return isDumpDescriptor(current) ? projectDescriptor(current) : projectValue(kindOf(target), current);
 }
 
+export async function componentCid(target: WriteTarget, ctx: ToolContext): Promise<string | undefined> {
+    const node = await ctx.editor.scene.queryNode(target.nodeUuid) as any;
+    const component = node && node.__comps__ && node.__comps__[target.componentIndex];
+    if (!component) return undefined;
+    return component.__type__ || component.cid || component.type || undefined;
+}
+
 // ----- The channels ------------------------------------------------------------------------
 
 async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: ToolContext): Promise<WriteReport> {
     const refused: string[] = [];
+    let landed = 0;
     for (const step of plan.steps) {
         try {
             await ctx.editor.scene.setProperty({ uuid: target.nodeUuid, path: step.path, dump: step.dump as any });
+            landed++;
         } catch (error) {
             refused.push(`${step.path}: ${messageOf(error)}`);
         }
     }
-    if (refused.length) {
+    if (landed === 0) {
         return { written: false, verified: false, persisted: false, detail: `set-property refused ${refused.join('; ')}` };
     }
 
-    const verified = await settle(async () => readBackMatches(plan.expected, await readBack(target, ctx)));
+    const reads: ReadCheck[] = plan.reads || [{ property: target.propertyPath, expected: plan.expected }];
+    const verified = await settle(() => readsMatch(target, reads, ctx));
     const report: WriteReport = { written: true, verified, persisted: true, ...prefabOverrideOf(target) };
-    if (verified) return report;
-    let actual: unknown;
-    try {
-        actual = await readBack(target, ctx);
-    } catch (error) {
-        report.detail = `the write did not error and could not be read back: ${messageOf(error)}`;
-        return report;
-    }
-    const mismatches = readBackMismatches(plan.expected, actual, target.propertyPath);
-    report.detail = mismatches.length
-        ? `read-back disagrees — ${mismatches.join('; ')}`
-        : `the dump does not expose '${target.propertyPath}', so the write is unproven`;
+    const notes = refused.length ? [`set-property refused ${refused.join('; ')}`] : [];
+    if (!verified) notes.push(await readBackComplaint(target, reads, ctx));
+    if (notes.length) report.detail = notes.join('; ');
     return report;
+}
+
+async function readsMatch(target: WriteTarget, reads: ReadCheck[], ctx: ToolContext): Promise<boolean> {
+    for (const read of reads) {
+        if (!readBackMatches(read.expected, await readBack(target, ctx, read.property))) return false;
+    }
+    return true;
+}
+
+async function readBackComplaint(target: WriteTarget, reads: ReadCheck[], ctx: ToolContext): Promise<string> {
+    const mismatches: string[] = [];
+    for (const read of reads) {
+        let actual: unknown;
+        try {
+            actual = await readBack(target, ctx, read.property);
+        } catch (error) {
+            return `the write did not error and could not be read back: ${messageOf(error)}`;
+        }
+        mismatches.push(...readBackMismatches(read.expected, actual, read.property));
+    }
+    return mismatches.length
+        ? `read-back disagrees — ${mismatches.join('; ')}`
+        : `the dump does not expose '${reads.map(read => read.property).join(', ')}', so the write is unproven`;
 }
 
 function prefabOverrideOf(target: WriteTarget): { prefabOverride?: { targetPath: string } } {
@@ -197,7 +237,6 @@ function uuidOf(value: unknown): string | null {
     return null;
 }
 
-/** Accept the caller's flat spelling and the editor's own dump spelling for the same value. */
 function plainValue(value: unknown): unknown {
     if (Array.isArray(value)) return value.map(item => plainValue(item));
     if (isDumpDescriptor(value)) return plainValue((value as PropertyDescriptor).value);
@@ -276,10 +315,11 @@ function scalarValue(kind: PropertyKind, descriptor: PropertyDescriptor | undefi
     }
 }
 
-/** The dump for everything the editor can decode from one typed value. */
 export function typedDump(descriptor: PropertyDescriptor, kind: PropertyKind, value: unknown): ChannelStep['dump'] {
+    const hinted = (type: string | undefined) =>
+        !!type && (kind === 'color' || kind === 'vec' || type.indexOf('cc.') === 0);
     const typed = (type: string | undefined, built: unknown) =>
-        (kind === 'color' || kind === 'vec') && type ? { type, value: built } : { value: built };
+        hinted(type) ? { type, value: built } : { value: built };
 
     if (isArrayDescriptor(descriptor)) {
         const element = descriptor.elementTypeData || { ...descriptor, isArray: false, value: undefined };
@@ -435,8 +475,22 @@ function claimsKind(kind: PropertyKind): (target: WriteTarget) => boolean {
 }
 
 function isUITransformPair(target: WriteTarget): boolean {
-    const leaf = target.propertyPath.split('.').pop() || target.propertyPath;
-    return target.componentType === 'cc.UITransform' && UI_TRANSFORM_PAIR.test(leaf);
+    return target.componentType === 'cc.UITransform' && UI_TRANSFORM_PAIR.test(target.propertyPath);
+}
+
+// The engine route replaces the whole GradientRange/CurveRange, so it is only applicable to a
+// value that carries those keys.
+function carriesGradientKeys(value: unknown): boolean {
+    const spec = value as Record<string, unknown> | null;
+    return !!spec && typeof spec === 'object'
+        && (Array.isArray(spec.colorKeys) || Array.isArray(spec.alphaKeys));
+}
+
+function carriesCurveKeys(value: unknown): boolean {
+    if (Array.isArray(value)) return true;
+    const spec = value as Record<string, unknown> | null;
+    return !!spec && typeof spec === 'object'
+        && (Array.isArray(spec.keyframes) || Array.isArray(spec.keys) || spec.spline !== undefined);
 }
 
 function enablesModule(target: WriteTarget, spec: Record<string, unknown>): boolean {
@@ -446,7 +500,7 @@ function enablesModule(target: WriteTarget, spec: Record<string, unknown>): bool
 const gradientWriter: PropertyWriter = {
     name: 'gradient',
     kind: 'gradient',
-    claims: claimsKind('gradient'),
+    claims: (target, value) => kindOf(target) === 'gradient' && carriesGradientKeys(value),
     write: async (target, value, ctx) => {
         const spec = (value || {}) as Record<string, any>;
         const result = await ctx.sceneScript.call(
@@ -467,7 +521,7 @@ const gradientWriter: PropertyWriter = {
 const curveWriter: PropertyWriter = {
     name: 'curve',
     kind: 'curve',
-    claims: claimsKind('curve'),
+    claims: (target, value) => kindOf(target) === 'curve' && carriesCurveKeys(value),
     write: async (target, value, ctx) => {
         const spec = (value || {}) as Record<string, any>;
         const keyframes = Array.isArray(spec.keyframes) ? spec.keyframes : (Array.isArray(value) ? value : []);
@@ -504,7 +558,8 @@ const uiTransformWriter: PropertyWriter = {
             steps: fields.map(([field, , magnitude]) => ({
                 path: componentPath(target, field), dump: { value: magnitude }
             })),
-            expected
+            expected,
+            reads: fields.map(([field, , magnitude]) => ({ property: field, expected: magnitude }))
         }, ctx);
     }
 };
@@ -541,7 +596,12 @@ const classArrayWriter: PropertyWriter = {
 const nestedClassWriter: PropertyWriter = {
     name: 'nested-class',
     kind: 'nestedClass',
-    claims: claimsKind('nestedClass'),
+    claims: (target, value) => {
+        const kind = kindOf(target);
+        if (kind === 'gradient') return !carriesGradientKeys(value);
+        if (kind === 'curve') return !carriesCurveKeys(value);
+        return kind === 'nestedClass';
+    },
     write: (target, value, ctx) => {
         const plain = plainValue(value);
         if (!plain || typeof plain !== 'object' || Array.isArray(plain)) {
@@ -589,12 +649,13 @@ const assetWriter: PropertyWriter = {
                 expected: uuids[0] || null
             }, ctx);
         }
-        // The whole array sets the length; the per-slot writes are the spelling the editor
-        // resolves a uuid from, the same two steps a class array needs for its references.
-        const steps: ChannelStep[] = [
-            { path: basePath, dump: { type: elementType, value: uuids.map(uuid => ({ uuid })) } }
-        ];
-        uuids.forEach((uuid, slot) => steps.push({
+        if (uuids.length === 0) {
+            return Promise.resolve(unwritten(
+                `'${target.propertyPath}' is an array of assets and takes uuid string(s); got ${show(value)}`));
+        }
+        // A dump for the array as a whole throws and NULLs the slot (scene/component-ops.ts:165),
+        // so each slot is assigned on its own and the array's length is not writable here.
+        const steps: ChannelStep[] = uuids.map((uuid, slot) => ({
             path: `${basePath}.${slot}`, dump: { type: elementType, value: { uuid } }
         }));
         return throughEditor(target, { steps, expected: uuids.map(uuid => uuid || null) }, ctx);
@@ -607,9 +668,12 @@ const assetWriter: PropertyWriter = {
  * none, so the field reads back perfectly and is empty the next time the scene is opened.
  */
 async function writeReference(target: WriteTarget, value: unknown, ctx: ToolContext): Promise<WriteReport> {
+    const options = target.refOptions || {};
     const args: Record<string, unknown> = {
         nodeUuid: target.nodeUuid, componentType: target.componentType, property: target.propertyPath
     };
+    if (options.targetComponentType !== undefined) args.targetComponentType = options.targetComponentType;
+    if (options.sameClassIndex !== undefined) args.componentIndex = options.sameClassIndex;
     if (value === null || value === undefined) {
         args.clear = true;
     } else if (Array.isArray(value)) {
@@ -661,15 +725,17 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: ToolCont
         persisted: !live && outcome.data.projectionChecked && sameSlots(outcome.data.projected),
         ...(overridden ? { prefabOverride: { targetPath: path } } : prefabOverrideOf(target))
     };
+    const notes: string[] = plan.data.warning ? [plan.data.warning] : [];
     if (live) {
-        report.detail = LIVE_CHANNEL;
+        notes.push(LIVE_CHANNEL);
     } else if (!outcome.data.projectionChecked) {
-        report.detail = 'whether it survives a save was NOT established: the component sits inside a prefab '
-            + 'instance whose asset could not be read';
+        notes.push('whether it survives a save was NOT established: the component sits inside a prefab '
+            + 'instance whose asset could not be read');
     } else if (!report.persisted) {
-        report.detail = `the next load builds [${outcome.data.projected.join(', ')}] for '${property}', `
-            + `not [${expected.join(', ')}]`;
+        notes.push(`the next load builds [${outcome.data.projected.join(', ')}] for '${property}', `
+            + `not [${expected.join(', ')}]`);
     }
+    if (notes.length) report.detail = notes.join('; ');
     return report;
 }
 

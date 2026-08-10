@@ -13,6 +13,32 @@ const fixtures = JSON.parse(
 
 const PREFAB = '5965dcc0-7042-42a8-90ac-df7df5ede667';
 const CLIP = '5965dcc0-7042-42a8-90ac-df7df5ede667';
+const NODE = 'cd6e4f10-8a11-4d0e-8c22-0b3a9e77aa01';
+
+const VALUES = {
+    number: 2.5,
+    string: 'backOut',
+    boolean: true,
+    vec3: { x: 2, y: 2, z: 2 },
+    vec2: { x: 0.5, y: 0.5 },
+    size: { width: 100, height: 40 },
+    color: { r: 255, g: 128, b: 0, a: 200 },
+    spriteFrame: PREFAB,
+    emptySpriteFrame: PREFAB,
+    materialArray: [PREFAB, PREFAB],
+    materialArrayDescriptorElements: [PREFAB, PREFAB],
+    nodeRef: NODE,
+    nodeArray: [NODE],
+    nodeArrayDescriptorElements: [NODE],
+    componentRef: NODE,
+    nestedClass: { duration: 1.25 },
+    classArray: [{ spawnInterval: 1 }],
+    assetClassArray: [{ count: 2 }],
+    gradient: { colorKeys: [{ color: { r: 255, g: 0, b: 0, a: 255 }, time: 0 }] },
+    curve: { keyframes: [{ time: 0, value: 1 }] },
+    enum: 1,
+    bitmask: 1108344832
+};
 
 function targetFor(name, overrides = {}) {
     const descriptor = fixtures[name];
@@ -37,7 +63,7 @@ test('the writer order is the cascade order, declared in one array', () => {
 test('every descriptor the editor emits is claimed by exactly one writer', () => {
     const claimed = {};
     for (const name of Object.keys(fixtures)) {
-        const claimants = WRITERS.filter(writer => writer.claims(targetFor(name)));
+        const claimants = WRITERS.filter(writer => writer.claims(targetFor(name), VALUES[name]));
         assert.equal(claimants.length, 1,
             `${name} was claimed by [${claimants.map(writer => writer.name).join(', ')}]`);
         claimed[name] = claimants[0].name;
@@ -69,8 +95,20 @@ test('every descriptor the editor emits is claimed by exactly one writer', () =>
 });
 
 test('an array field reaches the same writer as its element, which then reads isArray itself', () => {
-    assert.equal(writerFor(targetFor('materialArray')).name, writerFor(targetFor('spriteFrame')).name);
-    assert.equal(writerFor(targetFor('nodeArray')).name, writerFor(targetFor('nodeRef')).name);
+    assert.equal(writerFor(targetFor('materialArray'), VALUES.materialArray).name,
+        writerFor(targetFor('spriteFrame'), VALUES.spriteFrame).name);
+    assert.equal(writerFor(targetFor('nodeArray'), VALUES.nodeArray).name,
+        writerFor(targetFor('nodeRef'), VALUES.nodeRef).name);
+});
+
+test('a gradient or curve value without keys is patched member-wise, never replaced wholesale', () => {
+    assert.equal(writerFor(targetFor('curve'), { constant: 5 }).name, 'nested-class');
+    assert.equal(writerFor(targetFor('curve'), { mode: 0, multiplier: 2 }).name, 'nested-class');
+    assert.equal(writerFor(targetFor('gradient'), { mode: 0, color: { r: 1, g: 2, b: 3 } }).name, 'nested-class');
+
+    assert.equal(writerFor(targetFor('curve'), VALUES.curve).name, 'curve');
+    assert.equal(writerFor(targetFor('curve'), [{ time: 0, value: 1 }]).name, 'curve');
+    assert.equal(writerFor(targetFor('gradient'), { alphaKeys: [{ alpha: 0, time: 1 }] }).name, 'gradient');
 });
 
 test('the UITransform pair is claimed by component and property, not by shape alone', () => {
@@ -78,16 +116,18 @@ test('the UITransform pair is claimed by component and property, not by shape al
     const underscored = targetFor('vec2', { componentType: 'cc.UITransform', propertyPath: '_anchorPoint' });
     const elsewhere = targetFor('size', { componentType: 'MyPanel', propertyPath: 'contentSize' });
     const otherVec = targetFor('vec3', { componentType: 'cc.UITransform', propertyPath: 'offset' });
+    const nested = targetFor('size', { componentType: 'cc.UITransform', propertyPath: 'layout.contentSize' });
 
-    assert.equal(writerFor(pair).name, 'ui-transform-pair');
-    assert.equal(writerFor(underscored).name, 'ui-transform-pair');
-    assert.equal(writerFor(elsewhere).name, 'typed:vec');
-    assert.equal(writerFor(otherVec).name, 'typed:vec');
+    assert.equal(writerFor(pair, VALUES.size).name, 'ui-transform-pair');
+    assert.equal(writerFor(underscored, VALUES.vec2).name, 'ui-transform-pair');
+    assert.equal(writerFor(elsewhere, VALUES.size).name, 'typed:vec');
+    assert.equal(writerFor(otherVec, VALUES.vec3).name, 'typed:vec');
+    assert.equal(writerFor(nested, VALUES.size).name, 'typed:vec');
 });
 
 test('a property with no descriptor still finds the plain writer', () => {
     const bare = { nodeUuid: 'node-1', componentType: 'TestComp', componentIndex: 0, propertyPath: 'speed', descriptor: {} };
-    assert.equal(writerFor(bare).name, 'typed:plain');
+    assert.equal(writerFor(bare, 7).name, 'typed:plain');
 });
 
 test('a read-back that agrees produces no mismatch, numbers within 1e-5 included', () => {
@@ -105,6 +145,15 @@ test('a read-back that disagrees names the path, the request and what was read',
     assert.deepEqual(readBackMismatches('uuid-a', null, 'prefab'),
         ['prefab: expected "uuid-a", read null']);
     assert.equal(readBackMatches(1, 2), false);
+});
+
+test('a boolean is compared as a boolean: false is not 0, not "" and not "false"', () => {
+    assert.deepEqual(readBackMismatches(false, 0, 'loop'), ['loop: expected false, read 0']);
+    assert.deepEqual(readBackMismatches(true, 1, 'loop'), ['loop: expected true, read 1']);
+    assert.deepEqual(readBackMismatches(false, '', 'loop'), ['loop: expected false, read ""']);
+    assert.deepEqual(readBackMismatches(false, 'false', 'loop'), ['loop: expected false, read "false"']);
+    assert.deepEqual(readBackMismatches(false, false), []);
+    assert.deepEqual(readBackMismatches('', 0, 'label'), ['label: expected "", read 0']);
 });
 
 test('an array is compared by length and then element by element', () => {
