@@ -2,7 +2,21 @@ import { z } from 'zod';
 import { defineTool } from '../tool';
 import { ok, fail } from '../result';
 import { textOf } from './shared';
+import type { ToolFail } from '../result';
 import type { RegisteredTool } from '../tool';
+
+/**
+ * `false` from one of these messages is the editor declining the edit, not an error it throws —
+ * `move-array-element` declines a reorder inside a prefab asset (canModifySibling), and reporting
+ * that as a success is how a "moved" element stays where it was.
+ */
+function refused(code: string, what: string, hint: string, data: Record<string, unknown>): ToolFail {
+    return fail(code, `The editor refused: ${what}. Nothing was changed.`, hint, data);
+}
+
+const PREFAB_SIBLING_HINT = 'The commonest cause is a prefab: the editor does not let an instance '
+    + 'reorder or restructure what the prefab asset owns (canModifySibling). Edit the .prefab asset '
+    + 'itself, or unlink the instance.';
 
 export const sceneAdvancedResetNodeProperty = defineTool({
     name: 'sceneAdvanced_reset_node_property',
@@ -15,12 +29,19 @@ export const sceneAdvancedResetNodeProperty = defineTool({
     }),
     aliases: { property: 'path' },
     async handler(args, ctx) {
+        const target = { uuid: args.uuid, path: args.path };
+        let accepted: boolean;
         try {
-            await ctx.editor.scene.resetProperty({ uuid: args.uuid, path: args.path, dump: { value: null } as any });
-            return ok({ uuid: args.uuid, path: args.path }, `Property '${args.path}' reset to its default`);
+            accepted = await ctx.editor.scene.resetProperty({ ...target, dump: { value: null } as any });
         } catch (error) {
             return fail('reset_failed', `'${args.path}' was not reset on ${args.uuid}: ${textOf(error)}`);
         }
+        if (accepted === false) {
+            return refused('reset_refused', `'${args.path}' on node ${args.uuid} was not reset`,
+                'Check the property spelling against node_get_node_info — the editor also answers false '
+                + `for a property it does not own. ${PREFAB_SIBLING_HINT}`, target);
+        }
+        return ok(target, `Property '${args.path}' reset to its default`);
     }
 });
 
@@ -32,12 +53,17 @@ export const sceneAdvancedResetNodeTransform = defineTool({
         uuid: z.string().describe('Node UUID')
     }),
     async handler(args, ctx) {
+        let accepted: boolean;
         try {
-            const accepted = await ctx.editor.scene.resetNode({ uuid: args.uuid });
-            return ok({ uuid: args.uuid, accepted: accepted !== false }, 'Node transform reset to default');
+            accepted = await ctx.editor.scene.resetNode({ uuid: args.uuid });
         } catch (error) {
             return fail('reset_failed', `Transform was not reset on ${args.uuid}: ${textOf(error)}`);
         }
+        if (accepted === false) {
+            return refused('reset_refused', `the transform of node ${args.uuid} was not reset`,
+                PREFAB_SIBLING_HINT, { uuid: args.uuid });
+        }
+        return ok({ uuid: args.uuid }, 'Node transform reset to default');
     }
 });
 
@@ -72,15 +98,19 @@ export const sceneAdvancedMoveArrayElement = defineTool({
         offset: z.coerce.number().describe('How far to move it; negative moves it earlier')
     }),
     async handler(args, ctx) {
+        const move = { uuid: args.uuid, path: args.path, target: args.target, offset: args.offset };
+        let accepted: boolean;
         try {
-            await ctx.editor.scene.moveArrayElement({
-                uuid: args.uuid, path: args.path, target: args.target, offset: args.offset
-            });
-            return ok({ uuid: args.uuid, path: args.path, target: args.target, offset: args.offset },
-                `Array element at index ${args.target} moved by ${args.offset}`);
+            accepted = await ctx.editor.scene.moveArrayElement(move);
         } catch (error) {
             return fail('move_failed', `'${args.path}[${args.target}]' was not moved: ${textOf(error)}`);
         }
+        if (accepted === false) {
+            return refused('move_refused',
+                `'${args.path}[${args.target}]' on node ${args.uuid} was not moved by ${args.offset}`,
+                `${PREFAB_SIBLING_HINT} An index outside the array is refused the same way.`, move);
+        }
+        return ok(move, `Array element at index ${args.target} moved by ${args.offset}`);
     }
 });
 
@@ -96,13 +126,19 @@ export const sceneAdvancedRemoveArrayElement = defineTool({
         index: z.coerce.number().describe('Index of the element to remove')
     }),
     async handler(args, ctx) {
+        const target = { uuid: args.uuid, path: args.path, index: args.index };
+        let accepted: boolean;
         try {
-            await ctx.editor.scene.removeArrayElement({ uuid: args.uuid, path: args.path, index: args.index });
-            return ok({ uuid: args.uuid, path: args.path, index: args.index },
-                `Array element at index ${args.index} removed`);
+            accepted = await ctx.editor.scene.removeArrayElement(target);
         } catch (error) {
             return fail('remove_failed', `'${args.path}[${args.index}]' was not removed: ${textOf(error)}`);
         }
+        if (accepted === false) {
+            return refused('remove_refused',
+                `'${args.path}[${args.index}]' on node ${args.uuid} was not removed`,
+                `${PREFAB_SIBLING_HINT} An index outside the array is refused the same way.`, target);
+        }
+        return ok(target, `Array element at index ${args.index} removed`);
     }
 });
 

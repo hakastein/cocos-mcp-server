@@ -275,7 +275,7 @@ export interface PrefabSyncReport {
     nodeName: string;
     prefabAsset: string | null;
     instanceRoot: boolean;
-    accepted: boolean;
+    accepted: boolean | null;
 }
 
 export interface PrefabOverrideRemoval {

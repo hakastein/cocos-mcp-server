@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { booleanArg, defineTool } from '../tool';
-import { ok, fail, ToolFail } from '../result';
+import { ok, fail, ToolFail, ToolResult } from '../result';
 import { anyValued, fromScene, textOf } from './shared';
 import { readAssetJson, writeAssetJson } from '../asset-json';
 import { coerceJsonArg } from '../json-arg';
@@ -21,6 +21,7 @@ import { applyLinkageOptions, linkageVerdict, queryAssetType, verifyPrefabLinkag
 import type { DeclaredProperty } from '../prefab-value';
 import type { RegisteredTool } from '../tool';
 import type { ToolContext } from '../context';
+import type { PrefabSyncReport, SceneResult } from '../scene-contract';
 
 const FILE_TOOL_NOTE = 'nodePath/nodeName address a node INSIDE THE PREFAB FILE, not in the open scene — '
     + 'this tool never touches the scene and takes no node uuid.';
@@ -37,6 +38,24 @@ async function readPrefabArray(prefabPath: string): Promise<any[]> {
     const data = await readAssetJson(prefabPath);
     if (!Array.isArray(data)) throw new Error(`${prefabPath} is not a prefab array`);
     return data;
+}
+
+/**
+ * Reading the file and addressing something inside it are different failures with different fixes,
+ * and the pure machinery throws the same Error type for both — so they are split by WHERE the throw
+ * happened: everything after a successful parse is the caller's address, not the file.
+ */
+async function loadPrefab(prefabPath: string): Promise<{ data: any[] } | { failure: ToolFail }> {
+    try {
+        return { data: await readPrefabArray(prefabPath) };
+    } catch (error) {
+        return { failure: fail('prefab_unreadable', `${prefabPath}: ${textOf(error)}`) };
+    }
+}
+
+function addressMiss(prefabPath: string, error: unknown): ToolFail {
+    return fail('prefab_path_miss', `${prefabPath}: ${textOf(error)}`,
+        'prefab_dump lists every node path in this prefab and the components on each of them.');
 }
 
 /** `__type__` is the plain name for builtins and the compressed script-asset uuid for user scripts. */
@@ -213,24 +232,29 @@ export const prefabAddComponent = defineTool({
     async handler(args, ctx) {
         const resolved = await resolveComponentCid(ctx, args.componentType, args.scriptPath);
         if ('failure' in resolved) return resolved.failure;
+        const loaded = await loadPrefab(args.prefabPath);
+        if ('failure' in loaded) return loaded.failure;
+
+        let result;
         try {
-            const data = await readPrefabArray(args.prefabPath);
-            const result = addComponentToPrefabData(
-                data, selectorOf(args), resolved.cid, args.properties || {}
-            );
+            result = addComponentToPrefabData(loaded.data, selectorOf(args), resolved.cid, args.properties || {});
+        } catch (error) {
+            return addressMiss(args.prefabPath, error);
+        }
+        try {
             await writeAssetJson(args.prefabPath, result.data);
             await ctx.editor.assetDb.refreshAsset(args.prefabPath);
-            return ok({
-                prefabPath: args.prefabPath,
-                componentType: args.componentType,
-                cid: resolved.cid,
-                componentId: result.componentId,
-                fileId: result.fileId,
-                entryCount: result.data.length
-            }, `'${args.componentType}' added to ${args.prefabPath}`);
         } catch (error) {
             return fail('prefab_write_failed', `${args.prefabPath}: ${textOf(error)}`);
         }
+        return ok({
+            prefabPath: args.prefabPath,
+            componentType: args.componentType,
+            cid: resolved.cid,
+            componentId: result.componentId,
+            fileId: result.fileId,
+            entryCount: result.data.length
+        }, `'${args.componentType}' added to ${args.prefabPath}`);
     }
 });
 
@@ -253,30 +277,37 @@ export const prefabRemoveComponent = defineTool({
     async handler(args, ctx) {
         const resolved = await resolveComponentCid(ctx, args.componentType, args.scriptPath);
         if ('failure' in resolved) return resolved.failure;
+        const loaded = await loadPrefab(args.prefabPath);
+        if ('failure' in loaded) return loaded.failure;
+
+        let result;
         try {
-            const data = await readPrefabArray(args.prefabPath);
-            const result = removeComponentFromPrefabData(
-                data, selectorOf(args), resolved.cid, args.occurrence || 0, args.mounted === true
+            result = removeComponentFromPrefabData(
+                loaded.data, selectorOf(args), resolved.cid, args.occurrence || 0, args.mounted === true
             );
+        } catch (error) {
+            return addressMiss(args.prefabPath, error);
+        }
+        try {
             await writeAssetJson(args.prefabPath, result.data);
             await ctx.editor.assetDb.refreshAsset(args.prefabPath);
-            return ok({
-                prefabPath: args.prefabPath,
-                componentType: args.componentType,
-                cid: resolved.cid,
-                removedFileId: result.removedFileId,
-                removedIds: result.removedIds,
-                entryCount: result.data.length,
-                ...(result.removedFileId
-                    ? {
-                        warning: `Scenes instancing this prefab may still hold overrides keyed to fileId `
-                            + `${result.removedFileId} — grep the scenes for it.`
-                    }
-                    : {})
-            }, `'${args.componentType}' removed from ${args.prefabPath}`);
         } catch (error) {
             return fail('prefab_write_failed', `${args.prefabPath}: ${textOf(error)}`);
         }
+        return ok({
+            prefabPath: args.prefabPath,
+            componentType: args.componentType,
+            cid: resolved.cid,
+            removedFileId: result.removedFileId,
+            removedIds: result.removedIds,
+            entryCount: result.data.length,
+            ...(result.removedFileId
+                ? {
+                    warning: 'Scenes instancing this prefab may still hold overrides keyed to fileId '
+                        + `${result.removedFileId} — grep the scenes for it.`
+                }
+                : {})
+        }, `'${args.componentType}' removed from ${args.prefabPath}`);
     }
 });
 
@@ -297,15 +328,16 @@ export const prefabGetComponentProperty = defineTool({
     async handler(args, ctx) {
         const resolved = await resolveComponentCid(ctx, args.componentType, args.scriptPath);
         if ('failure' in resolved) return resolved.failure;
-        let data: any[];
+        const loaded = await loadPrefab(args.prefabPath);
+        if ('failure' in loaded) return loaded.failure;
+        const data = loaded.data;
         let value: any;
         try {
-            data = await readPrefabArray(args.prefabPath);
             value = getComponentPropertyInPrefabData(
                 data, selectorOf(args), resolved.cid, args.property, args.occurrence || 0
             );
         } catch (error) {
-            return fail('prefab_unreadable', `${args.prefabPath}: ${textOf(error)}`);
+            return addressMiss(args.prefabPath, error);
         }
         const declared = args.property.includes('.')
             ? null
@@ -352,15 +384,16 @@ export const prefabSetComponentProperty = anyValued(defineTool({
         if ('failure' in resolved) return resolved.failure;
 
         const { value: given, coerced } = coerceJsonArg(args.value);
-        let data: any[];
+        const loaded = await loadPrefab(args.prefabPath);
+        if ('failure' in loaded) return loaded.failure;
+        const data = loaded.data;
         let previous: any;
         try {
-            data = await readPrefabArray(args.prefabPath);
             previous = getComponentPropertyInPrefabData(
                 data, selectorOf(args), resolved.cid, args.property, args.occurrence || 0
             );
         } catch (error) {
-            return fail('prefab_unreadable', `${args.prefabPath}: ${textOf(error)}`);
+            return addressMiss(args.prefabPath, error);
         }
 
         const declared = args.property.includes('.')
@@ -369,9 +402,10 @@ export const prefabSetComponentProperty = anyValued(defineTool({
         const plan = planPrefabValue(given, declared, previous, args.property);
         if (plan.kind === 'error') return fail('value_refused', plan.error);
 
+        let value: any;
+        let resolvedFrom: string | undefined;
+        let result;
         try {
-            let value: any;
-            let resolvedFrom: string | undefined;
             if (plan.kind === 'reference') {
                 if (plan.expects === 'component' && plan.componentType) {
                     const target = await resolveComponentCid(ctx, plan.componentType);
@@ -384,29 +418,32 @@ export const prefabSetComponentProperty = anyValued(defineTool({
             } else {
                 value = plan.value;
             }
-
-            const result = setComponentPropertyInPrefabData(
+            result = setComponentPropertyInPrefabData(
                 data, selectorOf(args), resolved.cid, args.property, value, args.occurrence || 0
             );
+        } catch (error) {
+            return addressMiss(args.prefabPath, error);
+        }
+        try {
             await writeAssetJson(args.prefabPath, result.data);
             await ctx.editor.assetDb.refreshAsset(args.prefabPath);
-            return ok({
-                prefabPath: args.prefabPath,
-                componentType: args.componentType,
-                property: args.property,
-                previous: result.previous,
-                value,
-                componentId: result.componentId,
-                declaredType: declared && declared.found ? (declared.ctorName || declared.scalar) : null,
-                ...(resolvedFrom ? { resolvedFromPath: resolvedFrom } : {}),
-                ...(plan.kind === 'value' && plan.coercedFrom
-                    ? { typedFrom: declared && declared.found ? 'the declared type' : 'the value already in the prefab' }
-                    : {}),
-                ...(coerced ? { valueParsedFromString: true } : {})
-            }, `${args.componentType}.${args.property} written in ${args.prefabPath}`);
         } catch (error) {
             return fail('prefab_write_failed', `${args.prefabPath}: ${textOf(error)}`);
         }
+        return ok({
+            prefabPath: args.prefabPath,
+            componentType: args.componentType,
+            property: args.property,
+            previous: result.previous,
+            value,
+            componentId: result.componentId,
+            declaredType: declared && declared.found ? (declared.ctorName || declared.scalar) : null,
+            ...(resolvedFrom ? { resolvedFromPath: resolvedFrom } : {}),
+            ...(plan.kind === 'value' && plan.coercedFrom
+                ? { typedFrom: declared && declared.found ? 'the declared type' : 'the value already in the prefab' }
+                : {}),
+            ...(coerced ? { valueParsedFromString: true } : {})
+        }, `${args.componentType}.${args.property} written in ${args.prefabPath}`);
     }
 }), 'value');
 
@@ -629,7 +666,31 @@ const SYNC_CHANNEL_NOTE = 'Runs through cce.Prefab in the scene process, not thr
     + '`scene:revert-prefab` is not a message this editor registers at all (it appears nowhere in the '
     + 'editor bundle), and `scene:apply-prefab` is registered but non-public, undocumented and absent from '
     + 'the typed message map, so its argument shape cannot be checked — the object the old implementation '
-    + 'sent had no basis. Like every other write from this bridge, it records no undo step.';
+    + 'sent had no basis. Like every other write from this bridge, it records no undo step. The editor '
+    + 'declines some of these outright and says so by ANSWERING false rather than throwing, so a refusal '
+    + 'fails the call; `accepted: null` means it answered with no verdict at all and the result is '
+    + 'unproven, not good.';
+
+function syncOutcome(
+    result: SceneResult<PrefabSyncReport>,
+    code: string,
+    verb: string
+): ToolResult {
+    if (!result?.success) return fromScene(result);
+    const report = result.data;
+    if (report.accepted === false) {
+        return fail(code,
+            `The editor refused to ${verb} '${report.nodeName}' (${report.nodeUuid}). Nothing was changed.`,
+            'cce.Prefab answers false when it will not carry the operation out — a circular prefab '
+            + 'reference, an instance the editor does not consider applicable, or a scene still loading. '
+            + 'prefab_list_overrides on the same node says what the instance actually holds.',
+            report);
+    }
+    return ok(report, report.accepted === null
+        ? `Asked the editor to ${verb} '${report.nodeName}', and it answered with no verdict — confirm `
+            + 'with prefab_dump or prefab_list_overrides before relying on it.'
+        : `Told the editor to ${verb} '${report.nodeName}'.`);
+}
 
 export const prefabUpdatePrefab = defineTool({
     name: 'prefab_update_prefab',
@@ -653,7 +714,9 @@ export const prefabUpdatePrefab = defineTool({
                     'Drop prefabPath to apply onto the asset the instance actually tracks.');
             }
         }
-        return fromScene(await ctx.sceneScript.call('applyPrefabToAsset', args.nodeUuid));
+        return syncOutcome(
+            await ctx.sceneScript.call('applyPrefabToAsset', args.nodeUuid),
+            'apply_refused', 'apply');
     }
 });
 
@@ -667,7 +730,9 @@ export const prefabRevertPrefab = defineTool({
         nodeUuid: z.string().describe('UUID of the prefab instance root node in the open scene')
     }),
     async handler(args, ctx) {
-        return fromScene(await ctx.sceneScript.call('revertPrefabInstance', args.nodeUuid));
+        return syncOutcome(
+            await ctx.sceneScript.call('revertPrefabInstance', args.nodeUuid),
+            'revert_refused', 'revert');
     }
 });
 
@@ -684,13 +749,26 @@ export const prefabRestorePrefabNode = defineTool({
         assetUuid: z.string().describe('Prefab asset UUID to restore from')
     }),
     async handler(args, ctx) {
+        let answer: unknown;
         try {
-            const accepted = await ctx.editor.scene.restorePrefab(args.nodeUuid, args.assetUuid);
-            return ok({ nodeUuid: args.nodeUuid, assetUuid: args.assetUuid, accepted: accepted !== false },
-                'Prefab node restored');
+            answer = await ctx.editor.scene.restorePrefab(args.nodeUuid, args.assetUuid);
         } catch (error) {
             return fail('restore_failed', `Prefab node restore failed: ${textOf(error)}`);
         }
+        const accepted = typeof answer === 'boolean' ? answer : null;
+        const report = { nodeUuid: args.nodeUuid, assetUuid: args.assetUuid, accepted };
+        if (accepted === false) {
+            return fail('restore_refused',
+                `The editor refused to restore node ${args.nodeUuid} from prefab ${args.assetUuid}. `
+                + 'Nothing was changed.',
+                'restore-prefab answers false when the node is not an instance of that asset, or the asset '
+                + 'uuid does not resolve. Check both against prefab_list_overrides and prefab_get_prefab_list.',
+                report);
+        }
+        return ok(report, accepted === null
+            ? 'Asked the editor to restore the prefab node, and it answered with no verdict — confirm the '
+                + 'node before relying on it.'
+            : 'Prefab node restored');
     }
 });
 

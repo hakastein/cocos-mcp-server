@@ -86,13 +86,7 @@ export const createPrefabFromNode2: SceneMethods['createPrefabFromNode2'] = (nod
     }
 };
 
-/**
- * Apply and revert go through `cce.Prefab` rather than an editor message: `scene:revert-prefab`
- * is not a message this editor registers at all, and `scene:apply-prefab` is undocumented and
- * declares no argument shape, while `cce.Prefab.applyPrefab(nodeUuid)` /
- * `cce.Prefab.revertPrefab(nodeUuid)` are the calls those messages exist to reach. Neither
- * records an undo step, as with every other write this bridge makes.
- */
+/** `scene:revert-prefab` is not a message this editor registers; `cce.Prefab` is what both reach. */
 async function syncPrefabInstance(
     nodeUuid: string,
     operation: 'applyPrefab' | 'revertPrefab'
@@ -111,7 +105,7 @@ async function syncPrefabInstance(
         if (typeof cce === 'undefined' || typeof cce?.Prefab?.[operation] !== 'function') {
             return { success: false, error: `cce.Prefab.${operation} is unavailable in this editor build` };
         }
-        const accepted = await cce.Prefab[operation](node.uuid);
+        const answer = await cce.Prefab[operation](node.uuid);
         return {
             success: true,
             data: {
@@ -119,7 +113,7 @@ async function syncPrefabInstance(
                 nodeName: node.name,
                 prefabAsset: (prefab.asset && prefab.asset._uuid) || null,
                 instanceRoot: true,
-                accepted: accepted !== false
+                accepted: typeof answer === 'boolean' ? answer : null
             }
         };
     } catch (error: any) {

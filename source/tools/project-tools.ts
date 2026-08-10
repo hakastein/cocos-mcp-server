@@ -5,7 +5,7 @@ import { ALIAS_KEY } from '../tool-args';
 
 /**
  * A db:// asset location is spelled `url` here but `assetPath` on get_asset_details and
- * `prefabPath` in prefab-tools, so callers reasonably guess the wrong one. Accepting the
+ * `prefabPath` on the prefab tools, so callers reasonably guess the wrong one. Accepting the
  * alternates costs nothing and removes a whole class of "parameter error" dead ends —
  * `reimport_asset` given `assetPath` used to reach the editor as `undefined` and come back
  * as "Cannot read properties of undefined (reading 'startsWith')".

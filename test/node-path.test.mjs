@@ -196,6 +196,27 @@ test('every tool taking a node uuid gains the matching path, across all categori
     assert.ok(covered > 15, `the loop found almost nothing to cover (${covered}) — the survey is broken, not the feature`);
 });
 
+test('the file-based prefab tools advertise no scene-node argument and no path pair', () => {
+    // nodePath scopes these writes to the .prefab file; a resolved scene uuid would land elsewhere
+    const advertised = new ToolRegistry(prefabTools).list();
+    const sceneUuidParams = [
+        'nodeUuid', 'targetUuid', 'targetUuids', 'parentUuid', 'newParentUuid', 'rootUuid', 'uuid'
+    ];
+    for (const name of [
+        'prefab_dump', 'prefab_validate_prefab', 'prefab_add_component', 'prefab_remove_component',
+        'prefab_get_component_property', 'prefab_set_component_property'
+    ]) {
+        const tool = advertised.find(t => t.name === name);
+        assert.ok(tool, `${name} is not on the prefab surface`);
+        assert.deepEqual(pairsOf(tool.inputSchema), [], `${name} gained a uuid/path pair`);
+        assert.deepEqual(
+            Object.keys(tool.inputSchema.properties).filter(p => sceneUuidParams.includes(p)),
+            [],
+            `${name} declares a scene-node argument`
+        );
+    }
+});
+
 // ----- applying resolutions -----------------------------------------------------------
 
 const refSchema = augmentToolDefinition(componentToolNamed('component_set_component_property')).inputSchema;
