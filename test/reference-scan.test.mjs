@@ -90,8 +90,8 @@ test('a uuid the project does not know is broken', () => {
     assert.deepEqual(findBroken([EFFECT, MATERIAL], new Set([EFFECT])), [MATERIAL]);
 });
 
-test('a sub-asset reference is judged by the asset it lives in', () => {
-    assert.deepEqual(findBroken([TEXTURE], new Set(['2b7e5ee4-3e5c-476d-964c-5c81b01f680e'])), []);
+test('knowing the asset a sub-asset lives in does not answer for the sub-id', () => {
+    assert.deepEqual(findBroken([TEXTURE], new Set(['2b7e5ee4-3e5c-476d-964c-5c81b01f680e'])), [TEXTURE]);
     assert.deepEqual(findBroken([TEXTURE], new Set([EFFECT])), [TEXTURE]);
 });
 

@@ -8,7 +8,7 @@ import { textOf } from './shared';
 import { ASSET_TYPES, assetQuery, selectAssets } from '../asset-query';
 import { coerceJsonArg } from '../json-arg';
 import {
-    baseUuidOf, findBroken, scanModelMeta, scanReferenceSites, subIdOf
+    baseUuidOf, findBroken, findMissingSubAssets, scanModelMeta, scanReferenceSites, subIdOf
 } from '../reference-scan';
 import type { ReferenceSite } from '../reference-scan';
 import type { AssetOperationOption, EditorAssetInfo } from '../editor-api';
@@ -561,7 +561,9 @@ const KIND_GLOBS: Record<ValidateKind, string> = {
 };
 
 const DEFAULT_MAX_ASSETS = 400;
-const DEFAULT_MAX_CHECKS = 400;
+const DEFAULT_MAX_CHECKS = 1000;
+
+const DUMP_DIR_FIELD = 'userData.materialDumpDir';
 
 const kindListArg = z.preprocess(value => {
     if (typeof value !== 'string') return value;
@@ -573,12 +575,19 @@ interface BrokenReference {
     asset: string;
     ref: string;
     where: string;
+    occurrences: number;
     reason: 'asset_missing' | 'sub_asset_missing';
 }
 
 interface DumpDirMissing {
     fbx: string;
     materialDumpDir: string;
+    where: string;
+}
+
+interface ImporterPath {
+    asset: string;
+    path: string;
     where: string;
 }
 
@@ -590,8 +599,15 @@ function kindOfUrl(url: string): ValidateKind {
     return 'model';
 }
 
-async function knownAssetUuids(ctx: ToolContext): Promise<{ known: Set<string>; unlisted: string[] }> {
+interface ProjectListing {
+    known: Set<string>;
+    subIds: Map<string, Set<string>>;
+    unlisted: string[];
+}
+
+async function listProject(ctx: ToolContext): Promise<ProjectListing> {
     const known = new Set<string>();
+    const subIds = new Map<string, Set<string>>();
     const unlisted: string[] = [];
     for (const root of ['db://assets', 'db://internal']) {
         let listed: EditorAssetInfo[];
@@ -604,36 +620,84 @@ async function knownAssetUuids(ctx: ToolContext): Promise<{ known: Set<string>; 
         for (const asset of listed || []) {
             if (!asset || !asset.uuid) continue;
             known.add(asset.uuid);
-            for (const id of Object.keys(asset.subAssets || {})) known.add(`${asset.uuid}@${id}`);
+            const ids = Object.keys(asset.subAssets || {});
+            if (!ids.length) continue;
+            const bucket = subIds.get(asset.uuid) || new Set<string>();
+            for (const id of ids) {
+                bucket.add(id);
+                known.add(`${asset.uuid}@${id}`);
+            }
+            subIds.set(asset.uuid, bucket);
         }
     }
-    return { known, unlisted };
+    return { known, subIds, unlisted };
 }
 
-/** Asked of the database, not of the listing: builtin and generated assets are absent from a listing. */
+/** `undefined` is the database declining to answer, and is never evidence that something is gone. */
+function assetProbe(ctx: ToolContext) {
+    const infos = new Map<string, EditorAssetInfo | null | undefined>();
+    const subIds = new Map<string, Set<string>>();
+    return {
+        async info(ref: string): Promise<EditorAssetInfo | null | undefined> {
+            if (!infos.has(ref)) {
+                infos.set(ref, await ctx.editor.assetDb.queryAssetInfo(ref).catch(() => undefined));
+            }
+            return infos.get(ref);
+        },
+        async subAssetIds(base: string, owner: EditorAssetInfo): Promise<Set<string>> {
+            const cached = subIds.get(base);
+            if (cached) return cached;
+            const ids = new Set(Object.keys(owner.subAssets || {}));
+            if (!ids.size) {
+                const meta = await ctx.editor.assetDb.queryAssetMeta(base).catch(() => null);
+                for (const id of Object.keys(meta?.subMetas || {})) ids.add(id);
+            }
+            subIds.set(base, ids);
+            return ids;
+        }
+    };
+}
+
+type Probe = ReturnType<typeof assetProbe>;
+
 async function confirmMissing(
-    ctx: ToolContext,
+    probe: Probe,
     ref: string
 ): Promise<'present' | 'asset_missing' | 'sub_asset_missing' | 'unverified'> {
-    const direct = await ctx.editor.assetDb.queryAssetInfo(ref).catch(() => undefined);
+    const sub = subIdOf(ref);
+    const direct = await probe.info(ref);
     if (direct === undefined) return 'unverified';
     if (direct) return 'present';
-
-    const base = baseUuidOf(ref);
-    const sub = subIdOf(ref);
     if (!sub) return 'asset_missing';
 
-    const owner = await ctx.editor.assetDb.queryAssetInfo(base).catch(() => undefined);
+    const base = baseUuidOf(ref);
+    const owner = await probe.info(base);
     if (owner === undefined) return 'unverified';
     if (!owner) return 'asset_missing';
 
-    const ids = new Set(Object.keys(owner.subAssets || {}));
-    if (!ids.size) {
-        const meta = await ctx.editor.assetDb.queryAssetMeta(base).catch(() => null);
-        for (const id of Object.keys(meta?.subMetas || {})) ids.add(id);
-    }
+    const ids = await probe.subAssetIds(base, owner);
     if (!ids.size) return 'unverified';
     return ids.has(sub) ? 'present' : 'sub_asset_missing';
+}
+
+/** The project prefix a db:// url maps to on disk, learned from an asset that is stored under it. */
+function diskRootFor(url: string, file: string): string | null {
+    const suffix = url.slice('db://'.length).split('/').join(path.sep);
+    const normalized = file.split('/').join(path.sep);
+    return normalized.endsWith(suffix) ? normalized.slice(0, normalized.length - suffix.length) : null;
+}
+
+async function verifyDbPath(
+    probe: Probe,
+    diskRoot: string | null,
+    dbPath: string
+): Promise<'present' | 'missing' | 'unverified'> {
+    if (diskRoot && dbPath.startsWith('db://assets/')) {
+        const onDisk = diskRoot + dbPath.slice('db://'.length).split('/').join(path.sep);
+        return fs.existsSync(onDisk) ? 'present' : 'missing';
+    }
+    // A null for a FOLDER url is not known to mean absence, so it clears nothing and accuses nothing.
+    return (await probe.info(dbPath)) ? 'present' : 'unverified';
 }
 
 export const assetAdvancedValidateAssetReferences = defineTool({
@@ -643,9 +707,11 @@ export const assetAdvancedValidateAssetReferences = defineTool({
         + 'packed 23-char `__type__` a script component stores; model .meta files are read for the '
         + 'materials and textures the importer bound and for the absolute db:// paths it keeps — a '
         + 'materialDumpDir that no longer exists is the failure that re-dumps every material without '
-        + 'textures and renders the model flat. Suspects are confirmed against the asset database one '
-        + 'by one, so a builtin the listing does not carry is not reported as broken. What was NOT '
-        + 'checked is stated in `limits`.',
+        + 'textures and renders the model flat. A `uuid@subId` reference is settled by the sub-id, not by '
+        + 'its owning asset being there, and every suspect is confirmed against the asset database one by '
+        + 'one, so a builtin the listing does not carry is never reported as broken. Findings are split: '
+        + '`brokenReferences`, `dumpDirsMissing`, `missingImporterPaths`, and what could not be settled at '
+        + 'all in `unverifiedRefs`/`unverifiedPaths`. What was NOT checked is stated in `limits`.',
     schema: z.object({
         folder: z.string().optional().describe('Folder to scan (default db://assets)'),
         kinds: kindListArg.optional()
@@ -677,9 +743,10 @@ export const assetAdvancedValidateAssetReferences = defineTool({
         const found = [...byUuid.values()];
         const assets = found.slice(0, maxAssets);
 
-        const sightings = new Map<string, { asset: string; where: string }>();
-        const dbPathSites: Array<{ asset: string; where: string; path: string }> = [];
+        const sightings = new Map<string, { asset: string; where: string; occurrences: number }>();
+        const dbPathSites: ImporterPath[] = [];
         const unreadable: Array<{ asset: string; message: string }> = [];
+        let diskRoot: string | null = null;
         let scanned = 0;
 
         for (const asset of assets) {
@@ -688,6 +755,7 @@ export const assetAdvancedValidateAssetReferences = defineTool({
                 unreadable.push({ asset: asset.url, message: 'the asset database gave no on-disk path' });
                 continue;
             }
+            if (!diskRoot) diskRoot = diskRootFor(asset.url, diskPath);
             const kind = kindOfUrl(asset.url);
             const file = kind === 'model' ? `${diskPath}.meta` : diskPath;
             let json: unknown;
@@ -703,42 +771,72 @@ export const assetAdvancedValidateAssetReferences = defineTool({
             if (kind === 'model') {
                 const scan = scanModelMeta(json);
                 sites = scan.refs;
-                for (const site of scan.dbPaths) dbPathSites.push({ asset: asset.url, ...site });
+                for (const site of scan.dbPaths) {
+                    if (site.where === DUMP_DIR_FIELD && !scan.dumpMaterials) continue;
+                    dbPathSites.push({ asset: asset.url, path: site.path, where: site.where });
+                }
             } else {
                 sites = scanReferenceSites(json);
             }
             for (const site of sites) {
-                if (!sightings.has(site.ref)) sightings.set(site.ref, { asset: asset.url, where: site.where });
+                const seen = sightings.get(site.ref);
+                if (seen) seen.occurrences++;
+                else sightings.set(site.ref, { asset: asset.url, where: site.where, occurrences: 1 });
             }
         }
 
         const refs = [...sightings.keys()];
-        const { known, unlisted } = await knownAssetUuids(ctx);
+        const { known, subIds, unlisted } = await listProject(ctx);
         const suspects = findBroken(refs, known);
-        const checked = suspects.slice(0, maxChecks);
+        const listedMissing = new Set(findMissingSubAssets(suspects, subIds));
+        const settledByListing = (ref: string): boolean => {
+            const sub = subIdOf(ref);
+            const ids = sub === null ? undefined : subIds.get(baseUuidOf(ref));
+            return !!ids && ids.size > 0;
+        };
 
+        const probe = assetProbe(ctx);
         const brokenReferences: BrokenReference[] = [];
         const unverifiedRefs: string[] = [];
-        for (const ref of checked) {
-            const verdict = await confirmMissing(ctx, ref);
-            if (verdict === 'present') continue;
-            if (verdict === 'unverified') {
-                unverifiedRefs.push(ref);
+        let confirmed = 0;
+        const report = (ref: string, reason: 'asset_missing' | 'sub_asset_missing'): void => {
+            const sighting = sightings.get(ref)!;
+            brokenReferences.push({
+                asset: sighting.asset, ref, where: sighting.where,
+                occurrences: sighting.occurrences, reason
+            });
+        };
+
+        for (const ref of suspects) {
+            if (settledByListing(ref)) {
+                if (listedMissing.has(ref)) report(ref, 'sub_asset_missing');
                 continue;
             }
-            const sighting = sightings.get(ref)!;
-            brokenReferences.push({ asset: sighting.asset, ref, where: sighting.where, reason: verdict });
+            if (confirmed >= maxChecks) continue;
+            confirmed++;
+            const verdict = await confirmMissing(probe, ref);
+            if (verdict === 'present') continue;
+            if (verdict === 'unverified') unverifiedRefs.push(ref);
+            else report(ref, verdict);
         }
 
         const dumpDirsMissing: DumpDirMissing[] = [];
-        const pathVerdicts = new Map<string, boolean | null>();
+        const missingImporterPaths: ImporterPath[] = [];
+        const unverifiedPaths: ImporterPath[] = [];
+        const pathVerdicts = new Map<string, 'present' | 'missing' | 'unverified'>();
         for (const site of dbPathSites) {
-            if (!pathVerdicts.has(site.path)) {
-                const info = await ctx.editor.assetDb.queryAssetInfo(site.path).catch(() => undefined);
-                pathVerdicts.set(site.path, info === undefined ? null : !!info);
+            let verdict = pathVerdicts.get(site.path);
+            if (!verdict) {
+                verdict = await verifyDbPath(probe, diskRoot, site.path);
+                pathVerdicts.set(site.path, verdict);
             }
-            if (pathVerdicts.get(site.path) === false) {
+            if (verdict === 'present') continue;
+            if (verdict === 'unverified') {
+                unverifiedPaths.push(site);
+            } else if (site.where === DUMP_DIR_FIELD) {
                 dumpDirsMissing.push({ fbx: site.asset, materialDumpDir: site.path, where: site.where });
+            } else {
+                missingImporterPaths.push(site);
             }
         }
 
@@ -749,9 +847,17 @@ export const assetAdvancedValidateAssetReferences = defineTool({
             + 'imageUuidOrDatabaseUri count as references; the model\'s own meshes, skeletons and scenes '
             + 'are not checked.',
             'A packed 23-char `__type__` is checked as a script ASSET uuid: a class renamed or removed '
-            + 'inside a script that still exists is invisible here.',
+            + 'inside a script that still exists is invisible here. A class NAME of exactly 23 characters '
+            + 'whose first five are hex digits and whose rest are base64 would unpack to a uuid and be '
+            + 'reported as a missing script.',
             '`__id__` links and prefab property overrides address entries inside the same file, not '
             + 'assets, and are not reference candidates.',
+            'A `uuid@subId` reference is settled against the sub-assets its owning asset reports; when the '
+            + 'owner reports none, the sub-id is NOT checked and the reference is listed in unverifiedRefs.',
+            'A db:// path from importer settings is settled on disk when the project layout could be '
+            + 'derived from a scanned asset; otherwise the asset database is asked and a null answer for a '
+            + 'FOLDER url counts as unverified, never as missing. Whether query-asset-info answers for '
+            + 'directories at all is not yet confirmed against a live editor.',
             'db:// paths kept in importer settings are checked for existence only in the model metas that '
             + 'were read.'
         ];
@@ -759,13 +865,17 @@ export const assetAdvancedValidateAssetReferences = defineTool({
             limits.push(`${found.length - assets.length} of ${found.length} matched assets were not read `
                 + '— raise maxAssets.');
         }
-        if (suspects.length > checked.length) {
-            limits.push(`${suspects.length - checked.length} suspect reference(s) were never confirmed `
-                + 'against the database — raise maxChecks.');
+        if (confirmed >= maxChecks) {
+            limits.push(`the ${maxChecks}-confirmation cap was reached, so some suspect reference(s) were `
+                + 'never asked about — raise maxChecks.');
         }
         if (unverifiedRefs.length) {
             limits.push(`${unverifiedRefs.length} reference(s) got no answer from the database (it refused `
                 + 'the query, or the owning asset reports no sub-assets), so they are neither cleared nor broken.');
+        }
+        if (unverifiedPaths.length) {
+            limits.push(`${unverifiedPaths.length} importer db:// path(s) could not be settled either on `
+                + 'disk or by the database; they are listed in unverifiedPaths and accused of nothing.');
         }
         if (unlisted.length) {
             limits.push(`${unlisted.join(', ')} could not be listed, so the fast filter was narrower and `
@@ -782,15 +892,18 @@ export const assetAdvancedValidateAssetReferences = defineTool({
             scanned,
             references: refs.length,
             suspects: suspects.length,
-            confirmed: checked.length,
+            confirmed,
             brokenReferences,
             dumpDirsMissing,
+            missingImporterPaths,
             unverifiedRefs,
+            unverifiedPaths,
             unreadable,
             limits
         }, `${scanned} asset(s) read, ${refs.length} distinct reference(s): `
-            + `${brokenReferences.length} broken, ${dumpDirsMissing.length} missing importer path(s), `
-            + `${unverifiedRefs.length} unverified.`);
+            + `${brokenReferences.length} broken, ${dumpDirsMissing.length} missing dump dir(s), `
+            + `${missingImporterPaths.length} missing importer path(s), `
+            + `${unverifiedRefs.length + unverifiedPaths.length} unverified.`);
     }
 });
 

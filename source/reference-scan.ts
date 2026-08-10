@@ -27,7 +27,6 @@ const META_REF_FIELDS = [
     /\.imageUuidOrDatabaseUri$/
 ];
 
-/** A script component stores its script asset as a 23-char packed uuid in `__type__`. */
 function unpackScriptUuid(type: unknown): string | null {
     if (typeof type !== 'string' || !PACKED_CID.test(type)) return null;
     const uuid = decompressUuid(type);
@@ -97,7 +96,7 @@ export function findBroken(refs: string[], known: Set<string>): string[] {
     for (const ref of refs) {
         if (seen.has(ref)) continue;
         seen.add(ref);
-        if (known.has(ref) || known.has(baseUuidOf(ref))) continue;
+        if (known.has(ref)) continue;
         broken.push(ref);
     }
     return broken;
