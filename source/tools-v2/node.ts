@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { booleanArg, defineTool } from '../tool';
 import { ok, fail, ToolResult } from '../result';
-import { fromScene, textOf } from './shared';
+import { anyValued, fromScene, textOf } from './shared';
 import { settle } from '../settle';
 import { withUndoBracket } from '../undo-bracket';
 import { siblingLabels } from '../node-path';
@@ -590,7 +590,7 @@ export const nodeFindNodes = defineTool({
     }
 });
 
-export const nodeSetNodeProperty = defineTool({
+export const nodeSetNodeProperty = anyValued(defineTool({
     name: 'node_set_node_property',
     description: 'Write one property of the node itself — name, active, layer, mobility. Position, rotation '
         + 'and scale belong to node_set_node_transform, which knows what a 2D node may not carry. The write '
@@ -648,7 +648,7 @@ export const nodeSetNodeProperty = defineTool({
             ? `'${args.property}' was written; the node dump does not expose it, so it is unverified`
             : `Property '${args.property}' updated`);
     }
-});
+}), 'value');
 
 export const nodeSetNodeTransform = defineTool({
     name: 'node_set_node_transform',
