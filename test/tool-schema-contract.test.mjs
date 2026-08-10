@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 
 import ta from '../dist/tool-args.js';
 import { DebugTools } from '../dist/tools/debug-tools.js';
-import { ProjectTools } from '../dist/tools/project-tools.js';
+import { assetTools } from '../dist/tools-v2/asset.js';
+import { buildTools } from '../dist/tools-v2/build.js';
 import { sceneTools } from '../dist/tools-v2/scene.js';
 import { nodeTools } from '../dist/tools-v2/node.js';
 import { componentTools } from '../dist/tools-v2/component.js';
@@ -39,22 +40,49 @@ test('Bug 1: search_project_logs with no pattern is rejected instead of returnin
     assert.match(r.error, /pattern/);
 });
 
-test('Bug 2: reimport_asset accepts the assetPath spelling that crashed the editor', () => {
-    const schema = schemaOf(new ProjectTools(), 'reimport_asset');
-    const r = normalizeToolArgs('project_reimport_asset', schema, {
-        assetPath: 'db://assets/shared/scripts/core/di/serviceTag.ts'
-    });
-    assert.equal(r.ok, true, r.error);
-    assert.equal(r.args.url, 'db://assets/shared/scripts/core/di/serviceTag.ts');
+const assetToolNamed = (name) => {
+    const tool = assetTools.find(t => t.name === name);
+    assert.ok(tool, `tool ${name} not found`);
+    return tool;
+};
+
+const recordingAssetDb = (answers = {}) => ({
+    calls: [],
+    ...Object.fromEntries(['reimportAsset', 'queryAssetInfo', 'queryAssets', 'createAsset', 'moveAsset']
+        .map(method => [method, function (...args) {
+            this.calls.push({ method, args });
+            const answer = answers[method];
+            return Promise.resolve(typeof answer === 'function' ? answer(...args) : answer);
+        }]))
 });
 
-test('Bug 2: a genuinely wrong argument name is a validation error naming the expected one', () => {
-    const schema = schemaOf(new ProjectTools(), 'reimport_asset');
-    const r = normalizeToolArgs('project_reimport_asset', schema, { assetUri: 'db://assets/x.ts' });
-    assert.equal(r.ok, false);
-    assert.match(r.error, /assetUri/);
-    assert.match(r.error, /'url'/);
-    assert.doesNotMatch(r.error, /startsWith/);
+test('Bug 2: reimport_asset accepts the assetPath spelling that crashed the editor', async () => {
+    const assetDb = recordingAssetDb();
+    const result = await assetToolNamed('project_reimport_asset')
+        .invoke({ assetPath: 'db://assets/shared/scripts/core/di/serviceTag.ts' }, { editor: { assetDb } });
+    assert.equal(result.success, true, JSON.stringify(result.error));
+    assert.deepEqual(assetDb.calls[0],
+        { method: 'reimportAsset', args: ['db://assets/shared/scripts/core/di/serviceTag.ts'] });
+});
+
+test('Bug 2: a genuinely wrong argument name is a validation error naming the expected one', async () => {
+    const assetDb = recordingAssetDb();
+    const result = await assetToolNamed('project_reimport_asset')
+        .invoke({ assetUri: 'db://assets/x.ts' }, { editor: { assetDb } });
+    assert.equal(result.success, false);
+    assert.equal(result.error.code, 'invalid_args');
+    assert.match(result.error.message, /url/);
+    assert.doesNotMatch(result.error.message, /startsWith/);
+    assert.deepEqual(assetDb.calls, []);
+});
+
+test('reimport_asset refuses a path that is not a db:// url instead of handing it to the editor', async () => {
+    const assetDb = recordingAssetDb();
+    const result = await assetToolNamed('project_reimport_asset')
+        .invoke({ url: 'D:/cocos/cocos-playables/framework/core/world.ts' }, { editor: { assetDb } });
+    assert.equal(result.success, false);
+    assert.equal(result.error.code, 'invalid_url');
+    assert.deepEqual(assetDb.calls, []);
 });
 
 test('propertyType stays optional and open-ended — a closed enum read as "no such capability"', () => {
@@ -102,11 +130,11 @@ test('find_component_owners without a class name is a clear validation error', a
 /** Every advertised schema on the surface, legacy and migrated alike, under its full tool name. */
 const advertisedSchemas = () => [
     ...Object.entries({
-        debug: new DebugTools(),
-        project: new ProjectTools()
+        debug: new DebugTools()
     }).flatMap(([category, ex]) => ex.getTools()
         .map(tool => ({ name: `${category}_${tool.name}`, inputSchema: tool.inputSchema || {} }))),
-    ...[...sceneTools, ...nodeTools, ...componentTools, ...prefabTools, ...sceneOpsTools]
+    ...[...sceneTools, ...nodeTools, ...componentTools, ...prefabTools, ...sceneOpsTools,
+        ...assetTools, ...buildTools]
         .map(tool => ({ name: tool.name, inputSchema: tool.inputSchema || {} }))
 ];
 

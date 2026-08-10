@@ -1,6 +1,7 @@
 import type {
     AssetInfo as EditorAssetInfo,
     AssetOperationOption,
+    QueryAssetsOption,
 } from '@cocos/creator-types/editor/packages/asset-db/@types/public';
 import type {
     CreateComponentOptions,
@@ -48,6 +49,34 @@ export interface SceneNodeTree {
     type?: string;
     active?: boolean;
     children?: SceneNodeTree[];
+}
+
+/** `IBuildTaskOption` ships outside the public typings; the fields the bridge reads by name. */
+export interface BuildTaskOptions {
+    platform?: string;
+    taskId?: string;
+    taskName?: string;
+    debug?: boolean;
+    buildPath?: string;
+    outputName?: string;
+    packages?: Record<string, any>;
+    [option: string]: any;
+}
+
+export interface BuildTask {
+    id: string | number;
+    state?: string;
+    progress?: number;
+    message?: string;
+    detailMessage?: string;
+    time?: string | number;
+    options?: BuildTaskOptions;
+    taskName?: string;
+}
+
+export interface BuildTasksInfo {
+    list?: BuildTask[];
+    free?: boolean;
 }
 
 export class EditorApi {
@@ -167,16 +196,82 @@ export class EditorApi {
             this.request('asset-db', 'query-asset-meta', uuidOrUrl) as unknown as
                 Promise<Record<string, any> | null>,
 
-        queryAssets: (pattern: string): Promise<EditorAssetInfo[]> =>
-            this.request('asset-db', 'query-assets', { pattern }),
+        queryAssets: (query: QueryAssetsOption): Promise<EditorAssetInfo[]> =>
+            this.request('asset-db', 'query-assets', query),
+
+        queryReady: (): Promise<boolean> =>
+            this.request('asset-db', 'query-ready'),
 
         createAsset: (url: string, content: string | null, opts?: AssetOperationOption): Promise<EditorAssetInfo | null> =>
             opts === undefined
                 ? this.request('asset-db', 'create-asset', url, content)
                 : this.request('asset-db', 'create-asset', url, content, opts),
 
+        importAsset: (sourcePath: string, url: string, opts?: AssetOperationOption): Promise<EditorAssetInfo | null> =>
+            opts === undefined
+                ? this.request('asset-db', 'import-asset', sourcePath, url)
+                : this.request('asset-db', 'import-asset', sourcePath, url, opts),
+
+        copyAsset: (source: string, target: string, opts?: AssetOperationOption): Promise<EditorAssetInfo | null> =>
+            opts === undefined
+                ? this.request('asset-db', 'copy-asset', source, target)
+                : this.request('asset-db', 'copy-asset', source, target, opts),
+
+        moveAsset: (source: string, target: string, opts?: AssetOperationOption): Promise<EditorAssetInfo | null> =>
+            opts === undefined
+                ? this.request('asset-db', 'move-asset', source, target)
+                : this.request('asset-db', 'move-asset', source, target, opts),
+
+        deleteAsset: (url: string): Promise<EditorAssetInfo | null> =>
+            this.request('asset-db', 'delete-asset', url),
+
+        saveAsset: (url: string, content: string): Promise<EditorAssetInfo | null> =>
+            this.request('asset-db', 'save-asset', url, content),
+
+        saveAssetMeta: (urlOrUuid: string, content: string): Promise<EditorAssetInfo | null> =>
+            this.request('asset-db', 'save-asset-meta', urlOrUuid, content),
+
+        reimportAsset: (url: string): Promise<void> =>
+            this.request('asset-db', 'reimport-asset', url),
+
         refreshAsset: (url: string): Promise<void> =>
             this.request('asset-db', 'refresh-asset', url),
+
+        generateAvailableUrl: (url: string): Promise<string> =>
+            this.request('asset-db', 'generate-available-url', url),
+    };
+
+    readonly builder = {
+        queryWorkerReady: (): Promise<boolean> =>
+            this.request('builder', 'query-worker-ready'),
+
+        openPanel: (): Promise<void> =>
+            this.request('builder', 'open', 'default'),
+
+        /**
+         * `add-task` stores the options it is given onto the task it names, and its second
+         * argument makes the editor resolve only once the build has finished.
+         */
+        addTask: (options: BuildTaskOptions, waitForFinish: boolean): Promise<unknown> =>
+            this.request('builder', 'add-task', options, waitForFinish),
+
+        queryTasksInfo: (): Promise<BuildTasksInfo | null> =>
+            this.request('builder', 'query-tasks-info', { type: 'build' }),
+
+        queryTask: (taskId: string): Promise<BuildTask | null> =>
+            this.request('builder', 'query-task', String(taskId)),
+
+        checkAndCompleteOptions: (options: BuildTaskOptions): Promise<BuildTaskOptions | null> =>
+            this.request('builder', 'check-and-complete-options', options),
+    };
+
+    readonly project = {
+        queryConfig: (name: string): Promise<unknown> =>
+            this.request('project', 'query-config', name),
+
+        /** Not a message: the Build panel's own per-platform profile, read straight off Editor. */
+        profile: (platform: string, key: string): Promise<any> =>
+            Editor.Profile.getProject(platform, key),
     };
 
     private async request<

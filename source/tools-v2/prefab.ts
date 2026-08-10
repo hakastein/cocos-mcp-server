@@ -73,7 +73,7 @@ async function resolveComponentCid(
         uuid = info.uuid;
     } else {
         const matches = await ctx.editor.assetDb
-            .queryAssets(`db://assets/**/${componentType}.ts`).catch(() => []);
+            .queryAssets({ pattern: `db://assets/**/${componentType}.ts` }).catch(() => []);
         if (!matches.length) {
             return {
                 failure: fail('script_not_found',
@@ -179,7 +179,7 @@ export const prefabGetPrefabList = defineTool({
     async handler(args, ctx) {
         const folder = args.folder || 'db://assets';
         const pattern = folder.endsWith('/') ? `${folder}**/*.prefab` : `${folder}/**/*.prefab`;
-        const assets = await ctx.editor.assetDb.queryAssets(pattern);
+        const assets = await ctx.editor.assetDb.queryAssets({ pattern });
         return ok(assets.map(asset => ({
             name: asset.name,
             path: asset.url,

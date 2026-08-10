@@ -5,7 +5,7 @@ import { composeTools, createToolInstances } from '../dist/tool-registry.js';
 
 test('the registry is the only category list, and it carries ecs', () => {
     const categories = Object.keys(createToolInstances());
-    const expected = ['project', 'assetAdvanced', 'skeletalAnimation', 'debug', 'ecs', 'batch'];
+    const expected = ['skeletalAnimation', 'debug', 'ecs', 'batch'];
     assert.deepEqual(categories.sort(), expected.slice().sort());
 });
 
@@ -39,6 +39,12 @@ test('the whole advertised surface composes with no name collision across catego
         'the migrated prefab category is missing from the surface');
     assert.ok(names.includes('sceneAdvanced_move_array_element'),
         'the migrated scene-ops category is missing from the surface');
+    assert.ok(names.includes('project_get_assets'),
+        'the migrated asset category is missing from the surface');
+    assert.ok(names.includes('assetAdvanced_save_asset_meta'),
+        'the asset-advanced survivors are missing from the surface');
+    assert.ok(names.includes('project_build_project'),
+        'the migrated build category is missing from the surface');
 });
 
 test('the tools the node category replaced are gone from the surface', () => {
@@ -48,7 +54,8 @@ test('the tools the node category replaced are gone from the surface', () => {
         'sceneAdvanced_copy_node', 'sceneAdvanced_cut_node', 'sceneAdvanced_paste_node',
         'component_attach_script', 'component_set_component_ref',
         'component_set_materials', 'component_get_materials',
-        'sceneAdvanced_execute_component_method'
+        'sceneAdvanced_execute_component_method',
+        'project_find_asset_by_name', 'project_get_asset_details', 'project_query_asset_path'
     ]) {
         assert.ok(!names.includes(retired), `${retired} is still advertised`);
     }

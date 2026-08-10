@@ -112,7 +112,7 @@ export const sceneGetSceneList = defineTool({
         + 'of scenes there is — a scene absent here does not exist, whatever a path was expected to be.',
     schema: z.object({}),
     async handler(_args, ctx) {
-        const assets = await ctx.editor.assetDb.queryAssets('db://assets/**/*.scene');
+        const assets = await ctx.editor.assetDb.queryAssets({ pattern: 'db://assets/**/*.scene' });
         return ok(assets.map(asset => ({ name: asset.name, path: asset.url, uuid: asset.uuid })));
     }
 });

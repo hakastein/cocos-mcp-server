@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import pt from '../dist/tools/project-tools.js';
+import bt from '../dist/build-task.js';
 
-const { ProjectTools } = pt;
-const conflicts = (saved, overrides) => ProjectTools.settingConflicts(saved, overrides);
+const { settingConflicts, describeTask, exitCodeName } = bt;
+const conflicts = (saved, overrides) => settingConflicts(saved, overrides);
 const fields = (saved, overrides) => conflicts(saved, overrides).map((c) => c.field);
 
 // The task pair this guards: one release, one debug, same platform, different settings.
@@ -61,9 +61,15 @@ test('a missing task carries no settings, so every override is a change', () => 
 });
 
 test('describeTask surfaces what a caller needs to tell two tasks apart', () => {
-    const d = ProjectTools.describeTask({ id: 1785322023936, options: DEBUG });
+    const d = describeTask({ id: 1785322023936, options: DEBUG });
     assert.equal(d.taskId, '1785322023936');
     assert.equal(d.taskName, 'debug');
     assert.equal(d.debug, true);
     assert.equal(d.outputName, 'web-mobile-debug');
+});
+
+test('36 is the builder saying SUCCESS, and an undocumented code is named as such', () => {
+    assert.equal(exitCodeName(36), 'BUILD_SUCCESS');
+    assert.equal(exitCodeName(34), 'BUILD_FAILED');
+    assert.equal(exitCodeName(99), 'UNDOCUMENTED_99');
 });

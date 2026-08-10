@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import np from '../dist/node-path.js';
-import { ProjectTools } from '../dist/tools/project-tools.js';
+import { assetTools } from '../dist/tools-v2/asset.js';
 import { prefabTools } from '../dist/tools-v2/prefab.js';
 import { sceneTools } from '../dist/tools-v2/scene.js';
 import { nodeTools } from '../dist/tools-v2/node.js';
@@ -322,8 +322,8 @@ test('set_node_transform takes a nodePath, while a bare uuid meaning an ASSET do
         { nodePath: 'Stage_3_Hookah/Hookah_model_v2', scale: { x: 1, y: 1, z: 1 } });
     assert.equal(r.ok, true, r.error);
 
-    const assetSchema = augmentToolDefinition(
-        new ProjectTools().getTools().find(t => t.name === 'query_asset_url')).inputSchema;
+    const assetSchema = new ToolRegistry(assetTools).list()
+        .find(t => t.name === 'project_query_asset_url').inputSchema;
     assert.equal(assetSchema.properties.nodePath, undefined);
     assert.equal(pairsOf(assetSchema).length, 0);
 });
