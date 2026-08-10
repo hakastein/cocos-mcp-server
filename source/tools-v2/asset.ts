@@ -682,9 +682,17 @@ async function confirmMissing(
 
 /** The project prefix a db:// url maps to on disk, learned from an asset that is stored under it. */
 function diskRootFor(url: string, file: string): string | null {
+    if (url.includes('/framework/')) return null;
     const suffix = url.slice('db://'.length).split('/').join(path.sep);
     const normalized = file.split('/').join(path.sep);
     return normalized.endsWith(suffix) ? normalized.slice(0, normalized.length - suffix.length) : null;
+}
+
+function settleDiskRoot(votes: Map<string, number>): string | null {
+    const ranked = [...votes.entries()].sort((left, right) => right[1] - left[1]);
+    if (!ranked.length) return null;
+    if (ranked[0][1] >= 2) return ranked[0][0];
+    return ranked.length === 1 ? ranked[0][0] : null;
 }
 
 async function verifyDbPath(
@@ -708,8 +716,10 @@ export const assetAdvancedValidateAssetReferences = defineTool({
         + 'materials and textures the importer bound and for the absolute db:// paths it keeps — a '
         + 'materialDumpDir that no longer exists is the failure that re-dumps every material without '
         + 'textures and renders the model flat. A `uuid@subId` reference is settled by the sub-id, not by '
-        + 'its owning asset being there, and every suspect is confirmed against the asset database one by '
-        + 'one, so a builtin the listing does not carry is never reported as broken. Findings are split: '
+        + 'its owning asset being there, and nothing is ever called broken without the asset database '
+        + 'confirming it, so a builtin the listing does not carry is never reported as broken. A `suspect` '
+        + 'is only a reference the fast project listing did not answer for — a question, not a finding. '
+        + 'Findings are split: '
         + '`brokenReferences`, `dumpDirsMissing`, `missingImporterPaths`, and what could not be settled at '
         + 'all in `unverifiedRefs`/`unverifiedPaths`. What was NOT checked is stated in `limits`.',
     schema: z.object({
@@ -746,7 +756,7 @@ export const assetAdvancedValidateAssetReferences = defineTool({
         const sightings = new Map<string, { asset: string; where: string; occurrences: number }>();
         const dbPathSites: ImporterPath[] = [];
         const unreadable: Array<{ asset: string; message: string }> = [];
-        let diskRoot: string | null = null;
+        const rootVotes = new Map<string, number>();
         let scanned = 0;
 
         for (const asset of assets) {
@@ -755,7 +765,8 @@ export const assetAdvancedValidateAssetReferences = defineTool({
                 unreadable.push({ asset: asset.url, message: 'the asset database gave no on-disk path' });
                 continue;
             }
-            if (!diskRoot) diskRoot = diskRootFor(asset.url, diskPath);
+            const candidate = diskRootFor(asset.url, diskPath);
+            if (candidate) rootVotes.set(candidate, (rootVotes.get(candidate) || 0) + 1);
             const kind = kindOfUrl(asset.url);
             const file = kind === 'model' ? `${diskPath}.meta` : diskPath;
             let json: unknown;
@@ -807,12 +818,13 @@ export const assetAdvancedValidateAssetReferences = defineTool({
             });
         };
 
+        const skippedByCap: string[] = [];
         for (const ref of suspects) {
-            if (settledByListing(ref)) {
-                if (listedMissing.has(ref)) report(ref, 'sub_asset_missing');
+            if (settledByListing(ref) && !listedMissing.has(ref)) continue;
+            if (confirmed >= maxChecks) {
+                skippedByCap.push(ref);
                 continue;
             }
-            if (confirmed >= maxChecks) continue;
             confirmed++;
             const verdict = await confirmMissing(probe, ref);
             if (verdict === 'present') continue;
@@ -827,7 +839,7 @@ export const assetAdvancedValidateAssetReferences = defineTool({
         for (const site of dbPathSites) {
             let verdict = pathVerdicts.get(site.path);
             if (!verdict) {
-                verdict = await verifyDbPath(probe, diskRoot, site.path);
+                verdict = await verifyDbPath(probe, settleDiskRoot(rootVotes), site.path);
                 pathVerdicts.set(site.path, verdict);
             }
             if (verdict === 'present') continue;
@@ -854,20 +866,19 @@ export const assetAdvancedValidateAssetReferences = defineTool({
             + 'assets, and are not reference candidates.',
             'A `uuid@subId` reference is settled against the sub-assets its owning asset reports; when the '
             + 'owner reports none, the sub-id is NOT checked and the reference is listed in unverifiedRefs.',
-            'A db:// path from importer settings is settled on disk when the project layout could be '
-            + 'derived from a scanned asset; otherwise the asset database is asked and a null answer for a '
-            + 'FOLDER url counts as unverified, never as missing. Whether query-asset-info answers for '
-            + 'directories at all is not yet confirmed against a live editor.',
-            'db:// paths kept in importer settings are checked for existence only in the model metas that '
-            + 'were read.'
+            'db:// paths from importer settings are read only from the model metas that were scanned, and '
+            + 'settled on disk when the project layout could be derived from a scanned asset; otherwise the '
+            + 'asset database is asked and a null answer for a FOLDER url counts as unverified, never as '
+            + 'missing. Whether query-asset-info answers for directories at all is not yet confirmed '
+            + 'against a live editor.'
         ];
         if (found.length > assets.length) {
             limits.push(`${found.length - assets.length} of ${found.length} matched assets were not read `
                 + '— raise maxAssets.');
         }
-        if (confirmed >= maxChecks) {
-            limits.push(`the ${maxChecks}-confirmation cap was reached, so some suspect reference(s) were `
-                + 'never asked about — raise maxChecks.');
+        if (skippedByCap.length) {
+            limits.push(`${skippedByCap.length} suspect reference(s) were never asked about: the `
+                + `${maxChecks}-confirmation cap was reached — raise maxChecks.`);
         }
         if (unverifiedRefs.length) {
             limits.push(`${unverifiedRefs.length} reference(s) got no answer from the database (it refused `
@@ -898,12 +909,15 @@ export const assetAdvancedValidateAssetReferences = defineTool({
             missingImporterPaths,
             unverifiedRefs,
             unverifiedPaths,
+            skippedByCap,
             unreadable,
             limits
-        }, `${scanned} asset(s) read, ${refs.length} distinct reference(s): `
-            + `${brokenReferences.length} broken, ${dumpDirsMissing.length} missing dump dir(s), `
-            + `${missingImporterPaths.length} missing importer path(s), `
-            + `${unverifiedRefs.length + unverifiedPaths.length} unverified.`);
+        }, `${scanned} asset(s) read, ${refs.length} distinct reference(s). `
+            + `FINDINGS: ${brokenReferences.length} broken, ${dumpDirsMissing.length} missing dump dir(s), `
+            + `${missingImporterPaths.length} missing importer path(s). `
+            + `${suspects.length} reference(s) the project listing did not answer for went on to be checked `
+            + `(${confirmed} asked of the database, ${skippedByCap.length} skipped by the cap) — a suspect `
+            + `is a question, not a finding. ${unverifiedRefs.length + unverifiedPaths.length} left unverified.`);
     }
 });
 

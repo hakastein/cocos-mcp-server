@@ -14,7 +14,6 @@ export interface ModelMetaScan {
     refs: ReferenceSite[];
     dbPaths: DbPathSite[];
     dumpMaterials: boolean;
-    materialDumpDir: string | null;
 }
 
 const DASHED_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -140,10 +139,5 @@ export function scanModelMeta(meta: unknown): ModelMetaScan {
     walk(meta, '');
 
     const userData = (meta && typeof meta === 'object' ? (meta as any).userData : null) || {};
-    return {
-        refs: refs.sites,
-        dbPaths,
-        dumpMaterials: userData.dumpMaterials === true,
-        materialDumpDir: typeof userData.materialDumpDir === 'string' ? userData.materialDumpDir : null
-    };
+    return { refs: refs.sites, dbPaths, dumpMaterials: userData.dumpMaterials === true };
 }

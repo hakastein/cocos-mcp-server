@@ -121,18 +121,30 @@ test('a sub-id its own asset does not carry is reported as the sub-asset being g
     }]);
 });
 
-test('knowing the image is there does not clear a sub-id the image does not have', async (t) => {
+test('the listing may clear a sub-id fast, but an accusation is confirmed with the database first', async (t) => {
     const assets = project(t, [
         hero({ effect: EFFECT, texture: TEXTURE }),
         { url: 'db://assets/tex/hero.jpg', uuid: IMAGE, subAssets: { '9d1f2': {} } }
     ]);
-    const db = assetDb(assets, { [EFFECT]: {} });
+    const db = assetDb(assets, { [EFFECT]: {}, [IMAGE]: { subAssets: { '9d1f2': {} } } });
     const result = await tool.invoke({}, { editor: { assetDb: db } });
 
     assert.equal(result.success, true, JSON.stringify(result.error));
     assert.deepEqual(result.data.brokenReferences.map(broken => [broken.ref, broken.reason]),
         [[TEXTURE, 'sub_asset_missing']]);
-    assert.equal(db.asked.includes(TEXTURE), false, 'the listing already answered; no query was needed');
+    assert.equal(db.asked.includes(TEXTURE), true, 'a shallow listing must not accuse on its own');
+});
+
+test('a listing that misses the sub-id but a database that has it accuses nobody', async (t) => {
+    const assets = project(t, [
+        hero({ effect: EFFECT, texture: TEXTURE }),
+        { url: 'db://assets/tex/hero.jpg', uuid: IMAGE, subAssets: { '9d1f2': {} } }
+    ]);
+    const db = assetDb(assets, { [EFFECT]: {}, [TEXTURE]: {} });
+    const result = await tool.invoke({}, { editor: { assetDb: db } });
+
+    assert.equal(result.success, true, JSON.stringify(result.error));
+    assert.deepEqual(result.data.brokenReferences, []);
 });
 
 test('a sub-id the listing does carry costs no database query at all', async (t) => {
@@ -220,6 +232,30 @@ test('a db:// path the layout cannot place is unverified, never accused', async 
         where: 'userData.materialDumpDir'
     }]);
     assert.ok(result.data.limits.some(limit => limit.includes('unverifiedPaths')));
+});
+
+test('an asset behind the framework mount never teaches the layout, so its paths stay unverified', async (t) => {
+    const assets = project(t, [{ ...model(fbxMeta()), url: 'db://assets/framework/model/hero.fbx' }]);
+    const result = await tool.invoke({}, { editor: { assetDb: assetDb(assets, { [MATERIAL]: {} }) } });
+
+    assert.equal(result.success, true, JSON.stringify(result.error));
+    assert.deepEqual(result.data.dumpDirsMissing, []);
+    assert.deepEqual(result.data.unverifiedPaths.map(entry => entry.path), [DUMP_DIR]);
+});
+
+test('suspects the confirmation cap never reached are named, not silently dropped', async (t) => {
+    const assets = project(t, [
+        hero({ effect: GONE, texture: `${GONE}@1` }),
+        { url: 'db://assets/mat/m_boss.mtl', uuid: 'boss-uuid', content: material({ effect: EFFECT, texture: TEXTURE }) }
+    ]);
+    const result = await tool.invoke({ maxChecks: 1 }, { editor: { assetDb: assetDb(assets, {}) } });
+
+    assert.equal(result.success, true, JSON.stringify(result.error));
+    assert.equal(result.data.suspects, 4);
+    assert.equal(result.data.confirmed, 1);
+    assert.equal(result.data.brokenReferences.length, 1);
+    assert.equal(result.data.skippedByCap.length, 3);
+    assert.ok(result.data.limits.some(limit => limit.includes('never asked about')));
 });
 
 test('kinds narrows what is opened: asking for materials never reads the model meta', async (t) => {

@@ -158,7 +158,6 @@ test('the dump directory is reported as a db:// path whose existence has to be c
     assert.deepEqual(scanModelMeta(fbxMeta()).dbPaths,
         [{ where: 'userData.materialDumpDir', path: 'db://assets/character/material' }]);
     assert.equal(scanModelMeta(fbxMeta()).dumpMaterials, true);
-    assert.equal(scanModelMeta(fbxMeta()).materialDumpDir, 'db://assets/character/material');
 });
 
 test('an importer path stored as a db:// uri is a path to check, not a uuid to look up', () => {
@@ -174,7 +173,6 @@ test('a meta without dumped materials still names what it is bound to', () => {
     const scan = scanModelMeta(meta);
     assert.deepEqual(scan.refs.map(site => site.ref), [MATERIAL, TEXTURE]);
     assert.equal(scan.dumpMaterials, false);
-    assert.equal(scan.materialDumpDir, null);
 });
 
 test('the meta\'s own uuid is its identity, never a reference to something else', () => {
