@@ -125,14 +125,17 @@ at all — it reads `Editor.Profile` directly and can throw synchronously.
 
 ## Adding a Scene Method
 
-The scene script is a separate bundle loaded by the scene worker, and four places must agree:
+The scene script is a separate bundle loaded by the scene worker, and three places must agree:
 
 1. Declare the signature in `SceneMethods` (`source/scene-contract.ts`).
 2. Implement it in the `source/scene/<concern>.ts` that owns that concern (`dump`, `node-ops`,
    `component-ops`, `property-write`, `prefab-ops`, `query`, `engine`).
-3. Export it from the `methods` object in `source/scene/index.ts`.
-4. **Add the method name to `package.json` under `contributions.scene.methods`.** A method missing
-   from that list is not callable, with no error that says so.
+3. Export it from the `methods` object in `source/scene/index.ts` — dispatch is by name on that
+   object, and that export alone makes the method callable.
+
+The list under `contributions.scene.methods` in `package.json` is **not** load-bearing: 20 methods
+absent from it were called successfully. Keep it in step anyway, as the declared inventory of the
+scene surface, but a missing entry is untidiness rather than a defect.
 
 Call it as `ctx.sceneScript.call('methodName', ...args)`; the client is typed by the contract, so a
 signature drift is a compile error. Scene-side results use `SceneResult<T>` (`success`/`data`/`error`)
