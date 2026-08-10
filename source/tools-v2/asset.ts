@@ -6,6 +6,11 @@ import { booleanArg, defineTool } from '../tool';
 import { ok, fail } from '../result';
 import { textOf } from './shared';
 import { ASSET_TYPES, assetQuery, selectAssets } from '../asset-query';
+import { coerceJsonArg } from '../json-arg';
+import {
+    baseUuidOf, findBroken, scanModelMeta, scanReferenceSites, subIdOf
+} from '../reference-scan';
+import type { ReferenceSite } from '../reference-scan';
 import type { AssetOperationOption, EditorAssetInfo } from '../editor-api';
 import type { RegisteredTool } from '../tool';
 import type { ToolContext } from '../context';
@@ -544,6 +549,251 @@ export const projectQueryAssetUrl = defineTool({
     }
 });
 
+const VALIDATE_KINDS = ['scene', 'prefab', 'material', 'model'] as const;
+
+type ValidateKind = typeof VALIDATE_KINDS[number];
+
+const KIND_GLOBS: Record<ValidateKind, string> = {
+    scene: '**/*.scene',
+    prefab: '**/*.prefab',
+    material: '**/*.{mtl,material}',
+    model: '**/*.{fbx,gltf,glb}'
+};
+
+const DEFAULT_MAX_ASSETS = 400;
+const DEFAULT_MAX_CHECKS = 400;
+
+const kindListArg = z.preprocess(value => {
+    if (typeof value !== 'string') return value;
+    const coerced = coerceJsonArg(value);
+    return coerced.coerced ? coerced.value : [value];
+}, z.array(z.enum(VALIDATE_KINDS)));
+
+interface BrokenReference {
+    asset: string;
+    ref: string;
+    where: string;
+    reason: 'asset_missing' | 'sub_asset_missing';
+}
+
+interface DumpDirMissing {
+    fbx: string;
+    materialDumpDir: string;
+    where: string;
+}
+
+function kindOfUrl(url: string): ValidateKind {
+    const lower = url.toLowerCase();
+    if (lower.endsWith('.scene')) return 'scene';
+    if (lower.endsWith('.prefab')) return 'prefab';
+    if (lower.endsWith('.mtl') || lower.endsWith('.material')) return 'material';
+    return 'model';
+}
+
+async function knownAssetUuids(ctx: ToolContext): Promise<{ known: Set<string>; unlisted: string[] }> {
+    const known = new Set<string>();
+    const unlisted: string[] = [];
+    for (const root of ['db://assets', 'db://internal']) {
+        let listed: EditorAssetInfo[];
+        try {
+            listed = await ctx.editor.assetDb.queryAssets({ pattern: `${root}/**/*` });
+        } catch {
+            unlisted.push(root);
+            continue;
+        }
+        for (const asset of listed || []) {
+            if (!asset || !asset.uuid) continue;
+            known.add(asset.uuid);
+            for (const id of Object.keys(asset.subAssets || {})) known.add(`${asset.uuid}@${id}`);
+        }
+    }
+    return { known, unlisted };
+}
+
+/** Asked of the database, not of the listing: builtin and generated assets are absent from a listing. */
+async function confirmMissing(
+    ctx: ToolContext,
+    ref: string
+): Promise<'present' | 'asset_missing' | 'sub_asset_missing' | 'unverified'> {
+    const direct = await ctx.editor.assetDb.queryAssetInfo(ref).catch(() => undefined);
+    if (direct === undefined) return 'unverified';
+    if (direct) return 'present';
+
+    const base = baseUuidOf(ref);
+    const sub = subIdOf(ref);
+    if (!sub) return 'asset_missing';
+
+    const owner = await ctx.editor.assetDb.queryAssetInfo(base).catch(() => undefined);
+    if (owner === undefined) return 'unverified';
+    if (!owner) return 'asset_missing';
+
+    const ids = new Set(Object.keys(owner.subAssets || {}));
+    if (!ids.size) {
+        const meta = await ctx.editor.assetDb.queryAssetMeta(base).catch(() => null);
+        for (const id of Object.keys(meta?.subMetas || {})) ids.add(id);
+    }
+    if (!ids.size) return 'unverified';
+    return ids.has(sub) ? 'present' : 'sub_asset_missing';
+}
+
+export const assetAdvancedValidateAssetReferences = defineTool({
+    name: 'assetAdvanced_validate_asset_references',
+    description: 'Read every uuid reference out of the project\'s serialized assets and name the ones '
+        + 'nothing answers. Scenes, prefabs and materials are parsed for `__uuid__` fields and for the '
+        + 'packed 23-char `__type__` a script component stores; model .meta files are read for the '
+        + 'materials and textures the importer bound and for the absolute db:// paths it keeps — a '
+        + 'materialDumpDir that no longer exists is the failure that re-dumps every material without '
+        + 'textures and renders the model flat. Suspects are confirmed against the asset database one '
+        + 'by one, so a builtin the listing does not carry is not reported as broken. What was NOT '
+        + 'checked is stated in `limits`.',
+    schema: z.object({
+        folder: z.string().optional().describe('Folder to scan (default db://assets)'),
+        kinds: kindListArg.optional()
+            .describe(`Asset kinds to read (default all): ${VALIDATE_KINDS.join(', ')}`),
+        maxAssets: z.coerce.number().int().min(1).max(5000).optional()
+            .describe(`Cap on assets read (default ${DEFAULT_MAX_ASSETS}); the answer reports scanned vs found`),
+        maxChecks: z.coerce.number().int().min(1).max(5000).optional()
+            .describe(`Cap on database confirmations of suspect references (default ${DEFAULT_MAX_CHECKS})`)
+    }),
+    aliases: { root: 'folder', path: 'folder', assetPath: 'folder', kind: 'kinds', types: 'kinds' },
+    async handler(args, ctx) {
+        const folder = (args.folder || 'db://assets').replace(/\/+$/, '');
+        const kinds = args.kinds?.length ? [...new Set(args.kinds)] : [...VALIDATE_KINDS];
+        const maxAssets = args.maxAssets ?? DEFAULT_MAX_ASSETS;
+        const maxChecks = args.maxChecks ?? DEFAULT_MAX_CHECKS;
+
+        const byUuid = new Map<string, EditorAssetInfo>();
+        for (const kind of kinds) {
+            let listed: EditorAssetInfo[];
+            try {
+                listed = await ctx.editor.assetDb.queryAssets({ pattern: `${folder}/${KIND_GLOBS[kind]}` });
+            } catch (error) {
+                return fail('query_failed', `${kind} assets under ${folder} could not be listed: ${textOf(error)}`);
+            }
+            for (const asset of listed || []) {
+                if (asset && asset.uuid && !asset.isDirectory) byUuid.set(asset.uuid, asset);
+            }
+        }
+        const found = [...byUuid.values()];
+        const assets = found.slice(0, maxAssets);
+
+        const sightings = new Map<string, { asset: string; where: string }>();
+        const dbPathSites: Array<{ asset: string; where: string; path: string }> = [];
+        const unreadable: Array<{ asset: string; message: string }> = [];
+        let scanned = 0;
+
+        for (const asset of assets) {
+            const diskPath = await diskPathOf(ctx, asset);
+            if (!diskPath) {
+                unreadable.push({ asset: asset.url, message: 'the asset database gave no on-disk path' });
+                continue;
+            }
+            const kind = kindOfUrl(asset.url);
+            const file = kind === 'model' ? `${diskPath}.meta` : diskPath;
+            let json: unknown;
+            try {
+                json = JSON.parse(fs.readFileSync(file, 'utf8'));
+            } catch (error) {
+                unreadable.push({ asset: asset.url, message: textOf(error) });
+                continue;
+            }
+            scanned++;
+
+            let sites: ReferenceSite[];
+            if (kind === 'model') {
+                const scan = scanModelMeta(json);
+                sites = scan.refs;
+                for (const site of scan.dbPaths) dbPathSites.push({ asset: asset.url, ...site });
+            } else {
+                sites = scanReferenceSites(json);
+            }
+            for (const site of sites) {
+                if (!sightings.has(site.ref)) sightings.set(site.ref, { asset: asset.url, where: site.where });
+            }
+        }
+
+        const refs = [...sightings.keys()];
+        const { known, unlisted } = await knownAssetUuids(ctx);
+        const suspects = findBroken(refs, known);
+        const checked = suspects.slice(0, maxChecks);
+
+        const brokenReferences: BrokenReference[] = [];
+        const unverifiedRefs: string[] = [];
+        for (const ref of checked) {
+            const verdict = await confirmMissing(ctx, ref);
+            if (verdict === 'present') continue;
+            if (verdict === 'unverified') {
+                unverifiedRefs.push(ref);
+                continue;
+            }
+            const sighting = sightings.get(ref)!;
+            brokenReferences.push({ asset: sighting.asset, ref, where: sighting.where, reason: verdict });
+        }
+
+        const dumpDirsMissing: DumpDirMissing[] = [];
+        const pathVerdicts = new Map<string, boolean | null>();
+        for (const site of dbPathSites) {
+            if (!pathVerdicts.has(site.path)) {
+                const info = await ctx.editor.assetDb.queryAssetInfo(site.path).catch(() => undefined);
+                pathVerdicts.set(site.path, info === undefined ? null : !!info);
+            }
+            if (pathVerdicts.get(site.path) === false) {
+                dumpDirsMissing.push({ fbx: site.asset, materialDumpDir: site.path, where: site.where });
+            }
+        }
+
+        const limits = [
+            'Only .scene, .prefab, .mtl/.material and model (.fbx/.gltf/.glb) .meta files are read; '
+            + 'animation clips, textures, binary artifacts and every other importer format are not scanned.',
+            'Inside a model .meta only assetFinder.materials/textures, imageMetas[].uri and '
+            + 'imageUuidOrDatabaseUri count as references; the model\'s own meshes, skeletons and scenes '
+            + 'are not checked.',
+            'A packed 23-char `__type__` is checked as a script ASSET uuid: a class renamed or removed '
+            + 'inside a script that still exists is invisible here.',
+            '`__id__` links and prefab property overrides address entries inside the same file, not '
+            + 'assets, and are not reference candidates.',
+            'db:// paths kept in importer settings are checked for existence only in the model metas that '
+            + 'were read.'
+        ];
+        if (found.length > assets.length) {
+            limits.push(`${found.length - assets.length} of ${found.length} matched assets were not read `
+                + '— raise maxAssets.');
+        }
+        if (suspects.length > checked.length) {
+            limits.push(`${suspects.length - checked.length} suspect reference(s) were never confirmed `
+                + 'against the database — raise maxChecks.');
+        }
+        if (unverifiedRefs.length) {
+            limits.push(`${unverifiedRefs.length} reference(s) got no answer from the database (it refused `
+                + 'the query, or the owning asset reports no sub-assets), so they are neither cleared nor broken.');
+        }
+        if (unlisted.length) {
+            limits.push(`${unlisted.join(', ')} could not be listed, so the fast filter was narrower and `
+                + 'more references had to be confirmed one by one.');
+        }
+        if (unreadable.length) {
+            limits.push(`${unreadable.length} asset(s) could not be read or parsed; they are listed in unreadable.`);
+        }
+
+        return ok({
+            folder,
+            kinds,
+            found: found.length,
+            scanned,
+            references: refs.length,
+            suspects: suspects.length,
+            confirmed: checked.length,
+            brokenReferences,
+            dumpDirsMissing,
+            unverifiedRefs,
+            unreadable,
+            limits
+        }, `${scanned} asset(s) read, ${refs.length} distinct reference(s): `
+            + `${brokenReferences.length} broken, ${dumpDirsMissing.length} missing importer path(s), `
+            + `${unverifiedRefs.length} unverified.`);
+    }
+});
+
 export const assetTools: RegisteredTool[] = [
     projectGetAssets,
     projectGetAssetInfo,
@@ -559,5 +809,6 @@ export const assetTools: RegisteredTool[] = [
     projectQueryAssetUrl,
     assetAdvancedSaveAssetMeta,
     assetAdvancedGenerateAvailableUrl,
-    assetAdvancedQueryAssetDbReady
+    assetAdvancedQueryAssetDbReady,
+    assetAdvancedValidateAssetReferences
 ];

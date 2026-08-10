@@ -7,7 +7,7 @@ test('the whole advertised surface composes with no name collision across catego
     const names = composeTools().list().map(tool => tool.name);
 
     assert.equal(new Set(names).size, names.length);
-    assert.equal(names.length, 89, `the surface is ${names.length} tools: ${names.join(', ')}`);
+    assert.equal(names.length, 90, `the surface is ${names.length} tools: ${names.join(', ')}`);
     assert.ok(names.includes('scene_dump'), 'the migrated scene category is missing from the surface');
     assert.ok(names.includes('node_create_node'), 'the migrated node category is missing from the surface');
     assert.ok(names.includes('component_set_component_property'),
@@ -20,6 +20,8 @@ test('the whole advertised surface composes with no name collision across catego
         'the migrated asset category is missing from the surface');
     assert.ok(names.includes('assetAdvanced_save_asset_meta'),
         'the asset-advanced survivors are missing from the surface');
+    assert.ok(names.includes('assetAdvanced_validate_asset_references'),
+        'the reference validator is missing from the surface');
     assert.ok(names.includes('project_build_project'),
         'the migrated build category is missing from the surface');
     assert.ok(names.includes('debug_execute_script'),
