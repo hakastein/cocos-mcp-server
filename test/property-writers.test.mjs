@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
     WRITERS, writerFor, buildClassElement, buildClassPatch, readBackMatches, readBackMismatches
 } from '../dist/property/writers.js';
+import { withoutUuidWrappers } from '../dist/property/verified-write.js';
 
 const fixtures = JSON.parse(
     readFileSync(fileURLToPath(new URL('./fixtures/descriptors.json', import.meta.url)), 'utf8')
@@ -109,6 +110,11 @@ test('a gradient or curve value without keys is patched member-wise, never repla
     assert.equal(writerFor(targetFor('curve'), VALUES.curve).name, 'curve');
     assert.equal(writerFor(targetFor('curve'), [{ time: 0, value: 1 }]).name, 'curve');
     assert.equal(writerFor(targetFor('gradient'), { alphaKeys: [{ alpha: 0, time: 1 }] }).name, 'gradient');
+});
+
+test('the curve writer claims only the spelling its own body reads', () => {
+    assert.equal(writerFor(targetFor('curve'), { keys: [{ time: 0, value: 1 }] }).name, 'nested-class');
+    assert.equal(writerFor(targetFor('curve'), { spline: { keyFrames: [] } }).name, 'nested-class');
 });
 
 test('the UITransform pair is claimed by component and property, not by shape alone', () => {
@@ -217,4 +223,19 @@ test('an inline @ccclass is patched: untouched members keep their value, referen
 test('a member the class does not declare is named instead of written', () => {
     const patch = buildClassPatch(fixtures.nestedClass, { duration: 1, spin: 4 }, '__comps__.1.enter');
     assert.deepEqual(patch.unknown, ['spin']);
+});
+
+test('a reference reads the same on both sides of the serializer check, wrapper or bare uuid', () => {
+    assert.equal(withoutUuidWrappers({ __uuid__: PREFAB }), PREFAB);
+    assert.equal(withoutUuidWrappers({ uuid: PREFAB }), PREFAB);
+    assert.equal(withoutUuidWrappers({ uuid: '' }), null);
+    assert.deepEqual(withoutUuidWrappers({ duration: 0.5, clip: { __uuid__: CLIP } }),
+        { duration: 0.5, clip: CLIP });
+    assert.deepEqual(withoutUuidWrappers([{ uuid: PREFAB }, null]), [PREFAB, null]);
+});
+
+test('an object that only looks like a reference keeps its members', () => {
+    assert.deepEqual(withoutUuidWrappers({ uuid: PREFAB, count: 3 }), { uuid: PREFAB, count: 3 });
+    assert.deepEqual(withoutUuidWrappers({ x: 1, y: 2 }), { x: 1, y: 2 });
+    assert.deepEqual(withoutUuidWrappers({}), {});
 });

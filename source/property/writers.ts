@@ -478,8 +478,9 @@ function isUITransformPair(target: WriteTarget): boolean {
     return target.componentType === 'cc.UITransform' && UI_TRANSFORM_PAIR.test(target.propertyPath);
 }
 
-// The engine route replaces the whole GradientRange/CurveRange, so it is only applicable to a
-// value that carries those keys.
+// The engine route replaces the whole GradientRange/CurveRange, so it may only claim a value
+// carrying the key arrays its body reads — a spelling it does not consume erases the authored
+// curve and flips the mode on its way through.
 function carriesGradientKeys(value: unknown): boolean {
     const spec = value as Record<string, unknown> | null;
     return !!spec && typeof spec === 'object'
@@ -489,8 +490,7 @@ function carriesGradientKeys(value: unknown): boolean {
 function carriesCurveKeys(value: unknown): boolean {
     if (Array.isArray(value)) return true;
     const spec = value as Record<string, unknown> | null;
-    return !!spec && typeof spec === 'object'
-        && (Array.isArray(spec.keyframes) || Array.isArray(spec.keys) || spec.spline !== undefined);
+    return !!spec && typeof spec === 'object' && Array.isArray(spec.keyframes);
 }
 
 function enablesModule(target: WriteTarget, spec: Record<string, unknown>): boolean {
@@ -653,8 +653,8 @@ const assetWriter: PropertyWriter = {
             return Promise.resolve(unwritten(
                 `'${target.propertyPath}' is an array of assets and takes uuid string(s); got ${show(value)}`));
         }
-        // A dump for the array as a whole throws and NULLs the slot (scene/component-ops.ts:165),
-        // so each slot is assigned on its own and the array's length is not writable here.
+        // A dump for the array as a whole throws and NULLs the slot (scene/component-ops.ts), so
+        // each slot is assigned on its own and the array's length is not writable here.
         const steps: ChannelStep[] = uuids.map((uuid, slot) => ({
             path: `${basePath}.${slot}`, dump: { type: elementType, value: { uuid } }
         }));

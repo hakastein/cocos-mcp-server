@@ -90,27 +90,65 @@ async function withSerializerVerdict(
             + 'was not read');
     }
 
-    let result;
+    let found: SerializedLookup;
     try {
-        result = await ctx.sceneScript.call('serializedComponentValue', target.nodeUuid, cid, target.propertyPath);
+        found = await serializedValue(target, cid, ctx);
     } catch (error) {
         return addDetail(report, `the serialized form was not read (${messageOf(error)})`);
     }
-    if (!result || result.success !== true) {
-        return addDetail(report, `the serialized form was not read (${(result && result.error) || 'no answer'})`);
-    }
-    if (!result.data.found) {
-        return addDetail(report, `the serializer does not emit '${target.propertyPath}'`
-            + `${result.data.reason ? ` — ${result.data.reason}` : ''}, so a save carrying the value is `
-            + 'unconfirmed');
-    }
+    if ('problem' in found) return addDetail(report, found.problem);
 
-    const serialized = projectValue(kindOf(target), result.data.value);
-    const live = await readBack(target, ctx);
+    const serialized = withoutUuidWrappers(projectValue(kindOf(target), found.value));
+    const live = withoutUuidWrappers(await readBack(target, ctx));
     const mismatches = readBackMismatches(serialized, live, target.propertyPath);
-    if (mismatches.length === 0) return addDetail(report, 'the serializer emits what the component holds');
+    if (mismatches.length === 0) return report;
     return addDetail({ ...report, persisted: false },
         `a save would not carry this write — the serializer emits ${mismatches.join('; ')}`);
+}
+
+type SerializedLookup = { value: unknown } | { problem: string };
+
+/**
+ * The serializer writes backing fields, so the accessor `color` is emitted as `_color` and asking
+ * for the accessor name alone reports a property nothing carries.
+ */
+async function serializedValue(target: WriteTarget, cid: string, ctx: ToolContext): Promise<SerializedLookup> {
+    const underscored = target.propertyPath.replace(/(^|\.)([^.]+)$/, '$1_$2');
+    const spellings = underscored === target.propertyPath || /(^|\.)_/.test(target.propertyPath)
+        ? [target.propertyPath]
+        : [target.propertyPath, underscored];
+
+    let problem = '';
+    for (const property of spellings) {
+        const result = await ctx.sceneScript.call('serializedComponentValue', target.nodeUuid, cid, property);
+        if (!result || result.success !== true) {
+            problem = `the serialized form was not read (${(result && result.error) || 'no answer'})`;
+            continue;
+        }
+        if (result.data.found) return { value: result.data.value };
+        problem = `the serializer does not emit '${property}'`
+            + `${result.data.reason ? ` — ${result.data.reason}` : ''}, so a save carrying the value is unconfirmed`;
+    }
+    return { problem };
+}
+
+/**
+ * The live dump projects a reference to its uuid string, the serialized form keeps the object it
+ * is stored as. Undo that difference on both sides, or every @ccclass holding a reference reads
+ * as a write a save would drop.
+ */
+export function withoutUuidWrappers(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(item => withoutUuidWrappers(item));
+    if (!value || typeof value !== 'object') return value;
+    const entries = Object.entries(value as Record<string, unknown>);
+    const uuidOnly = entries.length > 0 && entries.every(([key]) => key === 'uuid' || key === '__uuid__');
+    if (uuidOnly) {
+        const uuid = entries[0][1];
+        return typeof uuid === 'string' ? (uuid || null) : uuid;
+    }
+    const plain: Record<string, unknown> = {};
+    for (const [key, member] of entries) plain[key] = withoutUuidWrappers(member);
+    return plain;
 }
 
 /**
