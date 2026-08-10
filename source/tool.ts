@@ -59,12 +59,21 @@ function advertiseAliases(schema: object, aliases: Record<string, string> | unde
 function assertAliasesAreFree(name: string, declared: string[], aliases: Record<string, string> | undefined): void {
     if (!aliases) return;
     const shadowed = Object.keys(aliases).filter(alias => declared.includes(alias));
-    if (!shadowed.length) return;
-    throw new Error(
-        `defineTool(${name}): alias ${shadowed.map(alias => `'${alias}'`).join(', ')} is also a declared `
-        + 'parameter. An alias is deleted from the arguments once applied, so a caller passing both '
-        + 'spellings would silently lose the declared one.'
-    );
+    if (shadowed.length) {
+        throw new Error(
+            `defineTool(${name}): alias ${shadowed.map(alias => `'${alias}'`).join(', ')} is also a declared `
+            + 'parameter. An alias is deleted from the arguments once applied, so a caller passing both '
+            + 'spellings would silently lose the declared one.'
+        );
+    }
+    const unknown = Object.values(aliases).filter(canonical => !declared.includes(canonical));
+    if (unknown.length) {
+        throw new Error(
+            `defineTool(${name}): alias target ${unknown.map(target => `'${target}'`).join(', ')} is not a `
+            + 'declared parameter, so the alias is inert: the value is moved onto a name the schema '
+            + 'rejects and the caller is told the real parameter is missing.'
+        );
+    }
 }
 
 function describeIssues(error: z.ZodError): string {

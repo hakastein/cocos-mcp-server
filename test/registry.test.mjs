@@ -103,6 +103,16 @@ test('an alias shadowing a declared parameter is rejected at definition time', (
     }), /find_owners.*'name'/s);
 });
 
+test('an alias aimed at a parameter the schema never declares is rejected at definition time', () => {
+    assert.throws(() => defineTool({
+        name: 'find_owners',
+        description: 'Finds owners',
+        schema: z.object({ className: z.string() }),
+        aliases: { type: 'componentType' },
+        handler: async () => ({ success: true, data: null })
+    }), /find_owners.*'componentType'/s);
+});
+
 test('an accepted alias is advertised on the parameter it stands for', () => {
     const tool = defineTool({
         name: 'echo',

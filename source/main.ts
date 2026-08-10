@@ -3,10 +3,7 @@ import { MCPServerSettings } from './types';
 import { EditorApi } from './editor-api';
 import { SceneScriptClient } from './scene-script-client';
 import { PreviewLogStore } from './preview-log-store';
-import { ToolRegistry } from './registry';
-import { legacyTools } from './legacy-adapter';
-import { createToolInstances } from './tool-registry';
-import { sceneTools } from './tools-v2/scene';
+import { composeTools } from './tool-registry';
 import { BridgeServer } from './server';
 import type { ToolContext } from './context';
 
@@ -25,19 +22,7 @@ function compose(settings: MCPServerSettings): BridgeServer {
         settings
     };
 
-    // The batch tool dispatches back into the registry that owns it. Nothing calls the
-    // dispatcher before `registry` is assigned, two lines down.
-    let registry: ToolRegistry;
-    const executors = createToolInstances({
-        dispatch: (name, args) => registry.invoke(name, args, ctx),
-        logs: previewLogs
-    });
-    registry = new ToolRegistry([
-        ...sceneTools,
-        ...Object.entries(executors).flatMap(([category, executor]) => legacyTools(category, executor))
-    ]);
-
-    return new BridgeServer(registry, ctx, settings);
+    return new BridgeServer(composeTools({ logs: previewLogs, ctx }), ctx, settings);
 }
 
 export const methods: { [key: string]: (...any: any) => any } = {
