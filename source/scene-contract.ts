@@ -50,12 +50,6 @@ export interface WriteReport {
     detail?: string;
 }
 
-export interface PropertyWriteFailure extends SceneFailure {
-    data: WriteReport;
-}
-
-export type PropertyWriteResult = SceneSuccess<WriteReport> | PropertyWriteFailure;
-
 export interface NodePropertyWrite {
     nodeUuid: string;
     property: string;
@@ -79,32 +73,10 @@ export interface NodeInfo {
     components: ComponentSummary[];
 }
 
-export interface NodeSummary {
-    uuid: string;
-    name: string;
-    active: boolean;
-    parent: string | undefined;
-}
-
-export interface NamedNode {
-    uuid: string;
-    name: string;
-    active: boolean;
-    position: Vec3Like;
-}
-
 export interface SceneInfo {
     name: string;
     uuid: string;
     nodeCount: number;
-}
-
-export interface HierarchyNode {
-    name: string;
-    uuid: string;
-    active: boolean;
-    children: HierarchyNode[];
-    components?: ComponentSummary[];
 }
 
 export interface DumpOptions {
@@ -284,12 +256,6 @@ export interface PrefabOverrideRemoval {
     remaining: number;
 }
 
-export interface MaterialAssignment {
-    componentType: string;
-    count: number;
-    materials: Array<string | undefined>;
-}
-
 export interface SerializedValue {
     found: boolean;
     value: unknown;
@@ -356,27 +322,15 @@ export interface SceneDirtyReport {
 
 export interface SceneMethods {
     declaredComponentProperty(componentType: string, property: string): SceneResult<DeclaredProperty>;
-    createNewScene(): SceneAckResult;
     addComponentToNode(nodeUuid: string, componentType: string): SceneResult<{ componentId: string }>;
-    removeComponentFromNode(nodeUuid: string, componentType: string): SceneAckResult;
-    createNode(name: string, parentUuid?: string): SceneResult<{ uuid: string; name: string }>;
     getNodeInfo(nodeUuid: string): SceneResult<NodeInfo>;
-    getAllNodes(): SceneResult<NodeSummary[]>;
-    findNodeByName(name: string): SceneResult<NamedNode>;
     getCurrentSceneInfo(): SceneResult<SceneInfo>;
     setNodeProperty(
         nodeUuid: NodePropertyWrite['nodeUuid'],
         property: NodePropertyWrite['property'],
         value: NodePropertyWrite['value'],
     ): SceneAckResult;
-    getSceneHierarchy(includeComponents?: boolean): SceneResult<HierarchyNode[]>;
     evalInScene(code: string, timeoutMs?: number): Promise<SceneResult<EvalPayload>>;
-    setComponentProperty(
-        nodeUuid: string,
-        componentType: string,
-        property: string,
-        value: any,
-    ): Promise<PropertyWriteResult>;
     setParticleGradient(
         nodeUuid: string,
         componentType: string,
@@ -409,11 +363,6 @@ export interface SceneMethods {
         localID?: string,
         index?: number,
     ): SceneResult<PrefabOverrideRemoval>;
-    setMeshRendererMaterials(
-        nodeUuid: string,
-        materialUuids: string[],
-        componentType?: string,
-    ): Promise<SceneResult<MaterialAssignment>>;
     serializedComponentValue(nodeUuid: string, cid: string, property: string): SceneResult<SerializedValue>;
     nodePrefabLinkage(nodeUuid: string): SceneResult<PrefabLinkageReport>;
     resolveComponentReference(args?: any): SceneResult<ReferencePlanReport>;

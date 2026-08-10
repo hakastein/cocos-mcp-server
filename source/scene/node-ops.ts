@@ -6,35 +6,6 @@ import { findNodeByUuid, requireActiveScene } from './engine';
 // TS file compiles; it is a real global inside the running scene worker.
 declare const cce: any;
 
-export const createNewScene: SceneMethods['createNewScene'] = () => {
-    try {
-        const { director, Scene } = require('cc');
-        const scene = new Scene();
-        scene.name = 'New Scene';
-        director.runScene(scene);
-        return { success: true, message: 'New scene created successfully' };
-    } catch (error: any) {
-        return { success: false, error: error.message };
-    }
-};
-
-export const createNode: SceneMethods['createNode'] = (name, parentUuid) => {
-    try {
-        const { Node } = require('cc');
-        const scene = requireActiveScene();
-        const node = new Node(name);
-        const parent = parentUuid ? (scene.getChildByUuid(parentUuid) ?? scene) : scene;
-        parent.addChild(node);
-        return {
-            success: true,
-            message: `Node '${name}' created successfully`,
-            data: { uuid: node.uuid, name: node.name }
-        };
-    } catch (error: any) {
-        return { success: false, error: error.message };
-    }
-};
-
 export const setNodeProperty: SceneMethods['setNodeProperty'] = (nodeUuid, property, value) => {
     try {
         const scene = requireActiveScene();

@@ -1,9 +1,9 @@
 import {
     ReferenceOverride, projectAfterReload, contradictedOverrides, liveNodesBySerializedIndex
 } from '../reference-projection';
-import type { SceneMethods, WriteReport } from '../scene-contract';
+import type { SceneMethods } from '../scene-contract';
 import {
-    componentClassName, ctorIsA, declaredPropertyCtor, findComponentByUuid, findComponentClass,
+    componentClassName, ctorIsA, declaredPropertyCtor, findComponentByUuid,
     findNodeByUuid, findNodeByUuidOrNull, requireActiveScene, serializedEntityUuid
 } from './engine';
 
@@ -366,79 +366,6 @@ function planReferenceWrite(scene: any, args: any): { error: string } | Referenc
             : undefined
     };
 }
-
-function unwritten(detail: string): WriteReport {
-    return { written: false, verified: false, persisted: false, detail };
-}
-
-function loadFromResources(cc: any, path: string, type: any): Promise<any> {
-    return new Promise((resolve) => {
-        cc.assetManager.resources.load(path, type, (err: any, asset: any) => resolve(err ? null : asset));
-    });
-}
-
-function loadByUuid(cc: any, uuid: string): Promise<any> {
-    return new Promise((resolve) => {
-        cc.assetManager.loadAny({ uuid }, (err: any, asset: any) => resolve(err ? null : asset));
-    });
-}
-
-export const setComponentProperty: SceneMethods['setComponentProperty'] = async (
-    nodeUuid, componentType, property, value,
-) => {
-    try {
-        const scene = requireActiveScene();
-        const node = findNodeByUuid(scene, nodeUuid);
-        const ComponentClass = findComponentClass(componentType);
-        const component = node.getComponent(ComponentClass);
-        if (!component) {
-            const error = `Component ${componentType} not found on node`;
-            return { success: false, error, data: unwritten(error) };
-        }
-
-        const cc = require('cc');
-
-        if (property === 'spriteFrame' && componentType === 'cc.Sprite' && typeof value === 'string') {
-            const asset = await loadFromResources(cc, value, cc.SpriteFrame) || await loadByUuid(cc, value);
-            if (!asset) {
-                const error = `Could not load SpriteFrame '${value}' as a resource path or as an asset uuid`;
-                return { success: false, error, data: unwritten(error) };
-            }
-            component.spriteFrame = asset;
-        } else if (property === 'material' && typeof value === 'string') {
-            const asset = await loadFromResources(cc, value, cc.Material) || await loadByUuid(cc, value);
-            if (!asset) {
-                const error = `Could not load Material '${value}' as a resource path or as an asset uuid`;
-                return { success: false, error, data: unwritten(error) };
-            }
-            component.material = asset;
-        } else if (property === 'mesh' && typeof value === 'string') {
-            const asset = await loadByUuid(cc, value);
-            if (!asset) {
-                const error = `Could not load Mesh asset '${value}'`;
-                return { success: false, error, data: unwritten(error) };
-            }
-            component.mesh = asset;
-        } else if (typeof value === 'string' && value.indexOf('@') !== -1) {
-            const asset = await loadByUuid(cc, value);
-            if (!asset) {
-                const error = `Could not load sub-asset '${value}' for property '${property}'`;
-                return { success: false, error, data: unwritten(error) };
-            }
-            component[property] = asset;
-        } else {
-            component[property] = value;
-        }
-
-        return {
-            success: true,
-            message: `Component property '${property}' updated successfully`,
-            data: { written: true, verified: false, persisted: false }
-        };
-    } catch (error: any) {
-        return { success: false, error: error.message, data: unwritten(error.message) };
-    }
-};
 
 /**
  * The decided shape of a reference write, with nothing touched: which component owns the field,

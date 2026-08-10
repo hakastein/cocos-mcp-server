@@ -80,27 +80,6 @@ export const declaredComponentProperty: SceneMethods['declaredComponentProperty'
     }
 };
 
-export const findNodeByName: SceneMethods['findNodeByName'] = (name) => {
-    try {
-        const scene = requireActiveScene();
-        const node = scene.getChildByName(name);
-        if (!node) {
-            return { success: false, error: `Node not found: ${name}` };
-        }
-        return {
-            success: true,
-            data: {
-                uuid: node.uuid,
-                name: node.name,
-                active: node.active,
-                position: node.position
-            }
-        };
-    } catch (error: any) {
-        return { success: false, error: error.message };
-    }
-};
-
 // Evaluate arbitrary JavaScript in the scene (engine) context, where the `cc`
 // module and the live `director`/scene are available. This replaces the previous
 // dependency on the editor-internal `console` scene package (whose `eval` method

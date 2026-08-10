@@ -28,28 +28,6 @@ export const getNodeInfo: SceneMethods['getNodeInfo'] = (nodeUuid) => {
     }
 };
 
-export const getAllNodes: SceneMethods['getAllNodes'] = () => {
-    try {
-        const scene = requireActiveScene();
-        const nodes: any[] = [];
-
-        const collect = (node: any) => {
-            nodes.push({
-                uuid: node.uuid,
-                name: node.name,
-                active: node.active,
-                parent: node.parent?.uuid
-            });
-            node.children.forEach(collect);
-        };
-
-        scene.children.forEach(collect);
-        return { success: true, data: nodes };
-    } catch (error: any) {
-        return { success: false, error: error.message };
-    }
-};
-
 export const getCurrentSceneInfo: SceneMethods['getCurrentSceneInfo'] = () => {
     try {
         const scene = requireActiveScene();
@@ -61,32 +39,6 @@ export const getCurrentSceneInfo: SceneMethods['getCurrentSceneInfo'] = () => {
                 nodeCount: scene.children.length
             }
         };
-    } catch (error: any) {
-        return { success: false, error: error.message };
-    }
-};
-
-export const getSceneHierarchy: SceneMethods['getSceneHierarchy'] = (includeComponents = false) => {
-    try {
-        const scene = requireActiveScene();
-
-        const processNode = (node: any): any => {
-            const result: any = {
-                name: node.name,
-                uuid: node.uuid,
-                active: node.active,
-                children: node.children?.map(processNode) ?? []
-            };
-            if (includeComponents) {
-                result.components = node.components.map((comp: any) => ({
-                    type: comp.constructor.name,
-                    enabled: comp.enabled
-                }));
-            }
-            return result;
-        };
-
-        return { success: true, data: scene.children.map(processNode) };
     } catch (error: any) {
         return { success: false, error: error.message };
     }

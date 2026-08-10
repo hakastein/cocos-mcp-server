@@ -17,22 +17,6 @@ export const addComponentToNode: SceneMethods['addComponentToNode'] = (nodeUuid,
     }
 };
 
-export const removeComponentFromNode: SceneMethods['removeComponentFromNode'] = (nodeUuid, componentType) => {
-    try {
-        const scene = requireActiveScene();
-        const node = findNodeByUuid(scene, nodeUuid);
-        const ComponentClass = findComponentClass(componentType);
-        const component = node.getComponent(ComponentClass);
-        if (!component) {
-            return { success: false, error: `Component ${componentType} not found on node` };
-        }
-        node.removeComponent(component);
-        return { success: true, message: `Component ${componentType} removed successfully` };
-    } catch (error: any) {
-        return { success: false, error: error.message };
-    }
-};
-
 /**
  * Populate a particle GradientRange's colour/alpha gradient via the ENGINE API.
  * The editor `set-property` channel cannot write GradientColorKey/GradientAlphaKey
@@ -157,54 +141,6 @@ export const setParticleCurve: SceneMethods['setParticleCurve'] = (
                 eval1: cr.spline.evaluate(1),
                 moduleEnabled: !!(enableModule && owner && 'enable' in owner),
             },
-        };
-    } catch (error: any) {
-        return { success: false, error: error.message };
-    }
-};
-
-/**
- * Set a MeshRenderer / SkinnedMeshRenderer's material slots from an array of Material asset uuids,
- * via the ENGINE (`renderer.setMaterial(mat, i)`). The editor `set-property` channel cannot write
- * the `materials` array from asset refs — the array-of-assets dump throws and NULLs the slot — so
- * materials must be assigned on the live component. Assets are pulled from the engine asset cache
- * when already loaded, otherwise loaded by uuid. Sub-asset uuids ("<uuid>@<sub>") are accepted.
- * The editor serialises the assigned materials on the next scene/prefab save.
- */
-export const setMeshRendererMaterials: SceneMethods['setMeshRendererMaterials'] = async (
-    nodeUuid, materialUuids, componentType,
-) => {
-    try {
-        const cc = require('cc');
-        const scene = requireActiveScene();
-        const node = findNodeByUuid(scene, nodeUuid);
-        const renderer = componentType
-            ? node.getComponent(componentType)
-            : (node.getComponent('cc.SkinnedMeshRenderer') || node.getComponent('cc.MeshRenderer'));
-        if (!renderer) return { success: false, error: 'Node has no MeshRenderer / SkinnedMeshRenderer component' };
-        if (typeof renderer.setMaterial !== 'function') {
-            return { success: false, error: `Component '${componentType || renderer.constructor.name}' has no setMaterial()` };
-        }
-        if (!Array.isArray(materialUuids) || materialUuids.length === 0) {
-            return { success: false, error: 'materialUuids must be a non-empty array of Material asset uuids' };
-        }
-        const load = (uuid: string) => new Promise<any>((res) => {
-            if (!uuid) return res(null);
-            const cached = cc.assetManager.assets.get(uuid);
-            if (cached) return res(cached);
-            cc.assetManager.loadAny({ uuid }, (err: any, asset: any) => res(err ? null : asset));
-        });
-        const mats = await Promise.all(materialUuids.map(load));
-        const missing = materialUuids.filter((_u, i) => !mats[i]);
-        if (missing.length) return { success: false, error: `Could not load Material asset(s): ${missing.join(', ')}` };
-        mats.forEach((m, i) => renderer.setMaterial(m, i));
-        return {
-            success: true,
-            data: {
-                componentType: renderer.constructor.name,
-                count: mats.length,
-                materials: renderer.sharedMaterials.map((m: any) => m && m._uuid)
-            }
         };
     } catch (error: any) {
         return { success: false, error: error.message };
