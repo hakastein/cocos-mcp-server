@@ -7,6 +7,7 @@ import { coerceJsonArg } from '../json-arg';
 import {
     componentRefInPrefabData,
     compressUuid,
+    PACKED_CID,
     dumpPrefabTree,
     addComponentToPrefabData,
     getComponentPropertyInPrefabData,
@@ -59,17 +60,12 @@ function addressMiss(prefabPath: string, error: unknown): ToolFail {
 }
 
 /** `__type__` is the plain name for builtins and the compressed script-asset uuid for user scripts. */
-async function resolveComponentCid(
+export async function resolveComponentCid(
     ctx: ToolContext,
     componentType: string,
     scriptPath?: string
 ): Promise<ResolvedCid | { failure: ToolFail }> {
     if (componentType.startsWith('cc.')) return { cid: componentType };
-
-    // An orphaned script component (its .ts deleted) has no name to look up — prefab_dump
-    // already reports its raw compressed cid as `type`/`className` for exactly this case, so
-    // accept that shape directly instead of forcing a script-asset lookup that can never succeed.
-    if (!scriptPath && /^[A-Za-z0-9+/]{23}$/.test(componentType)) return { cid: componentType };
 
     let uuid: string | undefined;
     if (scriptPath) {
@@ -80,6 +76,9 @@ async function resolveComponentCid(
         const matches = await ctx.editor.assetDb
             .queryAssets({ pattern: `db://assets/**/${componentType}.ts` }).catch(() => []);
         if (!matches.length) {
+            // No `<class>.ts` exists to match once the script is deleted, and prefab_dump reports such a
+            // component by the raw cid accepted here.
+            if (PACKED_CID.test(componentType)) return { cid: componentType };
             return {
                 failure: fail('script_not_found',
                     `No script named '${componentType}.ts' under db://assets`,

@@ -7,6 +7,8 @@ import {
     persistenceVerdict, propertyFilterOf, resolveDumpPath, valueFromArgs
 } from '../dist/tools-v2/component.js';
 import { resolveKind, isArrayDescriptor } from '../dist/property/kind.js';
+import { resolveComponentCid } from '../dist/tools-v2/prefab.js';
+import { compressUuid } from '../dist/prefab-json.js';
 
 const STRING_FIELD = { name: 'label', type: 'String', value: 'hi', extends: [] };
 const STRING_ARRAY = {
@@ -215,4 +217,45 @@ test('the name handed to the scene process is a class the engine can look up, ne
     assert.equal(classNameOf(builtin), 'Sprite');
     assert.equal(classNameOf(script), 'Locomotion');
     assert.equal(classNameOf({ value: {} }), null);
+});
+
+// ----- componentType → cid -------------------------------------------------------------
+
+const SCRIPT_UUID = 'a1a43646-5bff-12e9-ed1a-04eecf5afe18';
+
+function assetDbFinding(matches) {
+    const patterns = [];
+    return {
+        patterns,
+        ctx: {
+            editor: {
+                assetDb: {
+                    queryAssets: async ({ pattern }) => {
+                        patterns.push(pattern);
+                        return matches;
+                    },
+                    queryAssetInfo: async () => null
+                }
+            }
+        }
+    };
+}
+
+test('a cid whose script is gone resolves to itself once the lookup finds nothing', async () => {
+    const { ctx } = assetDbFinding([]);
+    assert.deepEqual(await resolveComponentCid(ctx, 'a1a43ZGW/xLp7dGgTuz1r4Y'), { cid: 'a1a43ZGW/xLp7dGgTuz1r4Y' });
+});
+
+test('a 23-char class name is still resolved through its script asset, not taken for a cid', async () => {
+    const { ctx, patterns } = assetDbFinding([{ uuid: SCRIPT_UUID, url: 'db://assets/InteractionCompletedTag.ts' }]);
+    assert.deepEqual(await resolveComponentCid(ctx, 'InteractionCompletedTag'), { cid: compressUuid(SCRIPT_UUID) });
+    assert.deepEqual(patterns, ['db://assets/**/InteractionCompletedTag.ts']);
+});
+
+test('a missing script that is not cid-shaped still fails with the scriptPath hint', async () => {
+    const { ctx } = assetDbFinding([]);
+    const result = await resolveComponentCid(ctx, 'Locomotion');
+    assert.equal(result.failure.error.code, 'script_not_found');
+    assert.match(result.failure.error.message, /Locomotion\.ts/);
+    assert.match(result.failure.error.hint, /scriptPath/);
 });

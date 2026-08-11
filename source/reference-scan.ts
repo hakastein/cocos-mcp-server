@@ -1,4 +1,4 @@
-import { decompressUuid } from './prefab-json';
+import { decompressUuid, PACKED_CID } from './prefab-json';
 
 export interface ReferenceSite {
     ref: string;
@@ -18,7 +18,6 @@ export interface ModelMetaScan {
 
 const DASHED_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const ASSET_REF = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(@[0-9a-zA-Z]+)?$/;
-const PACKED_CID = /^[0-9a-f]{5}[0-9a-zA-Z+/]{18}$/;
 
 const META_REF_FIELDS = [
     /^userData\.assetFinder\.(materials|textures)\[\d+\]$/,

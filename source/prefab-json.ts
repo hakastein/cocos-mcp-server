@@ -6,6 +6,9 @@ export interface NodeSelector {
     nodeId?: number;
 }
 
+/** The shape compressUuid produces: the uuid's first 5 hex chars verbatim, then 9 base64 pairs. */
+export const PACKED_CID = /^[0-9a-f]{5}[0-9a-zA-Z+/]{18}$/;
+
 /** Component `__type__` for a user script is its script-asset uuid packed to 23 chars (5 hex + 9 hex-triples). */
 export function compressUuid(uuid: string): string {
     const hex = uuid.replace(/-/g, '');
