@@ -66,6 +66,11 @@ async function resolveComponentCid(
 ): Promise<ResolvedCid | { failure: ToolFail }> {
     if (componentType.startsWith('cc.')) return { cid: componentType };
 
+    // An orphaned script component (its .ts deleted) has no name to look up — prefab_dump
+    // already reports its raw compressed cid as `type`/`className` for exactly this case, so
+    // accept that shape directly instead of forcing a script-asset lookup that can never succeed.
+    if (!scriptPath && /^[A-Za-z0-9+/]{23}$/.test(componentType)) return { cid: componentType };
+
     let uuid: string | undefined;
     if (scriptPath) {
         const info = await ctx.editor.assetDb.queryAssetInfo(scriptPath).catch(() => null);
