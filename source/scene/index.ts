@@ -14,7 +14,7 @@ import {
     revertPrefabInstance
 } from './prefab-ops';
 import {
-    declaredComponentProperty, evalInScene, nodePrefabLinkage, resolveNodePaths,
+    declaredComponentProperty, dumpMissingScripts, evalInScene, nodePrefabLinkage, resolveNodePaths,
     sceneDirtyAgainstDisk, serializedComponentValue
 } from './query';
 
@@ -45,5 +45,6 @@ export const methods: SceneMethods = {
     resolveNodePaths,
     dumpSceneNodes,
     findComponentOwners,
-    sceneDirtyAgainstDisk
+    sceneDirtyAgainstDisk,
+    dumpMissingScripts
 };

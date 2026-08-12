@@ -106,7 +106,8 @@
                 "resolveNodePaths",
                 "dumpSceneNodes",
                 "findComponentOwners",
-                "sceneDirtyAgainstDisk"
+                "sceneDirtyAgainstDisk",
+                "dumpMissingScripts"
             ]
         }
     }

@@ -1,4 +1,4 @@
-import { buildPathIndex, resolvePathInIndex } from '../node-path';
+import { buildPathIndex, resolvePathInIndex, siblingLabels } from '../node-path';
 import { diffSerialized } from '../serialized-diff';
 import type { DeclaredProperty, PrefabLinkageReport, SceneMethods, SceneResult } from '../scene-contract';
 import { ctorIsA, findNodeByUuid, plainSerialized, requireActiveScene } from './engine';
@@ -324,6 +324,58 @@ export const sceneDirtyAgainstDisk: SceneMethods['sceneDirtyAgainstDisk'] = () =
                 data: { differsFromDisk: diffs.length > 0, scenePath, diffs }
             };
         }).catch((error: any) => ({ success: false as const, error: error.message || String(error) }));
+    } catch (error: any) {
+        return { success: false, error: error.message };
+    }
+};
+
+/**
+ * Every `cc.MissingScript` in the open scene, with the class id the engine could not resolve.
+ *
+ * Also covers prefabs opened in edit mode and components on prefab instances, since both surface
+ * as ordinary scene nodes.
+ */
+export const dumpMissingScripts: SceneMethods['dumpMissingScripts'] = (options = {}) => {
+    try {
+        const cc = require('cc');
+        const scene = requireActiveScene();
+        const root = options.rootUuid ? findNodeByUuid(scene, options.rootUuid) : scene;
+        const entries: any[] = [];
+        let nodesWalked = 0;
+
+        const collect = (node: any, path: string) => {
+            nodesWalked++;
+            (node._components || []).forEach((component: any, index: number) => {
+                if (!(component instanceof cc.MissingScript)) return;
+                const serialized = component._$erialized;
+                entries.push({
+                    nodePath: path,
+                    nodeUuid: node.uuid,
+                    componentUuid: component.uuid,
+                    index,
+                    cid: serialized && typeof serialized.__type__ === 'string' ? serialized.__type__ : null
+                });
+            });
+        };
+
+        const walk = (parent: any, prefix: string) => {
+            const children = (parent.children || []).filter(Boolean);
+            const labels = siblingLabels(children);
+            children.forEach((child: any, i: number) => {
+                const path = prefix ? `${prefix}/${labels[i]}` : labels[i];
+                collect(child, path);
+                walk(child, path);
+            });
+        };
+
+        if (options.rootUuid) {
+            collect(root, root.name);
+            if (options.recursive !== false) walk(root, root.name);
+        } else {
+            walk(root, '');
+        }
+
+        return { success: true, data: { sceneName: scene.name, nodesWalked, entries } };
     } catch (error: any) {
         return { success: false, error: error.message };
     }

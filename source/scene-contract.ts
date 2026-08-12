@@ -320,6 +320,25 @@ export interface SceneDirtyReport {
     reason?: string;
 }
 
+export interface MissingScriptScanOptions {
+    rootUuid?: string;
+    recursive?: boolean;
+}
+
+export interface MissingScriptEntry {
+    nodePath: string;
+    nodeUuid: string;
+    componentUuid: string;
+    index: number;
+    cid: string | null;
+}
+
+export interface MissingScriptDump {
+    sceneName: string;
+    nodesWalked: number;
+    entries: MissingScriptEntry[];
+}
+
 export interface SceneMethods {
     declaredComponentProperty(componentType: string, property: string): SceneResult<DeclaredProperty>;
     addComponentToNode(nodeUuid: string, componentType: string): SceneResult<{ componentId: string }>;
@@ -379,6 +398,7 @@ export interface SceneMethods {
     ): SceneResult<PrunedOverrides>;
     resolveNodePaths(paths: any): SceneResult<ResolvedNodePaths>;
     dumpSceneNodes(options?: DumpOptions): SceneResult<SceneDump>;
+    dumpMissingScripts(options?: MissingScriptScanOptions): SceneResult<MissingScriptDump>;
     findComponentOwners(options?: any): SceneResult<ComponentOwnerReport>;
     sceneDirtyAgainstDisk(): SceneResult<SceneDirtyReport> | Promise<SceneResult<SceneDirtyReport>>;
 }
