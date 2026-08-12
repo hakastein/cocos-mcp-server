@@ -39,5 +39,5 @@ test('script cids are lifted out of asset text and deduped, builtins ignored', (
 });
 
 test('a 23-char __type__ that is not packed-shaped is not taken for a script cid', () => {
-    assert.deepEqual(scriptCidsInAssetText('{"__type__":"zzzzzNotAPackedCid1234"}'), []);
+    assert.deepEqual(scriptCidsInAssetText('{"__type__":"zzzzzNotAPackedCid12345"}'), []);
 });
