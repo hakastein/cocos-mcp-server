@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Cocos Creator 3.8.x editor extension that exposes the editor over MCP (Model Context Protocol),
 so an AI client drives scenes, prefabs, assets and builds through `http://127.0.0.1:4000/mcp`. This
-is a fork; the tool surface is 88 tools and is deliberately narrower and stricter than upstream's.
+is a fork; the tool surface is 89 tools and is deliberately narrower and stricter than upstream's.
 
 ## Build Commands
 

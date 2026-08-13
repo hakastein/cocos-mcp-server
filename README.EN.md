@@ -4,7 +4,7 @@ An MCP (Model Context Protocol) server that runs as a Cocos Creator 3.8.x editor
 client (Claude Code, Claude Desktop, Cursor) drives the editor: scenes, nodes, components, prefabs,
 assets, builds and the preview.
 
-This is a fork. The surface is **88 tools**, rewritten to answer honestly rather than broadly: a
+This is a fork. The surface is **89 tools**, rewritten to answer honestly rather than broadly: a
 write is read back, a refusal says what it refused, and a value the editor would drop on save is
 reported as such instead of being called a success.
 
@@ -102,7 +102,7 @@ Any tool taking a node uuid also accepts `nodePath` — the slash path `scene_du
 same-named siblings suffixed `#1`/`#2`. The registry resolves it to a uuid before the tool runs, and
 a path matching nothing or several nodes fails loudly with code `node_path`.
 
-## Tool Reference (88)
+## Tool Reference (89)
 
 ### Scene (15)
 | Tool | Description |
@@ -139,7 +139,7 @@ a path matching nothing or several nodes fails loudly with code `node_path`.
 | `node_cut_node` | Put nodes on the clipboard marked for a move |
 | `node_paste_node` | Paste clipboard nodes under a parent and return the uuids they got |
 
-### Component (6)
+### Component (7)
 | Tool | Description |
 |---|---|
 | `component_add_component` | Add a component idempotently — a type already present is reported, not duplicated |
@@ -148,6 +148,7 @@ a path matching nothing or several nodes fails loudly with code `node_path`.
 | `component_get_component_info` | One component in detail: per property its declared type, the write `kind`, and its value |
 | `component_set_component_property` | The one property writer for a scene: verified, undo-bracketed, reports channel and persistence |
 | `component_execute_component_method` | Call a method on a live component in the open scene |
+| `component_remove_missing_scripts` | Remove components whose script was deleted from the project — the asset database decides, not what the component looks like; reports only unless `apply` |
 
 ### Prefab (14)
 | Tool | Description |
