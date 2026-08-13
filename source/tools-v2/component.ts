@@ -1085,11 +1085,23 @@ interface SweepFailureEntry {
 }
 
 /** The only other `open-scene` caller in this bridge resolves a path first (`scene.ts:128-130`) — a raw url is a silent no-op that also breaks `query-current-scene` until a resolved call runs. */
-async function resolveOpenTarget(ctx: ToolContext, path: string): Promise<{ uuid: string; url: string } | null> {
-    const uuid = await ctx.editor.assetDb.queryUuid(path).catch(() => null);
-    if (!uuid) return null;
-    const url = await ctx.editor.assetDb.queryUrl(uuid).catch(() => null);
-    return url ? { uuid, url } : null;
+async function resolveOpenTarget(
+    ctx: ToolContext, path: string
+): Promise<{ uuid: string; url: string } | { reason: 'not_found' | 'lookup_failed' }> {
+    let uuid: string | null;
+    try {
+        uuid = await ctx.editor.assetDb.queryUuid(path);
+    } catch {
+        return { reason: 'lookup_failed' };
+    }
+    if (!uuid) return { reason: 'not_found' };
+    let url: string | null;
+    try {
+        url = await ctx.editor.assetDb.queryUrl(uuid);
+    } catch {
+        return { reason: 'lookup_failed' };
+    }
+    return url ? { uuid, url } : { reason: 'not_found' };
 }
 
 async function applyRemovals(
@@ -1110,10 +1122,15 @@ async function applyRemovals(
             'The scene script answered without saying whether the open scene has unsaved changes, so '
             + 'nothing was touched.');
     }
-    if (dirty.data.differsFromDisk === true) {
-        return fail('scene_dirty',
-            'The open scene has unsaved changes. Cleaning a prefab switches the editor away from it and '
-            + 'those changes would be lost. Save or discard the scene, then run this again.');
+    if (dirty.data.differsFromDisk !== false) {
+        if (dirty.data.differsFromDisk === true) {
+            return fail('scene_dirty',
+                'The open scene has unsaved changes. Cleaning a prefab switches the editor away from it '
+                + 'and those changes would be lost. Save or discard the scene, then run this again.');
+        }
+        return fail('scene_dirty_unknown',
+            'The scene script did not report differsFromDisk as a clear true or false, so nothing was '
+            + 'touched.');
     }
 
     const restoreUrl = await currentSceneUrl(ctx);
@@ -1136,9 +1153,11 @@ async function applyRemovals(
     const sweepFailures: SweepFailureEntry[] = [];
     let restoredTo: string | null = null;
     let sweptScene: string | null = null;
+    let editorOn = restoreUrl;
+    let prefabsOpenedSoFar = 0;
     const progress = (editorLeftOn: string) => ({
         ...summarise(applied),
-        prefabsOpened: prefabPaths.length,
+        prefabsOpened: prefabsOpenedSoFar,
         prefabsSaved,
         sweepFailures,
         unreadablePrefabs: unreadable,
@@ -1148,26 +1167,35 @@ async function applyRemovals(
 
     for (const path of prefabPaths) {
         const target = await resolveOpenTarget(ctx, path);
-        if (!target) {
-            return fail('prefab_not_found', `'${path}' did not resolve to an asset — nothing was opened`,
-                restoreUrl ? `The editor is still on ${restoreUrl}; nothing moved for this path.` : undefined,
-                progress(`'${path}' never resolved — the editor was not moved for it`));
+        if (!('uuid' in target)) {
+            const code = target.reason === 'lookup_failed' ? 'prefab_lookup_failed' : 'prefab_not_found';
+            const why = target.reason === 'lookup_failed'
+                ? 'the asset database could not be asked about it'
+                : 'it did not resolve to an asset';
+            return fail(code, `'${path}' was not opened — ${why}.`,
+                editorOn ? `The editor is still on ${editorOn}; nothing moved for this path.` : undefined,
+                progress(`'${path}' never resolved (${target.reason}) — the editor is still on `
+                    + `${editorOn ?? 'nothing'}`));
         }
         try {
             await ctx.editor.scene.openScene(target.uuid);
         } catch (error) {
             return fail('prefab_open_failed', `${path}: ${textOf(error)}`,
-                restoreUrl ? `Reopen ${restoreUrl} by hand — the editor is left on ${path}.` : undefined,
-                progress(`attempted to open '${path}' and failed — actual state unknown`));
+                editorOn ? `Reopen ${editorOn} by hand — the editor is left on ${path}.` : undefined,
+                progress(`attempted to open '${path}' from '${editorOn ?? 'nothing'}' and failed — actual `
+                    + 'state unknown'));
         }
         const openedUrl = await currentSceneUrl(ctx);
         if (openedUrl !== target.url) {
             return fail('graph_mismatch',
                 `Opened '${path}', but the editor now reports '${openedUrl ?? 'nothing'}' as current. `
                 + 'Nothing there was removed or saved.',
-                restoreUrl ? `Reopen ${restoreUrl} by hand.` : undefined,
+                editorOn ? `Reopen ${editorOn} by hand.` : undefined,
                 progress(`opened '${path}', but the editor reports '${openedUrl ?? 'nothing'}'`));
         }
+        editorOn = target.url;
+        prefabsOpenedSoFar++;
+
         const outcome = await sweepOpenGraph(ctx, exists, 'prefab', path);
         if ('failure' in outcome) {
             sweepFailures.push({ location: path, kind: 'unreadable', reason: outcome.failure.error.message });
@@ -1185,12 +1213,23 @@ async function applyRemovals(
                     + 'fixed.'
             });
         } else if (outcome.findings.some(finding => finding.removed)) {
+            const beforeSave = await currentSceneUrl(ctx);
+            if (beforeSave !== target.url) {
+                return fail('graph_mismatch',
+                    `About to save '${path}', but the editor now reports '${beforeSave ?? 'nothing'}' as `
+                    + 'current — the removal here can no longer be trusted to belong to this file, so '
+                    + 'nothing was saved.',
+                    editorOn ? `Reopen ${editorOn} by hand if needed — that was the last confirmed graph.`
+                        : undefined,
+                    progress(`about to save '${path}', but the editor now reports `
+                        + `'${beforeSave ?? 'nothing'}'`));
+            }
             try {
                 await ctx.editor.scene.saveScene();
                 prefabsSaved.push(path);
             } catch (error) {
                 return fail('prefab_save_failed', `${path}: ${textOf(error)}`,
-                    restoreUrl ? `Reopen ${restoreUrl} by hand — the editor is left on ${path} with the `
+                    editorOn ? `Reopen ${editorOn} by hand — the editor is left on ${path} with the `
                         + 'removal unsaved.' : undefined,
                     progress(`'${path}' — the removal there is NOT saved`));
             }
@@ -1198,22 +1237,25 @@ async function applyRemovals(
     }
 
     if (prefabPaths.length) {
-        const target = restoreUrl ? await resolveOpenTarget(ctx, restoreUrl) : null;
-        if (!target) {
+        const target = await resolveOpenTarget(ctx, restoreUrl as string);
+        if (!('uuid' in target)) {
+            const why = target.reason === 'lookup_failed'
+                ? 'the asset database could not be asked about it'
+                : 'it did not resolve to an asset';
             return fail('scene_restore_failed',
-                `${prefabPaths.length} prefab(s) were processed, but '${restoreUrl}' did not resolve to an `
-                + 'asset, so the editor was never moved back to it.',
-                undefined,
-                progress(`last prefab processed: '${prefabPaths[prefabPaths.length - 1]}' — restore never attempted`));
+                `${prefabsOpenedSoFar} prefab(s) were processed, but the editor was never moved back to `
+                + `'${restoreUrl}' — ${why}.`,
+                `Reopen ${restoreUrl} by hand.`,
+                progress(`editor is on '${editorOn ?? 'nothing'}' — restore never attempted`));
         }
         try {
             await ctx.editor.scene.openScene(target.uuid);
         } catch (error) {
             return fail('scene_restore_failed',
-                `${prefabPaths.length} prefab(s) were processed, but the editor could not return to `
+                `${prefabsOpenedSoFar} prefab(s) were processed, but the editor could not return to `
                 + `${restoreUrl}: ${textOf(error)}`,
-                undefined,
-                progress(`last prefab processed: '${prefabPaths[prefabPaths.length - 1]}'`));
+                `Reopen ${restoreUrl} by hand.`,
+                progress(`editor is on '${editorOn ?? 'nothing'}' — restore attempt failed`));
         }
         const backOn = await currentSceneUrl(ctx);
         if (backOn !== target.url) {
@@ -1223,6 +1265,7 @@ async function applyRemovals(
                 `Reopen ${restoreUrl} by hand — the editor did not land there on its own.`,
                 progress(`expected to be back on '${restoreUrl}', editor reports '${backOn ?? 'nothing'}'`));
         }
+        editorOn = target.url;
         restoredTo = target.url;
     }
 
@@ -1260,7 +1303,7 @@ async function applyRemovals(
             applied: true,
             ...summary,
             removedAndPersisted,
-            prefabsOpened: prefabPaths.length,
+            prefabsOpened: prefabsOpenedSoFar,
             prefabsSaved,
             restoredScene: restoredTo,
             sweptScene,
@@ -1295,12 +1338,14 @@ export const componentRemoveMissingScripts = defineTool({
         + '(scene_dirty_unknown if not) and then say clean (scene_dirty if not) — and, if any prefab '
         + 'needs opening, the editor must currently report a \'.scene\' url to come back to, or the '
         + 'run refuses outright (restore_scene_unknown) rather than strand itself with nowhere safe to '
-        + 'return. Applying then resolves each candidate path to an asset uuid first (prefab_not_found if '
-        + 'it does not — the raw url form of open-scene is a silent no-op in this editor and never even '
-        + 'tried), opens it, and reads back which asset the editor now considers current — a url that '
-        + 'does not match what was just asked for (graph_mismatch) aborts the whole run before touching a '
-        + 'single component, on the way in AND on the way back, so nothing is ever removed from, or saved '
-        + 'to, a graph this bridge did not ask to open. A prefab is SAVED only when the sweep actually '
+        + 'return. Applying then resolves each candidate path to an asset uuid first — prefab_not_found if '
+        + 'it genuinely does not resolve, prefab_lookup_failed if the asset database could not even be '
+        + 'asked (the raw url form of open-scene is a silent no-op in this editor and is never tried at '
+        + 'all) — opens it, and reads back which asset the editor now considers current: a url that does '
+        + 'not match what was just asked for is graph_mismatch, checked on the way in, again right before '
+        + 'the save itself, and once more on the way back, so nothing is ever removed from, or saved to, '
+        + 'a graph this bridge did not ask to open — and a removal made just before an unexpected graph '
+        + 'switch is never written either. A prefab is SAVED only when the sweep actually '
         + 'removed something from it AND '
         + 'every one of those removals was confirmed on the live graph — one that could not be confirmed '
         + 'in time blocks the save for the WHOLE prefab rather than writing a partially-known result, '
