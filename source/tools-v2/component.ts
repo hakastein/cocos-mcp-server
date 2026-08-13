@@ -13,7 +13,7 @@ import { dumpPrefabTree } from '../prefab-json';
 import { verdictForCid, scriptCidsInAssetText } from '../missing-scripts';
 import type { RegisteredTool } from '../tool';
 import type { ToolContext } from '../context';
-import type { WriteReport, MissingScriptDump } from '../scene-contract';
+import type { WriteReport, MissingScriptDump, SceneDirtyReport } from '../scene-contract';
 import type { MissingVerdict, ScriptCidVerdict } from '../missing-scripts';
 import type { PrefabDumpNode } from '../prefab-json';
 
@@ -880,11 +880,17 @@ async function sceneFindings(
     rootUuid?: string,
     recursive?: boolean
 ): Promise<{ findings: MissingFinding[] } | { failure: ToolFail }> {
-    const answer = fromScene(
-        await ctx.sceneScript.call('dumpMissingScripts', { rootUuid, recursive })
-    );
+    let answer: ReturnType<typeof fromScene<MissingScriptDump>>;
+    try {
+        answer = fromScene(await ctx.sceneScript.call('dumpMissingScripts', { rootUuid, recursive }));
+    } catch (error) {
+        return { failure: fail('scene_script', `dumpMissingScripts did not answer: ${textOf(error)}`) };
+    }
     if (!answer.success) return { failure: answer as ToolFail };
-    const dump = answer.data as MissingScriptDump;
+    if (answer.data === undefined) {
+        return { failure: fail('scene_script', 'dumpMissingScripts succeeded without data') };
+    }
+    const dump = answer.data;
     const findings: MissingFinding[] = [];
     for (const entry of dump.entries) {
         const verdict = entry.cid
@@ -977,13 +983,13 @@ async function prefabFindings(
 }
 
 function summarise(findings: MissingFinding[]) {
-    const missing = findings.filter(f => f.verdict === 'missing');
-    const refused = findings.filter(f => f.verdict !== 'missing');
-    const unloaded = findings.filter(f => f.verdict === 'script_exists');
+    const missing = findings.filter(finding => finding.verdict === 'missing');
+    const refused = findings.filter(finding => finding.verdict !== 'missing');
+    const unloaded = findings.filter(finding => finding.verdict === 'script_exists');
     return {
         scanned: findings.length,
         missing: missing.length,
-        removed: findings.filter(f => f.removed).length,
+        removed: findings.filter(finding => finding.removed).length,
         refused: refused.length,
         ...(unloaded.length
             ? {
@@ -1084,7 +1090,7 @@ interface SweepFailureEntry {
     reason: string;
 }
 
-/** The only other `open-scene` caller in this bridge resolves a path first (`scene.ts:128-130`) — a raw url is a silent no-op that also breaks `query-current-scene` until a resolved call runs. */
+/** The only other `open-scene` caller in this bridge resolves a path first (`sceneOpenScene` in `scene.ts`) — a raw url is a silent no-op that also breaks `query-current-scene` until a resolved call runs. */
 async function resolveOpenTarget(
     ctx: ToolContext, path: string
 ): Promise<{ uuid: string; url: string } | { reason: 'not_found' | 'lookup_failed' }> {
@@ -1111,7 +1117,14 @@ async function applyRemovals(
     exists: (uuid: string) => Promise<boolean | null>,
     unreadable: unknown[]
 ): Promise<ToolResult> {
-    const dirty = fromScene(await ctx.sceneScript.call('sceneDirtyAgainstDisk'));
+    let dirty: ReturnType<typeof fromScene<SceneDirtyReport>>;
+    try {
+        dirty = fromScene(await ctx.sceneScript.call('sceneDirtyAgainstDisk'));
+    } catch (error) {
+        return fail('scene_dirty_unknown',
+            'Whether the open scene has unsaved changes could not be established, so nothing was '
+            + `touched: ${textOf(error)}`);
+    }
     if (!dirty.success) {
         return fail('scene_dirty_unknown',
             'Whether the open scene has unsaved changes could not be established, so nothing was '
@@ -1122,6 +1135,8 @@ async function applyRemovals(
             'The scene script answered without saying whether the open scene has unsaved changes, so '
             + 'nothing was touched.');
     }
+    // `differsFromDisk: boolean` is a promise about JSON crossing IPC, not something the compiler
+    // checks — do not delete this branch as unreachable.
     if (dirty.data.differsFromDisk !== false) {
         if (dirty.data.differsFromDisk === true) {
             return fail('scene_dirty',
@@ -1181,7 +1196,7 @@ async function applyRemovals(
             await ctx.editor.scene.openScene(target.uuid);
         } catch (error) {
             return fail('prefab_open_failed', `${path}: ${textOf(error)}`,
-                editorOn ? `Reopen ${editorOn} by hand — the editor is left on ${path}.` : undefined,
+                editorOn ? `Reopen ${editorOn} by hand.` : undefined,
                 progress(`attempted to open '${path}' from '${editorOn ?? 'nothing'}' and failed — actual `
                     + 'state unknown'));
         }
@@ -1219,8 +1234,7 @@ async function applyRemovals(
                     `About to save '${path}', but the editor now reports '${beforeSave ?? 'nothing'}' as `
                     + 'current — the removal here can no longer be trusted to belong to this file, so '
                     + 'nothing was saved.',
-                    editorOn ? `Reopen ${editorOn} by hand if needed — that was the last confirmed graph.`
-                        : undefined,
+                    `Reopen ${restoreUrl} by hand.`,
                     progress(`about to save '${path}', but the editor now reports `
                         + `'${beforeSave ?? 'nothing'}'`));
             }
@@ -1229,8 +1243,7 @@ async function applyRemovals(
                 prefabsSaved.push(path);
             } catch (error) {
                 return fail('prefab_save_failed', `${path}: ${textOf(error)}`,
-                    editorOn ? `Reopen ${editorOn} by hand — the editor is left on ${path} with the `
-                        + 'removal unsaved.' : undefined,
+                    `Reopen ${restoreUrl} by hand once you are done with ${path}.`,
                     progress(`'${path}' — the removal there is NOT saved`));
             }
         }
@@ -1326,7 +1339,9 @@ export const componentRemoveMissingScripts = defineTool({
         + 'resolved against the asset database, and only a component whose script asset is genuinely '
         + 'absent is removed. Anything unproven is reported and left alone. Address one scene node '
         + '(its subtree unless recursive:false), one .prefab asset — the path MUST end in \'.prefab\', '
-        + 'checked before any work starts (invalid_args) — or pass nothing for the open scene plus '
+        + 'checked before any work starts (invalid_args), same as the asset database itself having to '
+        + 'already be ready (asset_db_not_ready if not — every script would read as absent while it is '
+        + 'still starting up) — or pass nothing for the open scene plus '
         + 'every prefab in the project, EXCEPT an FBX\'s own sub-asset prefab (X.fbx/X.prefab), which '
         + 'the project-wide sweep never offers as a candidate — it is importer-owned, not authored. '
         + 'apply defaults to false: the bare call is a report that touches nothing. A prefab the '
@@ -1352,8 +1367,9 @@ export const componentRemoveMissingScripts = defineTool({
         + 'leaving the file exactly as it was; the live removal itself does not survive the graph switch '
         + 'this run makes next (measured, not assumed), so there is nothing left to rescue by hand '
         + 'either. That shows up under `sweepFailures` (`kind: \'unsaved\'`, vs `\'unreadable\'` for a graph '
-        + 'that could not be inspected at all) — the response\'s `removed` count is everything actually '
-        + 'stripped from a live graph this run, `removedAndPersisted` is the smaller number of those that '
+        + 'that could not be inspected at all) — the response\'s `removed` count is everything CONFIRMED '
+        + 'stripped from a live graph this run (an `unconfirmed` removal is not in it, even though the '
+        + 'component is most likely gone), `removedAndPersisted` is the smaller number of those that '
         + 'are actually sitting in a file right now, and `persisted.prefabs` is true only when this run '
         + 'wrote at least one. With `prefabPath` set, only that one prefab is touched and the open '
         + 'scene is never swept. Otherwise the editor returns to the scene that was open before the call, '
@@ -1364,11 +1380,15 @@ export const componentRemoveMissingScripts = defineTool({
         + '`sweepFailures`, never silently called clean. If the editor cannot get back to the original '
         + 'scene, the call fails and names it to reopen by hand; whatever was already removed and saved '
         + 'before that point travels in the failure\'s `data`, together with where the editor was left. '
-        + 'Ctrl+Z does NOT bring a removed missing script back; git is the net for prefabs.',
+        + 'A saved prefab\'s diff is WIDER than the one removal — the editor re-serializes the whole '
+        + 'file through the same channel a human Ctrl+S would, so unrelated ordering or formatting can '
+        + 'shift too; that is not corruption, just what to expect before reading the diff. Ctrl+Z does '
+        + 'NOT bring a removed missing script back; git is the net for prefabs.',
     schema: z.object({
-        nodeUuid: z.string().optional().describe('Scene node to clean; its subtree is included'),
+        nodeUuid: z.string().min(1).optional().describe('Scene node to clean; its subtree is included'),
         recursive: booleanArg.optional().describe('Include the node\'s subtree (default true)'),
-        prefabPath: z.string().optional().describe('A .prefab asset to clean, e.g. db://assets/x/Y.prefab'),
+        prefabPath: z.string().min(1).optional()
+            .describe('A .prefab asset to clean, e.g. db://assets/x/Y.prefab'),
         apply: booleanArg.optional().describe('Actually remove (default false — report only)')
     }),
     aliases: { assetPath: 'prefabPath', prefab: 'prefabPath' },
@@ -1413,8 +1433,20 @@ export const componentRemoveMissingScripts = defineTool({
             const skipNote = unreadablePrefabs.length
                 ? `; ${unreadablePrefabs.length} prefab(s) could not be read and were skipped`
                 : '';
-            return ok({ applied: false, ...summary, unreadablePrefabs, findings },
-                `${summary.missing} removable missing script(s); nothing was changed${skipNote}`);
+            const openGraph = args.prefabPath ? null : await currentSceneUrl(ctx);
+            let graphNote = '';
+            if (!args.prefabPath) {
+                if (!openGraph) {
+                    graphNote = '; the editor did not report which graph is open, so the where:\'scene\' '
+                        + 'findings above could not be confirmed to actually be a scene';
+                } else if (!openGraph.endsWith('.scene')) {
+                    graphNote = `; the open graph is '${openGraph}', not a .scene — the where:'scene' `
+                        + 'findings above are really from that graph, and if it is also one of the '
+                        + 'prefabs scanned from disk below, it is counted twice';
+                }
+            }
+            return ok({ applied: false, ...summary, openGraph, unreadablePrefabs, findings },
+                `${summary.missing} removable missing script(s); nothing was changed${skipNote}${graphNote}`);
         }
         return applyRemovals(ctx, args, findings, exists, unreadablePrefabs);
     }

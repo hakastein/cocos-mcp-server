@@ -341,18 +341,15 @@ export const dumpMissingScripts: SceneMethods['dumpMissingScripts'] = (options =
         const scene = requireActiveScene();
         const root = options.rootUuid ? findNodeByUuid(scene, options.rootUuid) : scene;
         const entries: any[] = [];
-        let nodesWalked = 0;
 
         const collect = (node: any, path: string) => {
-            nodesWalked++;
-            (node._components || []).forEach((component: any, index: number) => {
+            (node._components || []).forEach((component: any) => {
                 if (!(component instanceof cc.MissingScript)) return;
                 const serialized = component._$erialized;
                 entries.push({
                     nodePath: path,
                     nodeUuid: node.uuid,
                     componentUuid: component.uuid,
-                    index,
                     cid: serialized && typeof serialized.__type__ === 'string' ? serialized.__type__ : null
                 });
             });
@@ -382,7 +379,7 @@ export const dumpMissingScripts: SceneMethods['dumpMissingScripts'] = (options =
             walk(root, '');
         }
 
-        return { success: true, data: { sceneName: scene.name, nodesWalked, entries } };
+        return { success: true, data: { entries } };
     } catch (error: any) {
         return { success: false, error: error.message };
     }

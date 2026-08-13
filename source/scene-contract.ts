@@ -329,13 +329,10 @@ export interface MissingScriptEntry {
     nodePath: string;
     nodeUuid: string;
     componentUuid: string;
-    index: number;
     cid: string | null;
 }
 
 export interface MissingScriptDump {
-    sceneName: string;
-    nodesWalked: number;
     entries: MissingScriptEntry[];
 }
 

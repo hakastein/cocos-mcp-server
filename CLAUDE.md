@@ -41,7 +41,8 @@ Everything a tool decides that does not need the editor lives in a **pure module
 `prefab-linkage.ts`, `reference-scan.ts`, `reference-projection.ts`, `batch-plan.ts`, `build-task.ts`,
 `asset-query.ts`, `asset-json.ts`, `node-path.ts`, `node-type.ts`, `project-log.ts`, `log-search.ts`,
 `serialized-diff.ts`, `scene-signature.ts`, `settle.ts`, `json-arg.ts`, `ecs-census.ts`,
-`undo-bracket.ts`. These are what the test suite covers; the layers above them are verified live.
+`undo-bracket.ts`, `missing-scripts.ts`. These are what the test suite covers; the layers above them
+are verified live.
 
 `main.ts` is the composition root and the only place that constructs anything: settings → `EditorApi`
 → `SceneScriptClient` → `PreviewLogStore` → `ToolContext` → `composeTools(ctx)` → `BridgeServer`.

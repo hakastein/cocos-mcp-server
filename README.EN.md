@@ -96,6 +96,12 @@ Scene writes are wrapped in the editor's undo recording, so **Ctrl+Z takes a bri
 When the editor refuses to record, or leaves the step open, the result says so in `undoNote`.
 Note that creating a node and then setting its transform is **two undo entries**, not one.
 
+Not every writer takes that bracket: `component_remove_component` and
+`component_remove_missing_scripts` remove a component directly, and Ctrl+Z does not bring it back —
+measured, not assumed. For `component_remove_missing_scripts` this matters more than usual: `apply`
+also writes the affected prefabs to disk, so the cost of that irreversibility is a file, not just the
+current editor session.
+
 ### Node addressing
 
 Any tool taking a node uuid also accepts `nodePath` — the slash path `scene_dump` prints, with
@@ -148,7 +154,7 @@ a path matching nothing or several nodes fails loudly with code `node_path`.
 | `component_get_component_info` | One component in detail: per property its declared type, the write `kind`, and its value |
 | `component_set_component_property` | The one property writer for a scene: verified, undo-bracketed, reports channel and persistence |
 | `component_execute_component_method` | Call a method on a live component in the open scene |
-| `component_remove_missing_scripts` | Remove components whose script was deleted from the project — the asset database decides, not what the component looks like; reports only unless `apply` |
+| `component_remove_missing_scripts` | Remove components whose script was deleted from the project — the asset database decides, not what the component looks like; reports only unless `apply`, which re-serializes a changed prefab whole, so its on-disk diff is wider than the one removal |
 
 ### Prefab (14)
 | Tool | Description |
