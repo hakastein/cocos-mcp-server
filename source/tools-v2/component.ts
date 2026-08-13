@@ -1,16 +1,20 @@
 import { z } from 'zod';
 import { booleanArg, defineTool } from '../tool';
 import { ok, fail, ToolFail, ToolResult } from '../result';
-import { anyValued, textOf } from './shared';
+import { anyValued, fromScene, textOf } from './shared';
 import { settle } from '../settle';
 import { coerceJsonArg } from '../json-arg';
 import { PropertyDescriptor, isArrayDescriptor, resolveKind } from '../property/kind';
 import { projectDescriptor } from '../property/readers';
 import { readBack, WriteTarget } from '../property/writers';
 import { verifiedWrite, VerifiedWriteOptions } from '../property/verified-write';
+import { readAssetText } from '../asset-json';
+import { dumpPrefabTree } from '../prefab-json';
+import { verdictForCid, scriptCidsInAssetText } from '../missing-scripts';
 import type { RegisteredTool } from '../tool';
 import type { ToolContext } from '../context';
-import type { WriteReport } from '../scene-contract';
+import type { WriteReport, MissingScriptDump } from '../scene-contract';
+import type { MissingVerdict, ScriptCidVerdict } from '../missing-scripts';
 
 export interface DumpComponent {
     __type__?: string;
@@ -832,11 +836,228 @@ export const componentExecuteComponentMethod = defineTool({
     }
 });
 
+export interface MissingFinding {
+    where: 'scene' | 'prefab';
+    location: string;
+    nodePath: string;
+    cid: string;
+    scriptUuid: string | null;
+    verdict: MissingVerdict;
+    reason: string;
+    removed: boolean;
+    componentUuid?: string;
+    nodeUuid?: string;
+}
+
+function assetExistenceCache(ctx: ToolContext): (uuid: string) => Promise<boolean> {
+    const answered = new Map<string, Promise<boolean>>();
+    return (uuid: string) => {
+        const known = answered.get(uuid);
+        if (known) return known;
+        const asked = ctx.editor.assetDb.queryAssetInfo(uuid)
+            .then(info => !!info)
+            .catch(() => false);
+        answered.set(uuid, asked);
+        return asked;
+    };
+}
+
+async function judge(
+    cid: string,
+    exists: (uuid: string) => Promise<boolean>
+): Promise<ScriptCidVerdict> {
+    const shape = verdictForCid(cid, null);
+    if (!shape.scriptUuid) return shape;
+    return verdictForCid(cid, await exists(shape.scriptUuid));
+}
+
+async function sceneFindings(
+    ctx: ToolContext,
+    exists: (uuid: string) => Promise<boolean>,
+    rootUuid?: string,
+    recursive?: boolean
+): Promise<{ findings: MissingFinding[] } | { failure: ToolFail }> {
+    const answer = fromScene(
+        await ctx.sceneScript.call('dumpMissingScripts', { rootUuid, recursive })
+    );
+    if (!answer.success) return { failure: answer as ToolFail };
+    const dump = answer.data as MissingScriptDump;
+    const findings: MissingFinding[] = [];
+    for (const entry of dump.entries) {
+        const verdict = entry.cid
+            ? await judge(entry.cid, exists)
+            : verdictForCid('<no serialized __type__>', null);
+        findings.push({
+            where: 'scene',
+            location: entry.nodePath,
+            nodePath: entry.nodePath,
+            cid: verdict.cid,
+            scriptUuid: verdict.scriptUuid,
+            verdict: verdict.verdict,
+            reason: verdict.reason,
+            removed: false,
+            componentUuid: entry.componentUuid,
+            nodeUuid: entry.nodeUuid
+        });
+    }
+    return { findings };
+}
+
+/**
+ * Findings read straight out of a prefab FILE, so a report costs no scene switch. The apply pass
+ * re-derives them from the live graph after opening the prefab, which is what actually gets removed.
+ */
+async function prefabFindings(
+    prefabPath: string,
+    exists: (uuid: string) => Promise<boolean>
+): Promise<{ findings: MissingFinding[] } | { failure: ToolFail }> {
+    let data: any;
+    try {
+        data = JSON.parse(await readAssetText(prefabPath));
+    } catch (error) {
+        return { failure: fail('prefab_unreadable', `${prefabPath}: ${textOf(error)}`) };
+    }
+    if (!Array.isArray(data)) {
+        return { failure: fail('prefab_unreadable', `${prefabPath} is not a prefab array`) };
+    }
+    const findings: MissingFinding[] = [];
+    for (const node of dumpPrefabTree(data)) {
+        for (const component of node.components) {
+            const verdict = await judge(component.type, exists);
+            if (verdict.verdict === 'script_exists') continue;
+            if (verdict.verdict === 'unverifiable' && !verdict.scriptUuid) continue;
+            findings.push({
+                where: 'prefab',
+                location: prefabPath,
+                nodePath: node.path,
+                cid: verdict.cid,
+                scriptUuid: verdict.scriptUuid,
+                verdict: verdict.verdict,
+                reason: verdict.reason,
+                removed: false
+            });
+        }
+    }
+    return { findings };
+}
+
+function summarise(findings: MissingFinding[]) {
+    const missing = findings.filter(f => f.verdict === 'missing');
+    const refused = findings.filter(f => f.verdict !== 'missing');
+    const unloaded = findings.filter(f => f.verdict === 'script_exists');
+    return {
+        scanned: findings.length,
+        missing: missing.length,
+        removed: findings.filter(f => f.removed).length,
+        refused: refused.length,
+        ...(unloaded.length
+            ? {
+                compileWarning: `${unloaded.length} component(s) reference scripts that ARE still in the `
+                    + 'asset database — that is what a compile error looks like. None of them were touched.'
+            }
+            : {})
+    };
+}
+
+/**
+ * Opening a prefab loads its whole dependency tree, so the project-wide sweep only opens the ones
+ * whose file already names a script asset the database does not have. Same funnel as the verdict,
+ * same cache — the file is read, never judged on its own.
+ */
+async function targetPrefabs(
+    ctx: ToolContext,
+    explicit: string | undefined,
+    exists: (uuid: string) => Promise<boolean>
+): Promise<string[]> {
+    if (explicit) return [explicit];
+    const assets = await ctx.editor.assetDb.queryAssets({ pattern: 'db://assets/**/*.prefab' });
+    const candidates: string[] = [];
+    for (const asset of assets) {
+        let text: string;
+        try {
+            text = await readAssetText(asset.url);
+        } catch {
+            continue;
+        }
+        for (const cid of scriptCidsInAssetText(text)) {
+            const verdict = await judge(cid, exists);
+            if (verdict.verdict === 'missing') {
+                candidates.push(asset.url);
+                break;
+            }
+        }
+    }
+    return candidates;
+}
+
+async function applyRemovals(
+    _ctx: ToolContext,
+    _args: { nodeUuid?: string; prefabPath?: string; recursive?: boolean },
+    _findings: MissingFinding[],
+    _exists: (uuid: string) => Promise<boolean>
+): Promise<ToolResult> {
+    return fail('not_implemented', 'apply is not wired yet');
+}
+
+export const componentRemoveMissingScripts = defineTool({
+    name: 'component_remove_missing_scripts',
+    description: 'Remove components whose script was DELETED from the project. A component with an '
+        + 'unresolvable type deserializes as cc.MissingScript, which is also what a compile error does '
+        + 'to EVERY script at once — so the class id (a user script\'s id is its .ts uuid, packed) is '
+        + 'resolved against the asset database, and only a component whose script asset is genuinely '
+        + 'absent is removed. Anything unproven is reported and left alone. Address one scene node '
+        + '(its subtree unless recursive:false), one .prefab asset, or pass nothing for the open scene '
+        + 'plus every prefab in the project. apply defaults to false: the bare call is a report that '
+        + 'touches nothing. Applying opens each prefab as a scene, removes through the editor and '
+        + 'saves it, then returns to the scene that was open and does the scene last WITHOUT saving — '
+        + 'so the prefabs are on disk and the scene edits are yours to save. Ctrl+Z does NOT bring a '
+        + 'removed missing script back; git is the net for prefabs.',
+    schema: z.object({
+        nodeUuid: z.string().optional().describe('Scene node to clean; its subtree is included'),
+        recursive: booleanArg.optional().describe('Include the node\'s subtree (default true)'),
+        prefabPath: z.string().optional().describe('A .prefab asset to clean, e.g. db://assets/x/Y.prefab'),
+        apply: booleanArg.optional().describe('Actually remove (default false — report only)')
+    }),
+    aliases: { assetPath: 'prefabPath', prefab: 'prefabPath', dryRun: 'apply' },
+    async handler(args, ctx) {
+        if (args.nodeUuid && args.prefabPath) {
+            return fail('invalid_args', 'Pass a node or a prefabPath, not both — they are different targets.');
+        }
+        if (!(await ctx.editor.assetDb.queryReady().catch(() => false))) {
+            return fail('asset_db_not_ready',
+                'The asset database has not finished starting up. Every script would read as absent right now.');
+        }
+        const exists = assetExistenceCache(ctx);
+        const findings: MissingFinding[] = [];
+
+        if (!args.prefabPath) {
+            const scene = await sceneFindings(ctx, exists, args.nodeUuid, args.recursive);
+            if ('failure' in scene) return scene.failure;
+            findings.push(...scene.findings);
+        }
+        if (!args.nodeUuid) {
+            for (const path of await targetPrefabs(ctx, args.prefabPath, exists)) {
+                const prefab = await prefabFindings(path, exists);
+                if ('failure' in prefab) return prefab.failure;
+                findings.push(...prefab.findings);
+            }
+        }
+
+        if (args.apply !== true) {
+            const summary = summarise(findings);
+            return ok({ applied: false, ...summary, findings },
+                `${summary.missing} removable missing script(s); nothing was changed`);
+        }
+        return applyRemovals(ctx, args, findings, exists);
+    }
+});
+
 export const componentTools: RegisteredTool[] = [
     componentAddComponent,
     componentRemoveComponent,
     componentGetComponents,
     componentGetComponentInfo,
     componentSetComponentProperty,
-    componentExecuteComponentMethod
+    componentExecuteComponentMethod,
+    componentRemoveMissingScripts
 ];

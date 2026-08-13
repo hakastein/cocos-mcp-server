@@ -7,7 +7,7 @@ test('the whole advertised surface composes with no name collision across catego
     const names = composeTools().list().map(tool => tool.name);
 
     assert.equal(new Set(names).size, names.length);
-    assert.equal(names.length, 88, `the surface is ${names.length} tools: ${names.join(', ')}`);
+    assert.equal(names.length, 89, `the surface is ${names.length} tools: ${names.join(', ')}`);
     assert.ok(names.includes('scene_dump'), 'the migrated scene category is missing from the surface');
     assert.ok(names.includes('node_create_node'), 'the migrated node category is missing from the surface');
     assert.ok(names.includes('component_set_component_property'),
