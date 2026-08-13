@@ -1092,6 +1092,13 @@ async function applyRemovals(
         finding => finding.where === 'prefab' && !prefabPaths.includes(finding.location)
     );
 
+    if (prefabPaths.length && !restoreUrl) {
+        return fail('restore_scene_unknown',
+            `The editor did not report which scene is open, so opening ${prefabPaths.length} prefab(s) `
+            + 'would be a one-way trip with no url to return to. Open a scene in the editor, then run '
+            + 'this again.');
+    }
+
     for (const path of prefabPaths) {
         try {
             await ctx.editor.scene.openScene(path);
