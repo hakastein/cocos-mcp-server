@@ -913,7 +913,7 @@ function mountedComponentCids(data: any[]): string[] {
     const found: string[] = [];
     for (const entry of data) {
         if (!entry || entry.__type__ !== 'cc.MountedComponentsInfo') continue;
-        for (const ref of entry.components || []) {
+        for (const ref of Array.isArray(entry.components) ? entry.components : []) {
             const component = typeof ref?.__id__ === 'number' ? data[ref.__id__] : undefined;
             if (component && typeof component.__type__ === 'string') found.push(component.__type__);
         }
@@ -1025,13 +1025,120 @@ async function targetPrefabs(
     return candidates;
 }
 
+async function currentSceneUrl(ctx: ToolContext): Promise<string | null> {
+    const info = await ctx.editor.scene.queryCurrentScene().catch(() => null);
+    if (!info) return null;
+    return ctx.editor.assetDb.queryUrl(String(info)).catch(() => null);
+}
+
+async function removeAt(ctx: ToolContext, finding: MissingFinding): Promise<boolean> {
+    if (!finding.componentUuid || !finding.nodeUuid) return false;
+    try {
+        await ctx.editor.scene.removeComponent({ uuid: finding.componentUuid });
+    } catch {
+        return false;
+    }
+    return settle(async () => {
+        const answer = fromScene(
+            await ctx.sceneScript.call('dumpMissingScripts', { rootUuid: finding.nodeUuid, recursive: false })
+        );
+        if (!answer.success) return false;
+        const dump = answer.data as MissingScriptDump;
+        return !dump.entries.some(entry => entry.componentUuid === finding.componentUuid);
+    });
+}
+
+async function sweepOpenGraph(
+    ctx: ToolContext,
+    exists: (uuid: string) => Promise<boolean | null>,
+    where: 'scene' | 'prefab',
+    location: string,
+    rootUuid?: string,
+    recursive?: boolean
+): Promise<MissingFinding[]> {
+    const found = await sceneFindings(ctx, exists, rootUuid, recursive);
+    if ('failure' in found) return [];
+    const done: MissingFinding[] = [];
+    for (const finding of found.findings) {
+        const shaped: MissingFinding = { ...finding, where, location: where === 'prefab' ? location : finding.nodePath };
+        if (shaped.verdict === 'missing') shaped.removed = await removeAt(ctx, shaped);
+        done.push(shaped);
+    }
+    return done;
+}
+
 async function applyRemovals(
-    _ctx: ToolContext,
-    _args: { nodeUuid?: string; prefabPath?: string; recursive?: boolean },
-    _findings: MissingFinding[],
-    _exists: (uuid: string) => Promise<boolean | null>
+    ctx: ToolContext,
+    args: { nodeUuid?: string; prefabPath?: string; recursive?: boolean },
+    scanned: MissingFinding[],
+    exists: (uuid: string) => Promise<boolean | null>,
+    unreadable: unknown[]
 ): Promise<ToolResult> {
-    return fail('not_implemented', 'apply is not wired yet');
+    const dirty = fromScene(await ctx.sceneScript.call('sceneDirtyAgainstDisk'));
+    if (dirty.success && (dirty.data as any)?.differsFromDisk === true) {
+        return fail('scene_dirty',
+            'The open scene has unsaved changes. Cleaning a prefab switches the editor away from it and '
+            + 'those changes would be lost. Save or discard the scene, then run this again.');
+    }
+
+    const restoreUrl = await currentSceneUrl(ctx);
+    // 'unverifiable' opens the prefab too: the live graph is a second chance to classify what the
+    // file could not settle. It still cannot authorise a removal — only 'missing' does that.
+    const prefabPaths = [...new Set(
+        scanned.filter(finding => finding.where === 'prefab' && finding.verdict !== 'script_exists')
+            .map(finding => finding.location)
+    )];
+    const applied: MissingFinding[] = scanned.filter(
+        finding => finding.where === 'prefab' && !prefabPaths.includes(finding.location)
+    );
+
+    for (const path of prefabPaths) {
+        try {
+            await ctx.editor.scene.openScene(path);
+        } catch (error) {
+            return fail('prefab_open_failed', `${path}: ${textOf(error)}`,
+                restoreUrl ? `Reopen ${restoreUrl} by hand — the editor is left on ${path}.` : undefined);
+        }
+        const swept = await sweepOpenGraph(ctx, exists, 'prefab', path);
+        applied.push(...swept);
+        // Saving a prefab nothing was removed from rewrites the file for no reason — and a sweep
+        // where the database stopped answering makes every prefab a candidate with zero removals.
+        if (swept.some(finding => finding.removed)) {
+            try {
+                await ctx.editor.scene.saveScene();
+            } catch (error) {
+                return fail('prefab_save_failed', `${path}: ${textOf(error)}`);
+            }
+        }
+    }
+
+    if (restoreUrl) {
+        try {
+            await ctx.editor.scene.openScene(restoreUrl);
+        } catch (error) {
+            return fail('scene_restore_failed',
+                `Prefabs were cleaned, but the editor could not return to ${restoreUrl}: ${textOf(error)}`);
+        }
+    }
+
+    if (!args.prefabPath) {
+        applied.push(...await sweepOpenGraph(ctx, exists, 'scene', '', args.nodeUuid, args.recursive));
+    }
+
+    const summary = summarise(applied);
+    return ok(
+        {
+            applied: true,
+            ...summary,
+            prefabsOpened: prefabPaths.length,
+            restoredScene: restoreUrl,
+            persisted: { prefabs: true, scene: false },
+            unreadablePrefabs: unreadable,
+            findings: applied
+        },
+        `${summary.removed} missing script(s) removed. Prefabs are written to disk; the open scene is `
+        + 'NOT saved — save it yourself. Ctrl+Z does not undo a missing-script removal.'
+    );
 }
 
 export const componentRemoveMissingScripts = defineTool({
@@ -1043,10 +1150,16 @@ export const componentRemoveMissingScripts = defineTool({
         + 'absent is removed. Anything unproven is reported and left alone. Address one scene node '
         + '(its subtree unless recursive:false), one .prefab asset, or pass nothing for the open scene '
         + 'plus every prefab in the project. apply defaults to false: the bare call is a report that '
-        + 'touches nothing. Applying opens each prefab as a scene, removes through the editor and '
-        + 'saves it, then returns to the scene that was open and does the scene last WITHOUT saving — '
-        + 'so the prefabs are on disk and the scene edits are yours to save. Ctrl+Z does NOT bring a '
-        + 'removed missing script back; git is the net for prefabs.',
+        + 'touches nothing. Applying opens each candidate prefab as a scene and removes through the '
+        + 'editor, but SAVES it only when something was actually removed — a prefab that turned out '
+        + 'clean is opened and left untouched on disk. A prefab the scan could not read up front is '
+        + 'never opened; it is skipped and listed under `unreadablePrefabs` in the reply, on a report '
+        + 'call and an apply call alike. With `prefabPath` set, only that one prefab is touched and '
+        + 'the open scene is never swept. Otherwise the editor returns to the scene that was open '
+        + 'before the call and sweeps it LAST, WITHOUT saving — so prefabs are already on disk while '
+        + 'the scene edits are yours to save. If the editor cannot get back to that scene, the call fails '
+        + 'and names it to reopen by hand; prefabs already written stay written. Ctrl+Z does NOT bring '
+        + 'a removed missing script back; git is the net for prefabs.',
     schema: z.object({
         nodeUuid: z.string().optional().describe('Scene node to clean; its subtree is included'),
         recursive: booleanArg.optional().describe('Include the node\'s subtree (default true)'),
@@ -1093,7 +1206,7 @@ export const componentRemoveMissingScripts = defineTool({
             return ok({ applied: false, ...summary, unreadablePrefabs, findings },
                 `${summary.missing} removable missing script(s); nothing was changed${skipNote}`);
         }
-        return applyRemovals(ctx, args, findings, exists);
+        return applyRemovals(ctx, args, findings, exists, unreadablePrefabs);
     }
 });
 

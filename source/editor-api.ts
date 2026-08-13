@@ -153,6 +153,9 @@ export class EditorApi {
         openScene: (uuid: string): Promise<void> =>
             this.request('scene', 'open-scene', uuid),
 
+        queryCurrentScene: (): Promise<string | null> =>
+            this.request('scene', 'query-current-scene'),
+
         softReload: (): Promise<void> =>
             this.request('scene', 'soft-reload'),
 
