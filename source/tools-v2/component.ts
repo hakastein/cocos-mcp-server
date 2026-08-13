@@ -1179,9 +1179,10 @@ async function applyRemovals(
                 location: path,
                 kind: 'unsaved',
                 reason: `${outcome.unconfirmedRemovals} removal(s) on this prefab could not be confirmed in `
-                    + 'time, so it was NOT saved. The file on disk is unchanged — nothing was lost there — '
-                    + 'but the live edit itself is likely gone once this run moves past this prefab, the '
-                    + `same as any other unsaved graph switch. Re-run with prefabPath: '${path}' to try again.`
+                    + 'time, so nothing was saved and the prefab file is untouched. The live removal does '
+                    + 'not survive the graph switch this run makes next — measured, not assumed — so there '
+                    + `is nothing left to save by hand. Re-run once whatever delayed the confirmation is `
+                    + 'fixed.'
             });
         } else if (outcome.findings.some(finding => finding.removed)) {
             try {
@@ -1303,7 +1304,9 @@ export const componentRemoveMissingScripts = defineTool({
         + 'removed something from it AND '
         + 'every one of those removals was confirmed on the live graph — one that could not be confirmed '
         + 'in time blocks the save for the WHOLE prefab rather than writing a partially-known result, '
-        + 'and that shows up under `sweepFailures` (`kind: \'unsaved\'`, vs `\'unreadable\'` for a graph '
+        + 'leaving the file exactly as it was; the live removal itself does not survive the graph switch '
+        + 'this run makes next (measured, not assumed), so there is nothing left to rescue by hand '
+        + 'either. That shows up under `sweepFailures` (`kind: \'unsaved\'`, vs `\'unreadable\'` for a graph '
         + 'that could not be inspected at all) — the response\'s `removed` count is everything actually '
         + 'stripped from a live graph this run, `removedAndPersisted` is the smaller number of those that '
         + 'are actually sitting in a file right now, and `persisted.prefabs` is true only when this run '
