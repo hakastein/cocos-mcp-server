@@ -1075,6 +1075,9 @@ export const componentRemoveMissingScripts = defineTool({
             for (const path of await targetPrefabs(ctx, args.prefabPath, exists)) {
                 const prefab = await prefabFindings(path, exists);
                 if ('failure' in prefab) {
+                    // A path the SWEEP discovered is skipped and reported; a path the caller NAMED
+                    // is the whole ask, so failing it silently would report "clean" on nothing seen.
+                    if (args.prefabPath) return prefab.failure;
                     unreadablePrefabs.push({ path, reason: prefab.failure.error.message });
                     continue;
                 }
