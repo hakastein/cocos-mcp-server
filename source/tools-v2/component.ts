@@ -15,6 +15,7 @@ import type { RegisteredTool } from '../tool';
 import type { ToolContext } from '../context';
 import type { WriteReport, MissingScriptDump } from '../scene-contract';
 import type { MissingVerdict, ScriptCidVerdict } from '../missing-scripts';
+import type { PrefabDumpNode } from '../prefab-json';
 
 export interface DumpComponent {
     __type__?: string;
@@ -847,16 +848,18 @@ export interface MissingFinding {
     removed: boolean;
     componentUuid?: string;
     nodeUuid?: string;
+    mounted?: boolean;
 }
 
-function assetExistenceCache(ctx: ToolContext): (uuid: string) => Promise<boolean> {
-    const answered = new Map<string, Promise<boolean>>();
+/** queryAssetInfo throws on a dropped request, not just on a missing asset — catch that as null, not false. */
+function assetExistenceCache(ctx: ToolContext): (uuid: string) => Promise<boolean | null> {
+    const answered = new Map<string, Promise<boolean | null>>();
     return (uuid: string) => {
         const known = answered.get(uuid);
         if (known) return known;
         const asked = ctx.editor.assetDb.queryAssetInfo(uuid)
             .then(info => !!info)
-            .catch(() => false);
+            .catch(() => null);
         answered.set(uuid, asked);
         return asked;
     };
@@ -864,7 +867,7 @@ function assetExistenceCache(ctx: ToolContext): (uuid: string) => Promise<boolea
 
 async function judge(
     cid: string,
-    exists: (uuid: string) => Promise<boolean>
+    exists: (uuid: string) => Promise<boolean | null>
 ): Promise<ScriptCidVerdict> {
     const shape = verdictForCid(cid, null);
     if (!shape.scriptUuid) return shape;
@@ -873,7 +876,7 @@ async function judge(
 
 async function sceneFindings(
     ctx: ToolContext,
-    exists: (uuid: string) => Promise<boolean>,
+    exists: (uuid: string) => Promise<boolean | null>,
     rootUuid?: string,
     recursive?: boolean
 ): Promise<{ findings: MissingFinding[] } | { failure: ToolFail }> {
@@ -903,13 +906,46 @@ async function sceneFindings(
     return { findings };
 }
 
+const MOUNTED_NODE_PATH = '(mounted onto a nested prefab instance — this file names no node for it)';
+
+/** `ref.__id__` here indexes straight into `data`; dumpPrefabTree never reaches these, only node._components. */
+function mountedComponentCids(data: any[]): string[] {
+    const found: string[] = [];
+    for (const entry of data) {
+        if (!entry || entry.__type__ !== 'cc.MountedComponentsInfo') continue;
+        for (const ref of entry.components || []) {
+            const component = typeof ref?.__id__ === 'number' ? data[ref.__id__] : undefined;
+            if (component && typeof component.__type__ === 'string') found.push(component.__type__);
+        }
+    }
+    return found;
+}
+
+function pushFinding(
+    findings: MissingFinding[], prefabPath: string, nodePath: string, verdict: ScriptCidVerdict, mounted: boolean
+): void {
+    if (verdict.verdict === 'script_exists') return;
+    if (verdict.verdict === 'unverifiable' && !verdict.scriptUuid) return;
+    findings.push({
+        where: 'prefab',
+        location: prefabPath,
+        nodePath,
+        cid: verdict.cid,
+        scriptUuid: verdict.scriptUuid,
+        verdict: verdict.verdict,
+        reason: verdict.reason,
+        removed: false,
+        ...(mounted ? { mounted: true } : {})
+    });
+}
+
 /**
  * Findings read straight out of a prefab FILE, so a report costs no scene switch. The apply pass
  * re-derives them from the live graph after opening the prefab, which is what actually gets removed.
  */
 async function prefabFindings(
     prefabPath: string,
-    exists: (uuid: string) => Promise<boolean>
+    exists: (uuid: string) => Promise<boolean | null>
 ): Promise<{ findings: MissingFinding[] } | { failure: ToolFail }> {
     let data: any;
     try {
@@ -920,23 +956,22 @@ async function prefabFindings(
     if (!Array.isArray(data)) {
         return { failure: fail('prefab_unreadable', `${prefabPath} is not a prefab array`) };
     }
+    let nodes: PrefabDumpNode[];
+    try {
+        nodes = dumpPrefabTree(data);
+    } catch (error) {
+        return { failure: fail('prefab_unreadable', `${prefabPath}: ${textOf(error)}`) };
+    }
     const findings: MissingFinding[] = [];
-    for (const node of dumpPrefabTree(data)) {
+    for (const node of nodes) {
         for (const component of node.components) {
             const verdict = await judge(component.type, exists);
-            if (verdict.verdict === 'script_exists') continue;
-            if (verdict.verdict === 'unverifiable' && !verdict.scriptUuid) continue;
-            findings.push({
-                where: 'prefab',
-                location: prefabPath,
-                nodePath: node.path,
-                cid: verdict.cid,
-                scriptUuid: verdict.scriptUuid,
-                verdict: verdict.verdict,
-                reason: verdict.reason,
-                removed: false
-            });
+            pushFinding(findings, prefabPath, node.path, verdict, false);
         }
+    }
+    for (const cid of mountedComponentCids(data)) {
+        const verdict = await judge(cid, exists);
+        pushFinding(findings, prefabPath, MOUNTED_NODE_PATH, verdict, true);
     }
     return { findings };
 }
@@ -967,7 +1002,7 @@ function summarise(findings: MissingFinding[]) {
 async function targetPrefabs(
     ctx: ToolContext,
     explicit: string | undefined,
-    exists: (uuid: string) => Promise<boolean>
+    exists: (uuid: string) => Promise<boolean | null>
 ): Promise<string[]> {
     if (explicit) return [explicit];
     const assets = await ctx.editor.assetDb.queryAssets({ pattern: 'db://assets/**/*.prefab' });
@@ -981,7 +1016,7 @@ async function targetPrefabs(
         }
         for (const cid of scriptCidsInAssetText(text)) {
             const verdict = await judge(cid, exists);
-            if (verdict.verdict === 'missing') {
+            if (verdict.verdict === 'missing' || verdict.verdict === 'unverifiable') {
                 candidates.push(asset.url);
                 break;
             }
@@ -994,7 +1029,7 @@ async function applyRemovals(
     _ctx: ToolContext,
     _args: { nodeUuid?: string; prefabPath?: string; recursive?: boolean },
     _findings: MissingFinding[],
-    _exists: (uuid: string) => Promise<boolean>
+    _exists: (uuid: string) => Promise<boolean | null>
 ): Promise<ToolResult> {
     return fail('not_implemented', 'apply is not wired yet');
 }
@@ -1018,7 +1053,7 @@ export const componentRemoveMissingScripts = defineTool({
         prefabPath: z.string().optional().describe('A .prefab asset to clean, e.g. db://assets/x/Y.prefab'),
         apply: booleanArg.optional().describe('Actually remove (default false — report only)')
     }),
-    aliases: { assetPath: 'prefabPath', prefab: 'prefabPath', dryRun: 'apply' },
+    aliases: { assetPath: 'prefabPath', prefab: 'prefabPath' },
     async handler(args, ctx) {
         if (args.nodeUuid && args.prefabPath) {
             return fail('invalid_args', 'Pass a node or a prefabPath, not both — they are different targets.');
@@ -1029,6 +1064,7 @@ export const componentRemoveMissingScripts = defineTool({
         }
         const exists = assetExistenceCache(ctx);
         const findings: MissingFinding[] = [];
+        const unreadablePrefabs: Array<{ path: string; reason: string }> = [];
 
         if (!args.prefabPath) {
             const scene = await sceneFindings(ctx, exists, args.nodeUuid, args.recursive);
@@ -1038,15 +1074,21 @@ export const componentRemoveMissingScripts = defineTool({
         if (!args.nodeUuid) {
             for (const path of await targetPrefabs(ctx, args.prefabPath, exists)) {
                 const prefab = await prefabFindings(path, exists);
-                if ('failure' in prefab) return prefab.failure;
+                if ('failure' in prefab) {
+                    unreadablePrefabs.push({ path, reason: prefab.failure.error.message });
+                    continue;
+                }
                 findings.push(...prefab.findings);
             }
         }
 
         if (args.apply !== true) {
             const summary = summarise(findings);
-            return ok({ applied: false, ...summary, findings },
-                `${summary.missing} removable missing script(s); nothing was changed`);
+            const skipNote = unreadablePrefabs.length
+                ? `; ${unreadablePrefabs.length} prefab(s) could not be read and were skipped`
+                : '';
+            return ok({ applied: false, ...summary, unreadablePrefabs, findings },
+                `${summary.missing} removable missing script(s); nothing was changed${skipNote}`);
         }
         return applyRemovals(ctx, args, findings, exists);
     }
