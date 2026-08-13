@@ -368,9 +368,16 @@ export const dumpMissingScripts: SceneMethods['dumpMissingScripts'] = (options =
             });
         };
 
+        const rootLabel = (node: any): string => {
+            const siblings = (node.parent && node.parent.children || []).filter(Boolean);
+            const index = siblings.indexOf(node);
+            return index >= 0 ? siblingLabels(siblings)[index] : node.name;
+        };
+
         if (options.rootUuid) {
-            collect(root, root.name);
-            if (options.recursive !== false) walk(root, root.name);
+            const label = rootLabel(root);
+            collect(root, label);
+            if (options.recursive !== false) walk(root, label);
         } else {
             walk(root, '');
         }
