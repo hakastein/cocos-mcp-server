@@ -65,7 +65,7 @@ test('a bare uuid on an asset field becomes {__uuid__}, other text is refused', 
     const asset = declared({ isAsset: true, ctorName: 'cc.Prefab' });
     assert.deepEqual(
         planPrefabValue('c9007b52-a3f1-474c-aa8a-5cc43c9c90c3', asset, null, 'prop').value,
-        { __uuid__: 'c9007b52-a3f1-474c-aa8a-5cc43c9c90c3' }
+        { __uuid__: 'c9007b52-a3f1-474c-aa8a-5cc43c9c90c3', __expectedType__: 'cc.Prefab' }
     );
     assert.equal(planPrefabValue('db://assets/x.prefab', asset, null, 'prop').kind, 'error');
 });
@@ -102,6 +102,87 @@ test('a single string is never the whole of an array property', () => {
     const plan = planPrefabValue('a', declared({ isArray: true }), [], 'clips');
     assert.equal(plan.kind, 'error');
     assert.match(plan.error, /array/);
+});
+
+const CLIP = '9a49fd73-0542-4c99-9478-687e8d853382@cf22f';
+const clipBands = declared({
+    ctorName: 'ClipBand',
+    isArray: true,
+    members: {
+        upTo: declared({ scalar: 'number' }),
+        clip: declared({ ctorName: 'cc.AnimationClip', isAsset: true })
+    }
+});
+
+test('an element of an array of a @ccclass is stamped and its asset member expanded', () => {
+    const plan = planPrefabValue([{ upTo: '0.01', clip: CLIP }], clipBands, [], 'bands');
+    assert.deepEqual(plan.value, [{
+        __type__: 'ClipBand',
+        upTo: 0.01,
+        clip: { __uuid__: CLIP, __expectedType__: 'cc.AnimationClip' }
+    }]);
+    assert.deepEqual(plan.normalized, { typed: ['ClipBand'], references: ['bands.0.clip'] });
+});
+
+test('a member the caller left out stays absent, so the class default stands', () => {
+    assert.deepEqual(
+        planPrefabValue([{ upTo: 2 }], clipBands, [], 'bands').value,
+        [{ __type__: 'ClipBand', upTo: 2 }]
+    );
+});
+
+test('a member the class does not declare is refused, and the error names the ones it has', () => {
+    const plan = planPrefabValue([{ upTo: 1, clop: CLIP }], clipBands, [], 'bands');
+    assert.equal(plan.kind, 'error');
+    assert.match(plan.error, /clop/);
+    assert.match(plan.error, /Members: upTo, clip/);
+});
+
+test('an asset member takes a uuid or null and refuses anything else', () => {
+    assert.equal(planPrefabValue([{ clip: 'idle' }], clipBands, [], 'bands').kind, 'error');
+    assert.deepEqual(
+        planPrefabValue([{ clip: null }], clipBands, [], 'bands').value,
+        [{ __type__: 'ClipBand', clip: null }]
+    );
+});
+
+test('a uuid in a member nothing types is refused instead of stored as text', () => {
+    const loose = declared({ ctorName: 'Loose', isArray: true, members: { tag: declared({}) } });
+    const plan = planPrefabValue([{ tag: CLIP }], loose, [], 'entries');
+    assert.equal(plan.kind, 'error');
+    assert.match(plan.error, /asset uuid/);
+    assert.equal(planPrefabValue([{ tag: 'walk' }], loose, [], 'entries').value[0].tag, 'walk');
+});
+
+test('a @ccclass nested inside an element is stamped at its own depth', () => {
+    const outer = declared({
+        ctorName: 'Outer',
+        isArray: true,
+        members: {
+            inner: declared({
+                ctorName: 'Inner',
+                members: { clip: declared({ ctorName: 'cc.AnimationClip', isAsset: true }) }
+            })
+        }
+    });
+    assert.deepEqual(planPrefabValue([{ inner: { clip: CLIP } }], outer, [], 'entries').value, [{
+        __type__: 'Outer',
+        inner: { __type__: 'Inner', clip: { __uuid__: CLIP, __expectedType__: 'cc.AnimationClip' } }
+    }]);
+});
+
+test('bare uuids in an array of assets become references', () => {
+    const clips = declared({ ctorName: 'cc.AnimationClip', isAsset: true, isArray: true });
+    assert.deepEqual(
+        planPrefabValue([CLIP], clips, [], 'clips').value,
+        [{ __uuid__: CLIP, __expectedType__: 'cc.AnimationClip' }]
+    );
+});
+
+test('an array property refuses a single element passed on its own', () => {
+    const plan = planPrefabValue({ upTo: 1 }, clipBands, [], 'bands');
+    assert.equal(plan.kind, 'error');
+    assert.match(plan.error, /array of ClipBand/);
 });
 
 test('shape helpers agree with the two sources they read', () => {

@@ -34,11 +34,21 @@ export interface DeclaredProperty {
     isArray: boolean;
     /** typeof the CCClass default when the property is a plain scalar. */
     scalar: 'boolean' | 'number' | 'string' | null;
+    /** For an array property CCClass reports the ELEMENT's ctor, so these are the element's members. */
+    members?: Record<string, DeclaredProperty>;
+}
+
+/** What `planPrefabValue` reshaped on its way in, for the caller to report. */
+export interface Normalization {
+    /** Class names stamped as `__type__`, so the engine builds instances instead of plain objects. */
+    typed: string[];
+    /** Paths turned into `{__uuid__}` from a bare uuid. */
+    references: string[];
 }
 
 export type PrefabValuePlan =
     /** Write this exact serialized value. */
-    | { kind: 'value'; value: any; coercedFrom?: string }
+    | { kind: 'value'; value: any; coercedFrom?: string; normalized?: Normalization }
     /** Resolve this path inside the prefab and write the entry it names. */
     | { kind: 'reference'; nodePath: string; expects: 'node' | 'component'; componentType: string | null }
     | { kind: 'error'; error: string };
@@ -82,7 +92,7 @@ export function planPrefabValue(
     previous: any,
     property: string
 ): PrefabValuePlan {
-    if (typeof raw !== 'string') return { kind: 'value', value: raw };
+    if (typeof raw !== 'string') return planStructured(raw, declared, property);
 
     const text = raw.trim();
     const fromDeclaration = shapeOfDeclared(declared);
@@ -109,7 +119,14 @@ export function planPrefabValue(
 
         case 'asset':
             if (isNullText(text)) return { kind: 'value', value: null, coercedFrom: 'string' };
-            if (ASSET_UUID.test(text)) return { kind: 'value', value: { __uuid__: text }, coercedFrom: 'string' };
+            if (ASSET_UUID.test(text)) {
+                return {
+                    kind: 'value',
+                    value: assetReference(text, declared && declared.ctorName),
+                    coercedFrom: 'string',
+                    normalized: { typed: [], references: [property] }
+                };
+            }
             return refuse(
                 `'${property}' is an asset reference${declaredAs} and '${raw}' is neither an asset uuid nor null. `
                 + 'Pass {"__uuid__":"<uuid>"}, or the bare uuid.'
@@ -146,4 +163,136 @@ export function planPrefabValue(
 
 function isNullText(text: string): boolean {
     return text === '' || /^null$/i.test(text);
+}
+
+function planStructured(raw: any, declared: DeclaredProperty | null, property: string): PrefabValuePlan {
+    if (!declared || !declared.found || !typeAware(declared)) return { kind: 'value', value: raw };
+    const normalized: Normalization = { typed: [], references: [] };
+    try {
+        const value = normalizeSlot(raw, declared, property, normalized);
+        return normalized.typed.length || normalized.references.length
+            ? { kind: 'value', value, normalized }
+            : { kind: 'value', value };
+    } catch (error) {
+        return { kind: 'error', error: `${error instanceof Error ? error.message : String(error)} Nothing was written.` };
+    }
+}
+
+function typeAware(declared: DeclaredProperty): boolean {
+    return !!declared.members || !!declared.isAsset || !!declared.isNode || !!declared.isComponent;
+}
+
+function normalizeSlot(
+    value: any, declared: DeclaredProperty, path: string, normalized: Normalization
+): any {
+    if (!declared.isArray) return normalizeElement(value, declared, path, normalized);
+    if (value === null || value === undefined) return value;
+    if (!Array.isArray(value)) {
+        throw new Error(`'${path}' holds an array${ofType(declared)} and ${show(value)} is not one.`);
+    }
+    return value.map((item, index) => normalizeElement(item, declared, `${path}.${index}`, normalized));
+}
+
+function normalizeElement(
+    value: any, declared: DeclaredProperty, path: string, normalized: Normalization
+): any {
+    if (declared.isAsset) return normalizeAsset(value, declared, path, normalized);
+    if (declared.isNode || declared.isComponent) return normalizeEntity(value, declared, path);
+    if (declared.members) return normalizeBlock(value, declared, path, normalized);
+    return normalizeLeaf(value, declared, path);
+}
+
+function normalizeAsset(
+    value: any, declared: DeclaredProperty, path: string, normalized: Normalization
+): any {
+    if (value === null || value === undefined || value === '') return null;
+    const uuid = typeof value === 'string'
+        ? value.trim()
+        : (value && typeof value === 'object' ? (value.__uuid__ ?? value.uuid) : undefined);
+    if (typeof uuid !== 'string' || !ASSET_UUID.test(uuid)) {
+        throw new Error(
+            `'${path}' is a ${declared.ctorName || 'cc.Asset'} reference and ${show(value)} is neither an `
+            + 'asset uuid nor null.'
+        );
+    }
+    normalized.references.push(path);
+    return assetReference(uuid, declared.ctorName);
+}
+
+/**
+ * A node or component reference cannot leave the prefab, so the file stores it as the index of
+ * the entry it names. A path is resolved for a top-level property only, where the prefab's own
+ * node table is at hand.
+ */
+function normalizeEntity(value: any, declared: DeclaredProperty, path: string): any {
+    if (value === null || value === undefined || value === '') return null;
+    if (value && typeof value === 'object' && typeof value.__id__ === 'number') return { __id__: value.__id__ };
+    throw new Error(
+        `'${path}' points at a ${declared.isNode ? 'node' : 'component'} inside this prefab, which is stored `
+        + `as {"__id__":<entry index>}; got ${show(value)}. A node PATH is resolved only when it is the whole `
+        + 'value of a top-level property, not inside a nested one.'
+    );
+}
+
+function normalizeBlock(
+    value: any, declared: DeclaredProperty, path: string, normalized: Normalization
+): any {
+    if (value === null || value === undefined) return null;
+    if (typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(`'${path}' is a ${declared.ctorName} and takes an object of its members; got ${show(value)}.`);
+    }
+    const members = declared.members!;
+    const unknown = Object.keys(value).filter(name => name !== '__type__' && !(name in members));
+    if (unknown.length) {
+        throw new Error(
+            `'${path}' (${declared.ctorName}) has no member(s) ${unknown.join(', ')}. `
+            + `Members: ${Object.keys(members).join(', ')}.`
+        );
+    }
+    // `__type__` is what makes the engine build a class instance; without it the element loads as
+    // a plain object that duck-types at runtime and is invisible to every editor tool.
+    const block: Record<string, any> = { __type__: declared.ctorName };
+    if (declared.ctorName) normalized.typed.push(declared.ctorName);
+    for (const [name, member] of Object.entries(members)) {
+        if (!Object.prototype.hasOwnProperty.call(value, name)) continue;
+        block[name] = normalizeSlot(value[name], member, `${path}.${name}`, normalized);
+    }
+    return block;
+}
+
+function normalizeLeaf(value: any, declared: DeclaredProperty, path: string): any {
+    if (declared.scalar === 'number') {
+        const magnitude = Number(value);
+        if (value === '' || value === null || value === undefined || !Number.isFinite(magnitude)) {
+            throw new Error(`'${path}' is a number and ${show(value)} does not spell one.`);
+        }
+        return magnitude;
+    }
+    if (declared.scalar === 'boolean') {
+        if (typeof value === 'boolean') return value;
+        if (/^true$/i.test(String(value))) return true;
+        if (/^false$/i.test(String(value))) return false;
+        throw new Error(`'${path}' is a boolean and ${show(value)} does not spell one.`);
+    }
+    if (declared.scalar === 'string') return typeof value === 'string' ? value : String(value);
+    if (typeof value === 'string' && ASSET_UUID.test(value.trim())) {
+        throw new Error(
+            `'${path}' would be stored as the string ${show(value)}, which spells an asset uuid, and nothing `
+            + 'declares a type for that member — so a reference cannot be told from text here. Pass '
+            + '{"__uuid__":"<uuid>"} if it is a reference.'
+        );
+    }
+    return value;
+}
+
+function assetReference(uuid: string, ctorName: string | null | undefined): Record<string, string> {
+    return ctorName ? { __uuid__: uuid, __expectedType__: ctorName } : { __uuid__: uuid };
+}
+
+function ofType(declared: DeclaredProperty): string {
+    return declared.ctorName ? ` of ${declared.ctorName}` : '';
+}
+
+function show(value: unknown): string {
+    return value === undefined ? 'undefined' : JSON.stringify(value);
 }

@@ -185,6 +185,31 @@ function locate(
     };
 }
 
+export function componentUuidOf(component: DumpComponent): string | null {
+    return (component.value as any)?.uuid?.value ?? null;
+}
+
+export function locateByUuid(components: DumpComponent[], componentUuid: string): LocatedComponent | null {
+    const index = components.findIndex(component => componentUuidOf(component) === componentUuid);
+    if (index < 0) return null;
+    const component = components[index];
+    return {
+        index,
+        component,
+        cid: cidOf(component),
+        className: canonicalClassName(component),
+        componentUuid,
+        properties: (component.value || {}) as Record<string, PropertyDescriptor>
+    };
+}
+
+export function uuidMiss(components: DumpComponent[], nodeUuid: string, componentUuid: string): string {
+    const known = components
+        .map(component => `${canonicalClassName(component)} (${componentUuidOf(component) || 'no uuid'})`)
+        .join(', ') || '(none)';
+    return `No component with uuid '${componentUuid}' on node ${nodeUuid}. Components there: ${known}`;
+}
+
 function componentMiss(
     components: DumpComponent[], nodeUuid: string, componentType: string, sameClassIndex?: number
 ): string {
@@ -591,20 +616,31 @@ async function attachScript(ctx: ToolContext, nodeUuid: string, scriptPath: stri
 
 export const componentRemoveComponent = defineTool({
     name: 'component_remove_component',
-    description: 'Remove a component from a node. Addressed the same way as everywhere else — a cid, an '
-        + '@ccclass name or a builtin type — and removed by the COMPONENT\'s own scene uuid, which is the '
-        + 'only form 3.8 accepts for a script component. The removal is polled until the node stops '
-        + 'reporting the cid, so a component the editor declined to remove is reported instead of being '
-        + 'called a success. With several components of one class on the node, componentIndex picks which.',
+    description: 'Remove a component from a node. Name it either way: `componentUuid` — the COMPONENT\'s '
+        + 'own scene uuid, which component_get_components reports as `uuid` — picks exactly one, and is the '
+        + 'way to drop ONE of two same-class components; `componentType` takes a cid, an @ccclass name or a '
+        + 'builtin type, with componentIndex choosing among components of that class. Pass at least one; '
+        + 'given both, the uuid decides and the type is checked against it. Whichever addressed it, the '
+        + 'removal itself goes through the component\'s own uuid, the only form 3.8 accepts for a script '
+        + 'component, and is polled until the node stops reporting it — a component the editor declined to '
+        + 'remove is reported instead of being called a success.',
     schema: z.object({
         nodeUuid: z.string().describe('Node UUID'),
-        componentType: z.string().describe('Component cid, @ccclass class name or builtin type, e.g. '
-            + '"cc.Sprite" or "9b4a7ueT9xD6aRE+AlOusy1"'),
+        componentUuid: z.string().optional().describe('The component\'s own scene uuid. Unambiguous on its '
+            + 'own, so componentType is not needed with it.'),
+        componentType: z.string().optional().describe('Component cid, @ccclass class name or builtin type, '
+            + 'e.g. "cc.Sprite" or "9b4a7ueT9xD6aRE+AlOusy1"'),
         componentIndex: z.coerce.number().optional().describe('Which component of the SAME class to remove '
-            + '(default 0). Counts only components of that class, not the position in the node\'s list.')
+            + '(default 0). Counts only components of that class, not the position in the node\'s list. '
+            + 'Ignored when componentUuid is given.')
     }),
     aliases: { component: 'componentType', type: 'componentType' },
     async handler(args, ctx) {
+        if (!args.componentUuid && !args.componentType) {
+            return fail('invalid_args',
+                'component_remove_component: name the component to remove — componentUuid picks exactly '
+                + 'one, componentType (with componentIndex) picks by class');
+        }
         let components: DumpComponent[];
         try {
             components = await queryComponents(ctx, args.nodeUuid);
@@ -612,24 +648,40 @@ export const componentRemoveComponent = defineTool({
             return fail('node_unreadable',
                 `The editor did not answer for node ${args.nodeUuid}: ${textOf(error)}`);
         }
-        const located = locate(components, args.componentType, args.componentIndex || 0);
+        const located = args.componentUuid
+            ? locateByUuid(components, args.componentUuid)
+            : locate(components, args.componentType!, args.componentIndex || 0);
         if (!located) {
-            return fail('component_not_found',
-                componentMiss(components, args.nodeUuid, args.componentType, args.componentIndex));
+            return fail('component_not_found', args.componentUuid
+                ? uuidMiss(components, args.nodeUuid, args.componentUuid)
+                : componentMiss(components, args.nodeUuid, args.componentType!, args.componentIndex));
         }
-
-        const payloads: Array<{ uuid: string; component?: string }> = [];
-        if (located.componentUuid) payloads.push({ uuid: located.componentUuid });
-        payloads.push({ uuid: args.nodeUuid, component: located.cid });
+        if (args.componentUuid && args.componentType && !componentMatches(located.component, args.componentType)) {
+            return fail('component_mismatch',
+                `Component ${args.componentUuid} on node ${args.nodeUuid} is a ${located.className} `
+                + `(cid '${located.cid}'), not a '${args.componentType}'. Nothing was removed.`,
+                'Drop componentType to remove the component this uuid names.');
+        }
+        const named = args.componentType || located.className;
 
         // A sibling of the same class carries the same cid, so only the component's own uuid can
-        // say whether THIS one went; without it, the count of that cid has to drop.
+        // say whether THIS one went; without it, the count of that cid has to drop — and a removal
+        // addressed by cid alone would take whichever of the siblings the editor picks.
         const carried = components.filter(component => cidOf(component) === located.cid).length;
+        const payloads: Array<{ uuid: string; component?: string }> = [];
+        if (located.componentUuid) payloads.push({ uuid: located.componentUuid });
+        if (carried === 1) payloads.push({ uuid: args.nodeUuid, component: located.cid });
+        if (!payloads.length) {
+            return fail('component_not_addressable',
+                `Node ${args.nodeUuid} carries ${carried} '${located.className}' components and the editor `
+                + 'reports no uuid for the one chosen, so removing it would take an arbitrary sibling. '
+                + 'Nothing was removed.');
+        }
+
         const stillThere = async () => {
             const after = await queryComponents(ctx, args.nodeUuid).catch(() => components);
             if (located.componentUuid) {
-                return after.some(component =>
-                    (component.value as any)?.uuid?.value === located.componentUuid);
+                return after.some(component => componentUuidOf(component) === located.componentUuid);
             }
             return after.filter(component => cidOf(component) === located.cid).length >= carried;
         };
@@ -645,14 +697,15 @@ export const componentRemoveComponent = defineTool({
             if (await settle(async () => !(await stillThere()))) {
                 return ok({
                     nodeUuid: args.nodeUuid,
-                    componentType: args.componentType,
+                    componentType: located.className,
                     resolvedCid: located.cid,
-                    componentUuid: located.componentUuid
-                }, `'${args.componentType}' (cid '${located.cid}') removed`);
+                    componentUuid: located.componentUuid,
+                    remainingOfClass: carried - 1
+                }, `'${named}' (cid '${located.cid}') removed`);
             }
         }
         return fail('remove_unverified',
-            `'${args.componentType}' (cid '${located.cid}') is still on node ${args.nodeUuid} after removing it`
+            `'${named}' (cid '${located.cid}') is still on node ${args.nodeUuid} after removing it`
             + `${refusal ? `. Last refusal: ${refusal}` : ''}`);
     }
 });
@@ -752,7 +805,11 @@ export const componentSetComponentProperty = anyValued(defineTool({
         + '`detail` says what is in doubt and why. `persisted` has THREE states: true — the editor\'s '
         + 'serializer, the call a save runs, emits the value; false — it does not; null — nobody could '
         + 'check (the prefab asset was unreadable, the serializer does not name the field, or verify was '
-        + 'set to readback). A PROVEN false on the editor channel FAILS the call. null succeeds with the '
+        + 'set to readback). INSIDE A PREFAB INSTANCE the scene file carries no property of the component '
+        + 'at all, so `persisted` is decided by the instance\'s property OVERRIDES: the next load rebuilds '
+        + 'the component from the prefab asset and replays them. A write the editor recorded no override '
+        + 'for is a proven false, and the detail names the paths the next load rebuilds instead. '
+        + 'A PROVEN false on the editor channel FAILS the call. null succeeds with the '
         + 'reason said out loud — an unproven write is not a bad one. A gradient, a curve, or a reference '
         + 'the editor channel refused goes through the live object instead and reports channel "live" with '
         + 'persisted false BY DESIGN: the value is real, the editor recorded nothing, so the person at the '

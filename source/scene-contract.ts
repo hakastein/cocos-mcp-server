@@ -139,6 +139,8 @@ export interface DeclaredProperty {
     isAsset?: boolean;
     isArray?: boolean;
     scalar?: string | null;
+    /** For an array property CCClass reports the ELEMENT's ctor, so these are the element's members. */
+    members?: Record<string, DeclaredProperty>;
 }
 
 export interface EvalPayload {
@@ -260,6 +262,24 @@ export interface SerializedValue {
     found: boolean;
     value: unknown;
     reason?: string;
+    /** The scene file carries none of this component's properties; only an override would. */
+    inPrefabInstance?: boolean;
+}
+
+export interface PrefabOverrideOutcome {
+    inPrefabInstance: boolean;
+    /** false when the prefab asset, or this component's counterpart inside it, could not be read. */
+    known: boolean;
+    /** Whether the next load rebuilds what the live component holds now. */
+    carried: boolean;
+    instanceRoot: string | null;
+    prefabAsset: string | null;
+    overridePaths: string[];
+    /** Differences from the prefab asset that no override records. */
+    uncovered: string[];
+    /** Paths where the two sides hold objects of different classes, which the editor will not diff. */
+    untyped: string[];
+    reason?: string;
 }
 
 export interface PrefabLinkageReport {
@@ -380,6 +400,11 @@ export interface SceneMethods {
         index?: number,
     ): SceneResult<PrefabOverrideRemoval>;
     serializedComponentValue(nodeUuid: string, cid: string, property: string): SceneResult<SerializedValue>;
+    prefabInstancePropertyOutcome(
+        nodeUuid: string,
+        cid: string,
+        property: string,
+    ): SceneResult<PrefabOverrideOutcome>;
     nodePrefabLinkage(nodeUuid: string): SceneResult<PrefabLinkageReport>;
     resolveComponentReference(args?: any): SceneResult<ReferencePlanReport>;
     applyComponentReference(args?: any): SceneResult<ReferenceApplied>;

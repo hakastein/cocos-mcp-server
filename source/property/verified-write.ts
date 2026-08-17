@@ -4,7 +4,7 @@ import {
 import { projectValue } from './readers';
 import { withUndoBracket } from '../undo-bracket';
 import type { ToolContext } from '../context';
-import type { SceneDirtyReport, SceneResult, WriteReport } from '../scene-contract';
+import type { PrefabOverrideOutcome, SceneDirtyReport, SceneResult, WriteReport } from '../scene-contract';
 
 export interface VerifiedWriteOptions {
     verify?: 'readback' | 'disk' | 'serializer';
@@ -54,7 +54,11 @@ async function withSerializerVerdict(
     } catch (error) {
         return addDetail(report, `the serialized form was not read (${messageOf(error)})`);
     }
-    if ('problem' in found) return addDetail(report, found.problem);
+    if ('problem' in found) {
+        return found.inPrefabInstance
+            ? await withOverrideVerdict(report, target, cid, ctx)
+            : addDetail(report, found.problem);
+    }
 
     const serialized = withoutUuidWrappers(projectValue(kindOf(target), found.value));
     const live = withoutUuidWrappers(await readBack(target, ctx));
@@ -66,7 +70,48 @@ async function withSerializerVerdict(
         `a save would not carry this write — the serializer emits ${mismatches.join('; ')}`);
 }
 
-type SerializedLookup = { value: unknown } | { problem: string };
+/**
+ * A component inside a prefab instance is absent from the scene file: the next load rebuilds it
+ * from the prefab asset and replays the instance's property overrides, so those are what decides
+ * whether a save carries this write.
+ */
+async function withOverrideVerdict(
+    report: WriteReport, target: WriteTarget, cid: string, ctx: ToolContext
+): Promise<WriteReport> {
+    let result: SceneResult<PrefabOverrideOutcome>;
+    try {
+        result = await ctx.sceneScript.call('prefabInstancePropertyOutcome', target.nodeUuid, cid, target.propertyPath);
+    } catch (error) {
+        return addDetail(report, `the prefab override behind this write was not read (${messageOf(error)})`);
+    }
+    if (!result || result.success !== true) {
+        return addDetail(report, 'the prefab override behind this write was not read '
+            + `(${(result && result.error) || 'no answer'})`);
+    }
+    const outcome = result.data;
+    if (!outcome.inPrefabInstance || !outcome.known) {
+        return addDetail(report, `the scene file carries none of this component's properties and `
+            + `${outcome.reason || 'the prefab behind it could not be read'}, so a save carrying the value `
+            + 'is unconfirmed');
+    }
+    if (outcome.carried) {
+        const carried: WriteReport = report.persisted === null ? { ...report, persisted: true } : report;
+        return outcome.overridePaths.length
+            ? { ...carried, prefabOverride: { targetPath: outcome.overridePaths.join(', ') } }
+            : carried;
+    }
+    const untyped = outcome.untyped.length
+        ? '. The editor recorded none because the two sides hold objects of DIFFERENT CLASSES at '
+            + `${outcome.untyped.join('; ')} — a value stored in the prefab without its \`__type__\` loads `
+            + 'as a plain object, and the editor diffs only same-class pairs. Rewrite that property on the '
+            + 'prefab asset with prefab_set_component_property, which stamps the type, then write here again'
+        : '';
+    return addDetail({ ...report, persisted: false },
+        'no prefab property override carries this write, so the next load rebuilds '
+        + `${outcome.uncovered.join(', ')} from the prefab asset${untyped}`);
+}
+
+type SerializedLookup = { value: unknown } | { problem: string; inPrefabInstance?: boolean };
 
 /**
  * The serializer writes backing fields, so the accessor `color` is emitted as `_color` and asking
@@ -79,6 +124,7 @@ async function serializedValue(target: WriteTarget, cid: string, ctx: ToolContex
         : [target.propertyPath, underscored];
 
     let problem = '';
+    let inPrefabInstance = false;
     for (const property of spellings) {
         const result = await ctx.sceneScript.call('serializedComponentValue', target.nodeUuid, cid, property);
         if (!result || result.success !== true) {
@@ -86,10 +132,11 @@ async function serializedValue(target: WriteTarget, cid: string, ctx: ToolContex
             continue;
         }
         if (result.data.found) return { value: result.data.value };
+        if (result.data.inPrefabInstance) inPrefabInstance = true;
         problem = `the serializer does not emit '${property}'`
             + `${result.data.reason ? ` — ${result.data.reason}` : ''}, so a save carrying the value is unconfirmed`;
     }
-    return { problem };
+    return inPrefabInstance ? { problem, inPrefabInstance } : { problem };
 }
 
 /**

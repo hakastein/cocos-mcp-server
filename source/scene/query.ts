@@ -50,35 +50,68 @@ export const declaredComponentProperty: SceneMethods['declaredComponentProperty'
         if (!klass || typeof attrOf !== 'function') return absent;
         const attr = attrOf(klass, property);
         if (!attr || !Object.keys(attr).length) return absent;
-
-        // The default is a factory for anything that is not a shared immutable — an array, a
-        // Vec3, a colour — so it has to be built to be read. Building it is what the engine
-        // itself does at instantiation.
-        let value = attr.default;
-        if (typeof value === 'function') {
-            try { value = value(); } catch { value = undefined; }
-        }
-        const ctor = attr.ctor || null;
-        const isArray = Array.isArray(value);
-        const scalar = (!ctor && !isArray && (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string'))
-            ? typeof value
-            : (attr.enumList ? 'number' : null);
-        return {
-            success: true,
-            data: {
-                found: true,
-                ctorName: ctor ? cc.js.getClassName(ctor) : null,
-                isNode: ctorIsA(ctor, cc.Node),
-                isComponent: ctorIsA(ctor, cc.Component),
-                isAsset: ctorIsA(ctor, cc.Asset),
-                isArray,
-                scalar
-            }
-        };
+        return { success: true, data: describeAttr(cc, attrOf, attr, MEMBER_DEPTH, new Set([klass])) };
     } catch {
         return absent;
     }
 };
+
+const MEMBER_DEPTH = 4;
+
+function describeAttr(cc: any, attrOf: Function, attr: any, depth: number, seen: Set<any>): DeclaredProperty {
+    // The default is a factory for anything that is not a shared immutable — an array, a
+    // Vec3, a colour — so it has to be built to be read. Building it is what the engine
+    // itself does at instantiation.
+    let value = attr.default;
+    if (typeof value === 'function') {
+        try { value = value(); } catch { value = undefined; }
+    }
+    const ctor = attr.ctor || null;
+    const isArray = Array.isArray(value);
+    const scalar = (!ctor && !isArray && (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string'))
+        ? typeof value
+        : (attr.enumList ? 'number' : null);
+    const described: DeclaredProperty = {
+        found: true,
+        ctorName: ctor ? cc.js.getClassName(ctor) : null,
+        isNode: ctorIsA(ctor, cc.Node),
+        isComponent: ctorIsA(ctor, cc.Component),
+        isAsset: ctorIsA(ctor, cc.Asset),
+        isArray,
+        scalar
+    };
+    const members = describeMembers(cc, attrOf, ctor, described, depth, seen);
+    return members ? { ...described, members } : described;
+}
+
+/**
+ * A Node, a Component and an Asset are all pointed AT; only a serializable @ccclass is a value
+ * the owner stores inline, and only for those does a caller supply members to write.
+ */
+function describeMembers(
+    cc: any, attrOf: Function, ctor: any, described: DeclaredProperty, depth: number, seen: Set<any>
+): Record<string, DeclaredProperty> | null {
+    if (!ctor || depth <= 0 || seen.has(ctor)) return null;
+    if (described.isNode || described.isComponent || described.isAsset) return null;
+    const isClass = cc.CCClass && typeof cc.CCClass.isCCClassOrFastDefined === 'function'
+        && cc.CCClass.isCCClassOrFastDefined(ctor);
+    if (!isClass) return null;
+    const names: unknown = ctor.__values__ || ctor.__props__;
+    if (!Array.isArray(names) || !names.length) return null;
+
+    const deeper = new Set(seen);
+    deeper.add(ctor);
+    const members: Record<string, DeclaredProperty> = {};
+    for (const name of names) {
+        if (typeof name !== 'string') continue;
+        let attr: any;
+        try { attr = attrOf(ctor, name); } catch { attr = null; }
+        members[name] = attr
+            ? describeAttr(cc, attrOf, attr, depth - 1, deeper)
+            : { found: true, ctorName: null, isNode: false, isComponent: false, isAsset: false, isArray: false, scalar: null };
+    }
+    return Object.keys(members).length ? members : null;
+}
 
 // Evaluate arbitrary JavaScript in the scene (engine) context, where the `cc`
 // module and the live `director`/scene are available. This replaces the previous
@@ -184,6 +217,7 @@ export const serializedComponentValue: SceneMethods['serializedComponentValue'] 
                 data: {
                     found: false,
                     value: undefined,
+                    inPrefabInstance: true,
                     reason: `'${node.name}' is inside a prefab instance, so the scene file carries none of `
                         + `this component's properties directly — only a prefab property override would.`
                 }

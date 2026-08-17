@@ -3,8 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    canonicalClassName, classNameOf, coerceValueArg, componentMatches, hintedDescriptor, matchesOf,
-    persistenceVerdict, propertyFilterOf, resolveDumpPath, valueFromArgs
+    canonicalClassName, classNameOf, coerceValueArg, componentMatches, hintedDescriptor, locateByUuid,
+    matchesOf, persistenceVerdict, propertyFilterOf, resolveDumpPath, uuidMiss, valueFromArgs
 } from '../dist/tools-v2/component.js';
 import { resolveKind, isArrayDescriptor } from '../dist/property/kind.js';
 import { resolveComponentCid } from '../dist/tools-v2/prefab.js';
@@ -209,6 +209,24 @@ test('same-class components are listed in node order, so index 1 is the second o
     assert.deepEqual(matchesOf([builtin, script, other], 'cc.Sprite'), [0, 2]);
     assert.deepEqual(matchesOf([builtin, script, other], 'Locomotion'), [1]);
     assert.deepEqual(matchesOf([builtin, script, other], 'cc.Label'), []);
+});
+
+test('a component uuid picks ONE of two siblings of the same class, which the class name cannot', () => {
+    const twin = {
+        __type__: 'a1a43ZGW/xLp7dGgTuz1r4Y', cid: 'a1a43ZGW/xLp7dGgTuz1r4Y',
+        value: { name: { value: 'Hero<Locomotion>' }, uuid: { value: 'comp-3' } }
+    };
+    const node = [builtin, script, twin];
+    assert.equal(locateByUuid(node, 'comp-3').index, 2);
+    assert.equal(locateByUuid(node, 'comp-2').index, 1);
+    assert.equal(locateByUuid(node, 'comp-3').className, 'Locomotion');
+    assert.equal(locateByUuid(node, 'comp-9'), null);
+});
+
+test('a uuid nothing on the node carries is answered with the uuids it does', () => {
+    const miss = uuidMiss([builtin, script], 'node-1', 'comp-9');
+    assert.match(miss, /comp-9/);
+    assert.match(miss, /Locomotion \(comp-2\)/);
 });
 
 test('the name handed to the scene process is a class the engine can look up, never a cid', () => {

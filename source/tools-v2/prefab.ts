@@ -361,14 +361,18 @@ export const prefabGetComponentProperty = defineTool({
 
 export const prefabSetComponentProperty = anyValued(defineTool({
     name: 'prefab_set_component_property',
-    description: 'Write one serialized property on a component inside a .prefab ASSET on disk. Values go in '
-        + 'raw serialized form: scalars as-is, asset refs as {"__uuid__":"<uuid>"}, in-prefab node refs as '
-        + '{"__id__":<entry index>}. Returns the previous value. A value that arrives as TEXT is read '
-        + 'against the property\'s declared type instead of being stored verbatim: "true" on a boolean '
-        + 'becomes true, "null" on a reference becomes null, a bare uuid on an asset field becomes '
-        + '{"__uuid__":…}, and a NODE PATH inside this prefab (e.g. "char_hero/mixamorig_Spine Socket") is '
-        + 'resolved to the entry it names — which is how a node or component reference is set here. Text '
-        + 'that cannot be read as the declared type is refused and nothing is written. '
+    description: 'Write one serialized property on a component inside a .prefab ASSET on disk. Returns the '
+        + 'previous value. The value is read against the property\'s DECLARED TYPE rather than stored '
+        + 'verbatim, at every depth. Text: "true" on a boolean becomes true, "null" on a reference becomes '
+        + 'null, a bare uuid on an asset field becomes {"__uuid__":…}, and a NODE PATH inside this prefab '
+        + '(e.g. "char_hero/mixamorig_Spine Socket") resolves to the entry it names — which is how a node or '
+        + 'component reference is set here. STRUCTURE: an ARRAY of a serializable @ccclass, or a nested one, '
+        + 'is written as [{"upTo":0.01,"clip":"<uuid>"}] and each element is stamped with its `__type__` and '
+        + 'each asset member expanded to {"__uuid__":…,"__expectedType__":…}. That stamp is what makes the '
+        + 'engine build a class instance: an element written without it loads as a plain object which the '
+        + 'GAME reads by duck typing while the Inspector shows the class defaults and the editor records no '
+        + 'prefab override for it. A member that is not declared, a uuid in a slot nothing types, and text '
+        + 'that cannot be read as the declared type are all refused with nothing written. '
         + `${FILE_TOOL_NOTE}`,
     schema: z.object({
         ...fileSelectorSchema,
@@ -445,6 +449,14 @@ export const prefabSetComponentProperty = anyValued(defineTool({
             ...(resolvedFrom ? { resolvedFromPath: resolvedFrom } : {}),
             ...(plan.kind === 'value' && plan.coercedFrom
                 ? { typedFrom: declared && declared.found ? 'the declared type' : 'the value already in the prefab' }
+                : {}),
+            ...(plan.kind === 'value' && plan.normalized
+                ? {
+                    normalized: {
+                        stampedType: Array.from(new Set(plan.normalized.typed)),
+                        assetReferences: plan.normalized.references
+                    }
+                }
                 : {}),
             ...(coerced ? { valueParsedFromString: true } : {})
         }, `${args.componentType}.${args.property} written in ${args.prefabPath}`);

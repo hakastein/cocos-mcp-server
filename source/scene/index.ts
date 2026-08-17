@@ -6,8 +6,8 @@ import {
     removeSkeletalSocket, setParticleCurve, setParticleGradient
 } from './component-ops';
 import {
-    applyComponentReference, componentReferenceOutcome, pruneComponentReferenceOverrides,
-    resolveComponentReference
+    applyComponentReference, componentReferenceOutcome, prefabInstancePropertyOutcome,
+    pruneComponentReferenceOverrides, resolveComponentReference
 } from './property-write';
 import {
     applyPrefabToAsset, createPrefabFromNode2, listPrefabOverrides, removePrefabOverride,
@@ -37,6 +37,7 @@ export const methods: SceneMethods = {
     listPrefabOverrides,
     removePrefabOverride,
     serializedComponentValue,
+    prefabInstancePropertyOutcome,
     nodePrefabLinkage,
     resolveComponentReference,
     applyComponentReference,
