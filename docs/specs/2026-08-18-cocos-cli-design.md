@@ -63,9 +63,13 @@ CyberCore на порту 4000 и tl_weedmanager1a на 4001.
 | @oclif/core | **151** | split2, shell-quote | 3 |
 
 Отсюда: `@oclif/core`, `arktype`, `@sinclair/typebox` и апгрейд zod до v4 отклонены по цене
-загрузки. `trpc-cli` отклонён отдельно — он ESM-only и падает с `ERR_REQUIRE_ASYNC_MODULE`;
-драйвер собирается `tsc` в CommonJS. Для пакета `cli/`, который собирается бандлером,
-ESM-зависимости допустимы.
+загрузки.
+
+**Граница CJS/ESM.** Редактор работает на **Node v20.15.1** (спрошено у живого редактора через
+`debug_get_editor_info`). Node 20 не умеет `require()` ESM-модуля — это появилось в 22.12.
+Драйвер собирается `tsc` в CommonJS, поэтому берёт только CJS-зависимости; `p-queue` остаётся на
+^6, начиная с v7 он ESM. Пакет `cli/` собирается бандлером и работает на ноде пользователя, там
+ESM свободен. По этой причине отклонён `trpc-cli`: он ESM-only и не годится драйверу.
 
 **Именованные каналы на Windows**
 
@@ -106,15 +110,21 @@ scene script     единственное место, где живёт cc.*
 
 **Итого 87 примитивов.**
 
-**Протокол.** NDJSON поверх канала, фрейминг через `split2`.
+**Протокол — JSON-RPC 2.0 через библиотеку `json-rpc-2.0`**, по строке на сообщение, фрейминг
+через `split2`, транспорт — сокет. Библиотека даёт корреляцию по `id`, форму ошибок и таймауты;
+писать это руками нет причины. Она CommonJS, то есть годится драйверу на Node 20.
 
 ```
-→ {id, op:"hello"}
-→ {id, ns:"editor", method:"scene.createNode", args:[...]}
-→ {id, ns:"scene",  method:"dumpSceneNodes",   args:[...]}
-← {id, ok:true,  value: <результат как вернул редактор, без обёрток>}
-← {id, ok:false, error:{kind:"editor_request", pkg, msg, message}}
+→ {"jsonrpc":"2.0","id":1,"method":"hello"}
+→ {"jsonrpc":"2.0","id":2,"method":"editor.scene.createNode","params":[...]}
+→ {"jsonrpc":"2.0","id":3,"method":"scene.dumpSceneNodes","params":[...]}
+← {"jsonrpc":"2.0","id":2,"result": <как вернул редактор, без обёрток>}
+← {"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"...","data":{"pkg","msg"}}}
 ```
+
+Претензия к MCP касалась двойного кодирования — упаковки всего ответа в экранированную строку
+внутри `content[0].text`, что давало +21.6%. Конверт самого JSON-RPC стоит около сорока байт на
+сообщение и роли не играет.
 
 `hello` отвечает `{project, projectPath, pid, version, surfaceChecksum}`.
 
@@ -200,21 +210,25 @@ cocos node create --parent Environment --name Crate --component MeshRenderer --p
 **По умолчанию — текст.** Отступы при выводе в пайп не ставятся никогда: на дампе CyberCore
 `JSON.stringify(d, null, 2)` даёт 201 634 байта против 148 161 без отступов, +36% за форматирование.
 
-Деревья и списки рендерятся построчно. Формат дерева:
+Деревья рисует `archy`, списки — `cli-table3`. Строка узла: имя, типы компонентов в скобках,
+метка `(off)` у неактивного.
 
 ```
 Editor Scene Background
-  Editor Camera  [EditorCameraComponent]
-    SceneViewLight  [DirectionalLight]
-  internal/editor/grid-2d  [MeshRenderer]  (off)
-  Reference-Image-Canvas  [UITransform,Canvas]
-    Reference-Image  [UITransform,Sprite]  (off)
+├─┬ Editor Camera  [EditorCameraComponent]
+│ └── SceneViewLight  [DirectionalLight]
+├── internal/editor/grid-2d  [MeshRenderer]  (off)
+└─┬ Reference-Image-Canvas  [UITransform,Canvas]
+  └── Reference-Image  [UITransform,Sprite]  (off)
 ```
 
-Позицией выражены: `path` (путь от корня), `parentUuid` (отступ), `childCount` (наличие
-вложенных строк), `activeInHierarchy` (отступ плюс `(off)` у предка). `className` выброшен —
-для `cc.*` он выводится из `type`. Результат на сцене CyberCore: **16 458 байт против 148 161,
-в 9.0 раз меньше**, 36 байт на узел против 326.
+Структурой выражены: `path` (путь от корня), `parentUuid` (вложенность), `childCount` (наличие
+потомков), `activeInHierarchy` (вложенность плюс `(off)` у предка). `className` выброшен — для
+`cc.*` он выводится из `type`. Результат на сцене CyberCore: **17 345 байт против 148 161, в 8.5
+раз меньше**, 38 байт на узел против 326.
+
+Собственный рендерер отступами дал бы 16 458 байт — на 5% меньше. Это не окупает своей ветки
+кода: экономия контекста стоит того на порядке величины, а не на пяти процентах.
 
 Отчёт о записи — одной строкой:
 
@@ -266,9 +280,52 @@ npm workspaces, три пакета:
 
 `shared/` не содержит рантайма. Компилятор ловит попытку `cli/` импортнуть модуль из `driver/`.
 
-Зависимости: `commander`, `split2`, `shell-quote`, `picocolors`, `cli-table3`, `ora`, `tsup`,
-`zod` (остаётся на v3.25), `zod-to-json-schema`, `p-queue`. Удаляется
-`@modelcontextprotocol/sdk`.
+**Зависимости `cli/`** — сборка бандлером, ESM допустим:
+
+| Либа | Тип | Зачем |
+|---|---|---|
+| `commander` | ESM | дерево команд, разбор флагов, генерация `--help` |
+| `json-rpc-2.0` | CJS | клиентская сторона протокола |
+| `zod` 3.25 | CJS | валидация аргументов команд |
+| `split2` | CJS | фрейминг по строкам поверх сокета |
+| `shell-quote` | CJS | разбор строки `--stdin` в argv |
+| `archy` | CJS | рендер деревьев |
+| `cli-table3` | CJS | рендер таблиц |
+| `picocolors` | CJS | цвет, гаснет вне TTY |
+| `ora` | ESM | спиннер на долгих операциях при TTY |
+| `@pnpm/tabtab` | CJS | генерация completion-скриптов bash/zsh/fish |
+| `picomatch` | CJS | маски путей в `asset ls` |
+| `fastest-levenshtein` | CJS | подсказка при опечатке в имени команды |
+| `microdiff` | ESM | сравнение нормализованных сериализованных значений |
+| `lodash.get` | CJS | доступ по пути в токенах `{{0.data.uuid}}` |
+| `zod-to-json-schema`, `tsup` | — | генерация `surface.json` и сборка (devDep) |
+
+**Зависимости `driver/`** — `tsc` в CommonJS на Node 20, только CJS:
+
+| Либа | Зачем |
+|---|---|
+| `json-rpc-2.0` | серверная сторона протокола |
+| `split2` | фрейминг по строкам |
+| `p-queue` ^6 | сериализация операций (v7+ уже ESM) |
+
+Драйвер валидирует ровно одно: что имя метода есть в списке 87. Схемной библиотеки ему не нужно —
+примитивы типизированы через `EditorMessageMaps` и `SceneMethods`.
+
+Удаляется `@modelcontextprotocol/sdk`.
+
+**Что остаётся самописным**
+
+- Доменное знание про Cocos, где библиотеки не существует: `property/`, `prefab-json`,
+  `prefab-value`, `prefab-linkage`, `reference-scan`, `reference-projection`, `node-path`,
+  `node-type`, `asset-query`, `asset-json`, `ecs-census`, `missing-scripts`, `scene-signature`.
+  Переезжает как есть, уже покрыто тестами.
+- Поиск канала: `fs.readdirSync` по пространству имён, фильтр по префиксу, `net.connect`.
+  Библиотеки для перечисления именованных каналов Windows нет.
+- Резолвер `ns.method` в функцию: таблица из 87 записей.
+- Нормализация сериализованного значения перед `microdiff` — обход `__id__` и `__uuid__`, это
+  уже делает `plainSerialized`.
+- Разбор токена `{{0.data.uuid}}` в `batch-plan`; доступ по пути внутри токена берёт `lodash.get`.
+- Рендер `WriteReport` в строку: формат доменный.
 
 Имя бинаря — `cocos`. На PATH машины оно свободно, как и `cocos-cli` и `ccm`. В реестре npm все
 три имени заняты чужими пакетами, поэтому публикация потребует scope; на локальную глобальную
