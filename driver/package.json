@@ -1,0 +1,23 @@
+{
+  "package_version": 2,
+  "name": "cocos-mcp-server",
+  "version": "1.0.0",
+  "editor": ">=3.8.0",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc && tsup",
+    "test:only": "node --test \"test/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "json-rpc-2.0": "^1.7.1",
+    "split2": "^4.2.0",
+    "p-queue": "^6.6.2",
+    "fs-extra": "^11.3.0",
+    "vue": "^3.1.4"
+  },
+  "devDependencies": {
+    "@cocos/creator-types": "^3.8.6",
+    "@types/fs-extra": "^9.0.5",
+    "tsup": "^8.0.0"
+  }
+}

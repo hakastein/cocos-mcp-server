@@ -1,0 +1,11 @@
+{
+  "name": "@cocos-cli/shared",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/protocol.js",
+  "types": "./dist/protocol.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test:only": "node --test \"test/**/*.test.mjs\""
+  }
+}
