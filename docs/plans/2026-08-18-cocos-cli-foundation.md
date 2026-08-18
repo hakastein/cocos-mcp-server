@@ -350,7 +350,8 @@ git commit -m "каркас workspaces: shared держит список 87 ме
 - Delete: `source/server.ts`, `source/preview-console-client.ts`, `source/preview-log-store.ts`,
   `test/preview-log-store.test.mjs`
 - Create: `driver/tsup.config.ts`
-- Modify: `driver/src/main.ts` (переписать), `driver/src/panels/default/index.ts`
+- Modify: `driver/src/panels/default/index.ts`
+- Delete: `source/main.ts` (точку входа пишет Task 5)
 
 **Interfaces:**
 - Consumes: `shared/src/protocol.ts` из Task 1
@@ -367,6 +368,7 @@ git mv source/scene-script-client.ts driver/src/scene-script-client.ts
 git mv source/scene driver/src/scene
 git mv source/panels/default driver/src/panels/default
 git mv source/settings.ts driver/src/settings.ts
+git rm source/main.ts
 git mv source/types/index.ts driver/src/types/index.ts
 git mv source/scene-contract.ts shared/src/scene-contract.ts
 git rm source/server.ts source/preview-console-client.ts source/preview-log-store.ts
@@ -397,52 +399,7 @@ export interface DriverStatus {
 `driver/src/settings.ts` — заменить `DEFAULT_SETTINGS` на `{ enableDebugLog: false }`, убрать
 `DEFAULT_PORT`, остальное оставить как есть.
 
-- [ ] **Step 4: Переписать driver/src/main.ts**
-
-```typescript
-import { readSettings, saveSettings } from './settings';
-import { DriverSettings } from './types';
-import { EditorApi } from './editor-api';
-import { SceneScriptClient } from './scene-script-client';
-import { PipeServer } from './pipe-server';
-
-let settings: DriverSettings = readSettings();
-let server: PipeServer | null = null;
-
-export const methods: { [key: string]: (...any: any) => any } = {
-    openPanel() {
-        Editor.Panel.open('cocos-mcp-server');
-    },
-
-    getDriverStatus() {
-        const status = server ? server.getStatus() : { listening: false, pipePath: '', project: '' };
-        return { ...status, settings };
-    },
-
-    async updateSettings(next: DriverSettings) {
-        saveSettings(next);
-        settings = next;
-    }
-};
-
-export async function load() {
-    settings = readSettings();
-    const editor = new EditorApi();
-    server = new PipeServer(editor, new SceneScriptClient(editor), settings);
-    await server.start();
-}
-
-export async function unload() {
-    if (server) {
-        await server.stop();
-        server = null;
-    }
-}
-```
-
-`PipeServer` появится в Task 5; до тех пор сборка драйвера падает — это ожидаемо и чинится там.
-
-- [ ] **Step 5: Урезать панель**
+- [ ] **Step 4: Урезать панель**
 
 В `driver/src/panels/default/index.ts` заменить тело `setup()` целиком на:
 
@@ -511,7 +468,7 @@ export async function unload() {
 В `driver/package.json` из `contributions.messages` удалить `start-server` и `stop-server`,
 а `get-server-status` переименовать в `get-driver-status` с методом `getDriverStatus`.
 
-- [ ] **Step 6: Написать driver/tsup.config.ts**
+- [ ] **Step 5: Написать driver/tsup.config.ts**
 
 ```typescript
 import { defineConfig } from 'tsup';
@@ -533,18 +490,18 @@ export default defineConfig({
 `noExternal: [/.*/]` вшивает зависимости в бандл: папка расширения копируется в
 `{project}/extensions/` без `node_modules`.
 
-- [ ] **Step 7: Убрать MCP из зависимостей**
+- [ ] **Step 6: Убрать MCP из зависимостей**
 
 ```bash
 npm uninstall @modelcontextprotocol/sdk --workspace driver
 ```
 
-- [ ] **Step 8: Убедиться, что удалённое больше нигде не упоминается**
+- [ ] **Step 7: Убедиться, что удалённое больше нигде не упоминается**
 
 Run: `grep -rn "modelcontextprotocol\|preview-log\|previewConsole\|PreviewLogStore" driver/ shared/ cli/ --include=*.ts`
 Expected: пусто
 
-- [ ] **Step 9: Коммит**
+- [ ] **Step 8: Коммит**
 
 ```bash
 git add -A
@@ -774,7 +731,7 @@ export function resolveMethod(name: string, editor: unknown, scene: unknown): An
 - [ ] **Step 4: Прогнать тест, убедиться что проходит**
 
 Run: `npm run build --workspace driver && npm run test:only --workspace driver`
-Expected: PASS, 10 тестов (5 из Task 3 + 5 новых)
+Expected: PASS, 5 тестов (набор driver содержит только method-table — pipe-name живёт в shared)
 
 - [ ] **Step 5: Коммит**
 
@@ -788,8 +745,7 @@ git commit -m "резолвер метода: список 87 проверяет
 ## Task 5: Сервер канала
 
 **Files:**
-- Create: `driver/src/pipe-server.ts`
-- Modify: `driver/src/main.ts` (уже написан в Task 2, теперь собирается)
+- Create: `driver/src/pipe-server.ts`, `driver/src/main.ts`
 
 **Interfaces:**
 - Consumes: `resolveMethod` (Task 4), `pipePath` (Task 3), `EditorApi`, `SceneScriptClient`, `Hello`
@@ -905,19 +861,64 @@ export class PipeServer {
 }
 ```
 
-- [ ] **Step 2: Собрать драйвер**
+- [ ] **Step 2: Написать driver/src/main.ts**
+
+```typescript
+import { readSettings, saveSettings } from './settings';
+import { DriverSettings } from './types';
+import { EditorApi } from './editor-api';
+import { SceneScriptClient } from './scene-script-client';
+import { PipeServer } from './pipe-server';
+
+let settings: DriverSettings = readSettings();
+let server: PipeServer | null = null;
+
+export const methods: { [key: string]: (...any: any) => any } = {
+    openPanel() {
+        Editor.Panel.open('cocos-mcp-server');
+    },
+
+    getDriverStatus() {
+        const status = server ? server.getStatus() : { listening: false, pipePath: '', project: '' };
+        return { ...status, settings };
+    },
+
+    async updateSettings(next: DriverSettings) {
+        saveSettings(next);
+        settings = next;
+    }
+};
+
+export async function load() {
+    settings = readSettings();
+    const editor = new EditorApi();
+    server = new PipeServer(editor, new SceneScriptClient(editor), settings);
+    await server.start();
+}
+
+export async function unload() {
+    if (server) {
+        await server.stop();
+        server = null;
+    }
+}
+```
+
+`PipeServer` появится в Task 5; до тех пор сборка драйвера падает — это ожидаемо и чинится там.
+
+- [ ] **Step 3: Собрать драйвер**
 
 Run: `npm run build --workspace driver`
 Expected: сборка зелёная, в `driver/dist/` появились `main.js`, `scene/index.js`,
 `panels/default/index.js`
 
-- [ ] **Step 3: Убедиться, что бандл самодостаточен**
+- [ ] **Step 4: Убедиться, что бандл самодостаточен**
 
 Run: `grep -o 'require("[a-z@][^"]*")' driver/dist/main.js | sort -u`
 Expected: только встроенные модули Node (`fs`, `net`, `path`, `crypto`, `os`) и `electron`.
 Ни `json-rpc-2.0`, ни `split2`, ни `p-queue` в выводе быть не должно.
 
-- [ ] **Step 4: Установить драйвер в проект и перезагрузить расширение**
+- [ ] **Step 5: Установить драйвер в проект и перезагрузить расширение**
 
 ```bash
 cp -r driver "D:/cocos/cocos-playables/games/CyberCore/extensions/cocos-mcp-server"
@@ -926,7 +927,7 @@ cp -r driver "D:/cocos/cocos-playables/games/CyberCore/extensions/cocos-mcp-serv
 Затем **вручную** выключить и включить расширение в Extension Manager редактора. Ничто другое
 не сбрасывает require-кэш Node.
 
-- [ ] **Step 5: Живая проверка канала**
+- [ ] **Step 6: Живая проверка канала**
 
 ```bash
 node -e "
@@ -943,15 +944,15 @@ c.on('data',d=>{console.log(d.toString());c.end()});
 Expected: в ответе `result` с `project: \"CyberCore\"`, непустым `projectPath`, `pid` и
 `surfaceChecksum`.
 
-- [ ] **Step 6: Живая проверка отказа неизвестному методу**
+- [ ] **Step 7: Живая проверка отказа неизвестному методу**
 
 Тот же скрипт с `method:'editor.scene.deleteEverything'`.
 Expected: `error` с кодом `-32601` (метод не зарегистрирован), редактор не падает.
 
-- [ ] **Step 7: Коммит**
+- [ ] **Step 8: Коммит**
 
 ```bash
-git add driver/src/pipe-server.ts driver/tsup.config.ts
+git add driver/src/pipe-server.ts driver/src/main.ts driver/tsup.config.ts
 git commit -m "сервер канала: json-rpc поверх сокета, очередь на один запрос, снятие скобки при обрыве"
 ```
 
@@ -1427,7 +1428,7 @@ if (require.main === module) {
 - [ ] **Step 7: Прогнать тест, убедиться что проходит**
 
 Run: `npm run build && npm run test:only --workspace cli`
-Expected: PASS, 12 тестов
+Expected: PASS, 12 тестов (9 из Task 6 + 3 новых)
 
 - [ ] **Step 8: Живая проверка на двух редакторах**
 
@@ -2563,7 +2564,7 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
 - [ ] **Step 7: Прогнать тесты, убедиться что проходят**
 
 Run: `npm run build && npm test`
-Expected: PASS, 10 новых тестов (6 на отчёт + 4 на команду)
+Expected: PASS, 11 новых тестов (8 на отчёт + 3 на команду)
 
 - [ ] **Step 8: Живая проверка записи и сохранения**
 
