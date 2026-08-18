@@ -264,6 +264,11 @@ export interface SerializedValue {
     reason?: string;
     /** The scene file carries none of this component's properties; only an override would. */
     inPrefabInstance?: boolean;
+    /**
+     * The value points at a node the file names by index alone and the pairing could not resolve,
+     * so the value is reported with that slot empty and nothing may be concluded from it.
+     */
+    unnamedReference?: boolean;
 }
 
 export interface PrefabOverrideOutcome {

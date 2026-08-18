@@ -1,7 +1,10 @@
 import { buildPathIndex, resolvePathInIndex, siblingLabels } from '../node-path';
 import { diffSerialized } from '../serialized-diff';
 import type { DeclaredProperty, PrefabLinkageReport, SceneMethods, SceneResult } from '../scene-contract';
-import { ctorIsA, findNodeByUuid, plainSerialized, requireActiveScene } from './engine';
+import { liveNodesBySerializedIndex } from '../reference-projection';
+import {
+    ctorIsA, findNodeByUuid, plainSerialized, requireActiveScene, SerializedNodeNaming
+} from './engine';
 import { overlaidReferenceValue } from './property-write';
 
 /**
@@ -234,8 +237,17 @@ export const serializedComponentValue: SceneMethods['serializedComponentValue'] 
             }
             current = current[segment];
         }
-        const value = overlaidReferenceValue(scene, component, property, plainSerialized(objects, current, 0));
-        return { success: true, data: { found: true, value } };
+        const naming: SerializedNodeNaming = {
+            nodes: liveNodesBySerializedIndex(
+                objects, objects.findIndex((entry) => entry && entry.__type__ === 'cc.Scene'), scene),
+            unnamed: []
+        };
+        const value = overlaidReferenceValue(
+            scene, component, property, plainSerialized(objects, current, 0, naming));
+        return {
+            success: true,
+            data: naming.unnamed.length ? { found: true, value, unnamedReference: true } : { found: true, value }
+        };
     } catch (error: any) {
         return { success: false, error: error.message || String(error) };
     }

@@ -54,25 +54,48 @@ export function findComponentByUuid(scene: any, uuid: string): any {
 }
 
 /**
+ * The uuids for the serialized node entries the file does not name, and the entries left over.
+ *
+ * `liveNodesBySerializedIndex` builds `nodes`; `unnamed` collects the indices it could not answer
+ * for, which are references whose fate is UNKNOWN rather than empty.
+ */
+export interface SerializedNodeNaming {
+    nodes: Map<number, { uuid: string }>;
+    unnamed: number[];
+}
+
+/**
  * Serialized output as plain comparable data: `__id__` back-references followed into the object
  * array, an asset's `__uuid__` spelled the way a dump spells it, and the bookkeeping keys that
  * carry no authored value dropped.
  */
-export function plainSerialized(objects: any[], value: any, depth: number): any {
+export function plainSerialized(
+    objects: any[], value: any, depth: number, naming: SerializedNodeNaming
+): any {
     if (depth > 8 || !value || typeof value !== 'object') return value;
     if (typeof value.__id__ === 'number') {
         const target = objects[value.__id__];
         // A node or component is reported BY UUID. Following the back-reference would inline the
         // object graph it points into, which across a whole-scene serialization is most of the scene.
         const entity = serializedEntityUuid(target);
-        return entity ? { uuid: entity } : plainSerialized(objects, target, depth + 1);
+        if (entity) return { uuid: entity };
+        // A prefab instance ROOT carries no `_id`: its identity is the prefab plus the instance
+        // record, and the next load hands it a fresh uuid. Expanding that stub as an ordinary object
+        // is how a reference the file does carry got read as pointing at nothing.
+        if (target && target.__type__ === 'cc.Node') {
+            const live = naming.nodes.get(value.__id__);
+            if (live) return { uuid: live.uuid };
+            naming.unnamed.push(value.__id__);
+            return { uuid: null };
+        }
+        return plainSerialized(objects, target, depth + 1, naming);
     }
     if (typeof value.__uuid__ === 'string') return { uuid: value.__uuid__ };
-    if (Array.isArray(value)) return value.map(item => plainSerialized(objects, item, depth + 1));
+    if (Array.isArray(value)) return value.map(item => plainSerialized(objects, item, depth + 1, naming));
     const plain: Record<string, any> = {};
     for (const [key, item] of Object.entries(value)) {
         if (key === '__type__' || key === '_objFlags' || key === '__editorExtras__') continue;
-        plain[key] = plainSerialized(objects, item, depth + 1);
+        plain[key] = plainSerialized(objects, item, depth + 1, naming);
     }
     return plain;
 }

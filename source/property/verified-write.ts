@@ -131,7 +131,13 @@ async function serializedValue(target: WriteTarget, cid: string, ctx: ToolContex
             problem = `the serialized form was not read (${(result && result.error) || 'no answer'})`;
             continue;
         }
-        if (result.data.found) return { value: result.data.value };
+        if (result.data.found && !result.data.unnamedReference) return { value: result.data.value };
+        if (result.data.found) {
+            problem = `the serializer emits '${property}' as a reference to a node the file names by `
+                + 'position alone, and that position could not be paired with a node in the open scene, '
+                + 'so a save carrying the value is unconfirmed';
+            continue;
+        }
         if (result.data.inPrefabInstance) inPrefabInstance = true;
         problem = `the serializer does not emit '${property}'`
             + `${result.data.reason ? ` — ${result.data.reason}` : ''}, so a save carrying the value is unconfirmed`;
