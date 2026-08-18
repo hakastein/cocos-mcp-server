@@ -1,5 +1,5 @@
 import type { EditorApi } from './editor-api';
-import type { SceneMethods } from './scene-contract';
+import type { SceneMethods } from '@cocos-cli/shared/dist/scene-contract';
 
 export const SCENE_SCRIPT_NAME = 'cocos-mcp-server';
 

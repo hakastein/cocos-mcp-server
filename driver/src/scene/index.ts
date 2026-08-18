@@ -1,4 +1,4 @@
-import type { SceneMethods } from '../scene-contract';
+import type { SceneMethods } from '@cocos-cli/shared/dist/scene-contract';
 import { dumpSceneNodes, findComponentOwners, getCurrentSceneInfo, getNodeInfo } from './dump';
 import { previewPlay, setNodeProperty } from './node-ops';
 import {

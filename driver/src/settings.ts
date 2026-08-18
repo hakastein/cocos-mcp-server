@@ -1,14 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { MCPServerSettings } from './types';
+import { DriverSettings } from './types';
 
-export const DEFAULT_PORT = 4000;
-
-export const DEFAULT_SETTINGS: MCPServerSettings = {
-    port: DEFAULT_PORT,
-    autoStart: false,
-    enableDebugLog: false,
-    maxConnections: 10
+export const DEFAULT_SETTINGS: DriverSettings = {
+    enableDebugLog: false
 };
 
 function getSettingsDir(): string {
@@ -26,7 +21,7 @@ function getSettingsPath(): string {
     return path.join(getSettingsDir(), 'mcp-server.json');
 }
 
-export function readSettings(): MCPServerSettings {
+export function readSettings(): DriverSettings {
     try {
         ensureSettingsDir();
         const filePath = getSettingsPath();
@@ -40,7 +35,7 @@ export function readSettings(): MCPServerSettings {
     return { ...DEFAULT_SETTINGS };
 }
 
-export function saveSettings(settings: MCPServerSettings): void {
+export function saveSettings(settings: DriverSettings): void {
     try {
         ensureSettingsDir();
         fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2));

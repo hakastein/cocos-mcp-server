@@ -1,0 +1,39 @@
+<div class="mcp-app">
+    <section class="server-status">
+        <h3>Driver Status</h3>
+        <div class="status-info">
+            <ui-prop>
+                <ui-label slot="label">Status</ui-label>
+                <ui-label slot="content" class="status-value" :class="statusClass">{{ listening ? 'Listening' : 'Stopped' }}</ui-label>
+            </ui-prop>
+            <ui-prop>
+                <ui-label slot="label">Project</ui-label>
+                <ui-label slot="content">{{ project }}</ui-label>
+            </ui-prop>
+        </div>
+    </section>
+
+    <section class="server-settings">
+        <h3>Driver Settings</h3>
+        <ui-prop>
+            <ui-label slot="label">Debug Log</ui-label>
+            <ui-checkbox slot="content" v-model="settings.enableDebugLog"></ui-checkbox>
+        </ui-prop>
+    </section>
+
+    <section class="server-info" v-if="listening">
+        <h3>Connection Info</h3>
+        <div class="connection-details">
+            <ui-prop>
+                <ui-label slot="label">Pipe Path</ui-label>
+                <ui-input slot="content" :value="pipePath" readonly>
+                    <ui-button slot="suffix" @click="copyPipePath">Copy</ui-button>
+                </ui-input>
+            </ui-prop>
+        </div>
+    </section>
+
+    <footer>
+        <ui-button @click="saveSettings" :disabled="!settingsChanged">Save Settings</ui-button>
+    </footer>
+</div>

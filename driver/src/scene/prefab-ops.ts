@@ -1,6 +1,6 @@
 import type {
     OverrideValueDescription, PrefabSyncReport, PrefabTargetInfo, SceneMethods, SceneResult
-} from '../scene-contract';
+} from '@cocos-cli/shared/dist/scene-contract';
 import { findNodeByUuid, requireActiveScene } from './engine';
 
 declare const cce: any;

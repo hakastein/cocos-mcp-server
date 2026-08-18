@@ -1,5 +1,5 @@
 import { siblingLabels } from '../node-path';
-import type { SceneMethods } from '../scene-contract';
+import type { SceneMethods } from '@cocos-cli/shared/dist/scene-contract';
 import { componentClassName, findNodeByUuid, requireActiveScene } from './engine';
 
 export const getNodeInfo: SceneMethods['getNodeInfo'] = (nodeUuid) => {

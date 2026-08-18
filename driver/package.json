@@ -2,22 +2,98 @@
   "package_version": 2,
   "name": "cocos-mcp-server",
   "version": "1.0.0",
+  "author": "CocosMCPPlugin",
   "editor": ">=3.8.0",
+  "description": "i18n:cocos-mcp-server.description",
   "main": "./dist/main.js",
   "scripts": {
     "build": "tsc && tsup",
     "test:only": "node --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
-    "json-rpc-2.0": "^1.7.1",
-    "split2": "^4.2.0",
-    "p-queue": "^6.6.2",
     "fs-extra": "^11.3.0",
+    "json-rpc-2.0": "^1.7.1",
+    "p-queue": "^6.6.2",
+    "split2": "^4.2.0",
     "vue": "^3.1.4"
   },
   "devDependencies": {
     "@cocos/creator-types": "^3.8.6",
     "@types/fs-extra": "^9.0.5",
     "tsup": "^8.0.0"
+  },
+  "panels": {
+    "default": {
+      "title": "i18n:cocos-mcp-server.panel_title",
+      "type": "dockable",
+      "main": "dist/panels/default",
+      "icon": "./static/icon.png",
+      "size": {
+        "min-width": 400,
+        "min-height": 300,
+        "width": 600,
+        "height": 500
+      }
+    }
+  },
+  "contributions": {
+    "menu": [
+      {
+        "path": "i18n:menu.extension/Cocos MCP Server",
+        "label": "i18n:cocos-mcp-server.open_panel",
+        "message": "open-panel"
+      }
+    ],
+    "messages": {
+      "open-panel": {
+        "methods": [
+          "openPanel"
+        ]
+      },
+      "get-driver-status": {
+        "methods": [
+          "getDriverStatus"
+        ]
+      },
+      "update-settings": {
+        "methods": [
+          "updateSettings"
+        ]
+      }
+    },
+    "scene": {
+      "script": "./dist/scene/index.js",
+      "methods": [
+        "declaredComponentProperty",
+        "addComponentToNode",
+        "getNodeInfo",
+        "getCurrentSceneInfo",
+        "setNodeProperty",
+        "evalInScene",
+        "setParticleGradient",
+        "setParticleCurve",
+        "createPrefabFromNode2",
+        "previewPlay",
+        "addSkeletalSocket",
+        "listSkeletalSockets",
+        "removeSkeletalSocket",
+        "applyPrefabToAsset",
+        "revertPrefabInstance",
+        "listPrefabOverrides",
+        "removePrefabOverride",
+        "serializedComponentValue",
+        "prefabInstancePropertyOutcome",
+        "nodePrefabLinkage",
+        "resolveComponentReference",
+        "applyComponentReference",
+        "componentReferenceOutcome",
+        "pruneComponentReferenceOverrides",
+        "resolveNodePaths",
+        "dumpSceneNodes",
+        "findComponentOwners",
+        "sceneDirtyAgainstDisk",
+        "dumpMissingScripts"
+      ]
+    }
   }
 }

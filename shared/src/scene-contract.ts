@@ -1,5 +1,20 @@
-import type { SerializedDiff } from './serialized-diff';
-import type { PathResolution } from './node-path';
+/**
+ * Mirrors `serialized-diff.ts`'s `SerializedDiff` and `node-path.ts`'s `PathResolution`. Declared
+ * here rather than imported because those live beside the tool registry (`source/`, moving to
+ * `cli/`), a package this contract — consumed by the driver's scene script — must not depend on.
+ */
+export interface SerializedDiff {
+    path: string;
+    live: string;
+    disk: string;
+}
+
+export interface PathResolved {
+    uuid: string;
+    matchedPath: string;
+}
+
+export type PathResolution = PathResolved | { error: string };
 
 export interface SceneFailure {
     success: false;
