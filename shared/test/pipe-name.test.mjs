@@ -28,9 +28,10 @@ test('на windows регистр пути не разводит проекты,
 test('на windows это канал в пространстве имён, на posix — сокет во временном каталоге', () => {
     const key = instanceKey('D:/cocos/games/CyberCore', 'win32');
     assert.equal(pipePath('D:/cocos/games/CyberCore', 'win32'), `\\\\.\\pipe\\${PIPE_PREFIX}${key}`);
+    const linuxKey = instanceKey('/home/u/game', 'linux');
     assert.equal(
         pipePath('/home/u/game', 'linux', '/tmp'),
-        `/tmp/cocos-cli/${instanceKey('/home/u/game', 'linux')}.sock`);
+        `/tmp/cocos-cli/${PIPE_PREFIX}${linuxKey}.sock`);
 });
 
 test('каталог поиска — то место, которое CLI перечисляет', () => {
@@ -58,4 +59,10 @@ test('относительные сегменты схлопываются к о
     assert.equal(
         instanceKey('D:/cocos/games/Other/../CyberCore', 'win32'),
         instanceKey('D:/cocos/games/CyberCore', 'win32'));
+});
+
+test('POSIX-путь содержит префикс в имени файла', () => {
+    const path = pipePath('/home/u/game', 'linux', '/tmp');
+    const basename = path.split('/').pop();
+    assert(basename.startsWith(PIPE_PREFIX), `basename ${basename} должен начинаться с ${PIPE_PREFIX}`);
 });

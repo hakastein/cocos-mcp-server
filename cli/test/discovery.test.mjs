@@ -13,6 +13,7 @@ const hello = (project, projectPath) => ({
 });
 const CYBER = hello('CyberCore', 'D:/cocos/games/CyberCore');
 const WEED = hello('tl_weedmanager1a', 'D:/cocos/games/tl_weedmanager1a');
+const WINDOWS = hello('WindowsPath', 'D:\\cocos\\games\\WindowsPath');
 
 test('единственный живой инстанс берётся без указания', () => {
     const result = selectInstance([CYBER]);
@@ -67,4 +68,13 @@ test('коды выхода различают ненайденный редак
     assert.equal(EXIT.USAGE, 2);
     assert.equal(EXIT.NO_EDITOR, 3);
     assert.equal(EXIT.PROTOCOL, 4);
+});
+
+test('обратные слэши в пути кандидата нормализуются при матчинге', () => {
+    assert.equal(
+        selectInstance([WINDOWS], 'D:/cocos/games/WindowsPath').chosen.project,
+        'WindowsPath');
+    assert.equal(
+        selectInstance([WINDOWS], 'games\\WindowsPath').chosen.project,
+        'WindowsPath');
 });

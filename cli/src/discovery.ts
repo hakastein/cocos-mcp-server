@@ -54,9 +54,12 @@ export async function discover(
     probe: (address: string) => Promise<Hello | null>,
     list: () => string[] = listAddresses
 ): Promise<Hello[]> {
-    const found = await Promise.all(
+    const found = await Promise.allSettled(
         list().filter(name => name.startsWith(PIPE_PREFIX)).map(name => probe(addressOf(name))));
-    return found.filter((hello): hello is Hello => hello !== null);
+    return found
+        .filter((r): r is PromiseFulfilledResult<Hello | null> => r.status === 'fulfilled')
+        .map(r => r.value)
+        .filter((hello): hello is Hello => hello !== null);
 }
 
 function addressOf(name: string): string {

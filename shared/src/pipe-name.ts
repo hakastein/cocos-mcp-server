@@ -22,5 +22,5 @@ export function pipePath(
     const key = instanceKey(projectPath, platform);
     return platform === 'win32'
         ? `\\\\.\\pipe\\${PIPE_PREFIX}${key}`
-        : path.posix.join(pipeDirectory(platform, tmp), `${key}.sock`);
+        : path.posix.join(pipeDirectory(platform, tmp), `${PIPE_PREFIX}${key}.sock`);
 }
