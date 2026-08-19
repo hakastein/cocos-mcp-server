@@ -757,6 +757,13 @@ git commit -m "резолвер метода: список 87 проверяет
 
 Живой код, тестами не покрывается — проверяется прогоном в редакторе (см. Step 5).
 
+**Две ловушки, которые код обязан закрыть.** `stop()` рвёт открытые сокеты до `server.close()`:
+тот ждёт закрытия всех соединений, а Node сам их не рвёт, и выключение расширения виснет на
+любом живом клиенте. Очередь `p-queue` сериализует отдельные вызовы, но между `beginRecording`
+и `endRecording` лежит сетевой round-trip, и на это время очередь пустеет — поэтому нужен ещё и
+владелец скобки: пока она открыта, вызовы прочих соединений ждут, а владение снимается по
+`endRecording`, `cancelRecording` или обрыву сокета.
+
 - [ ] **Step 1: Написать driver/src/pipe-server.ts**
 
 ```typescript
@@ -781,6 +788,7 @@ function surfaceChecksum(): string {
 
 export class PipeServer {
     private server: net.Server | null = null;
+    private readonly sockets = new Set<net.Socket>();
     private readonly queue = new PQueue({ concurrency: 1 });
     private readonly rpc = new JSONRPCServer();
     private readonly address = pipePath(Editor.Project.path);
@@ -827,6 +835,10 @@ export class PipeServer {
         const server = this.server;
         this.server = null;
         if (!server) return;
+        // close() ждёт закрытия всех открытых соединений, а Node сам их не рвёт: без этого
+        // выключение расширения виснет на любом живом клиенте.
+        for (const socket of this.sockets) socket.destroy();
+        this.sockets.clear();
         await new Promise<void>(resolve => server.close(() => resolve()));
     }
 
