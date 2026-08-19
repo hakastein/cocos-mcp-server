@@ -12,15 +12,15 @@ export function buildProgram(): Command {
     program
         .description('Драйвер открытых редакторов Cocos Creator')
         .option('-p, --project <substring>', 'какой редактор, если открыто несколько')
-        .option('--json', 'выдать структурную форму вместо текста')
         .exitOverride();
 
     program
         .command('instances')
         .description('перечислить открытые редакторы')
-        .action(async () => {
+        .option('--json', 'выдать структурную форму вместо текста')
+        .action(async (options: { json?: boolean }) => {
             const found = await discover(probeAddress);
-            if (program.opts().json) {
+            if (options.json) {
                 process.stdout.write(JSON.stringify(found) + '\n');
             } else {
                 process.stdout.write(renderInstances(found) + '\n');
