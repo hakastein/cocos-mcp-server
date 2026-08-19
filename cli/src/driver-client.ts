@@ -12,6 +12,7 @@ export type EditorFacade = Record<string, Record<string, (...args: unknown[]) =>
 export class DriverClient {
     readonly editor: EditorFacade;
     readonly scene: SceneFacade;
+    private isClosed = false;
 
     private constructor(
         private readonly socket: net.Socket,
@@ -31,6 +32,9 @@ export class DriverClient {
         return new Promise((resolve, reject) => {
             const socket = net.connect(address);
             const rpc = new JSONRPCClient(request => {
+                if (socket.destroyed) {
+                    return Promise.reject(new Error('соединение с редактором закрыто'));
+                }
                 socket.write(JSON.stringify(request) + '\n');
                 return Promise.resolve();
             });
@@ -38,14 +42,15 @@ export class DriverClient {
                 if (!line.trim()) return;
                 try { rpc.receive(JSON.parse(line)); } catch { }
             });
-            socket.on('error', reject);
+            socket.once('error', reject);
             socket.on('close', () =>
                 rpc.rejectAllPendingRequests('соединение с редактором закрылось'));
-            socket.on('connect', () => resolve(new DriverClient(socket, rpc)));
+            socket.once('connect', () => resolve(new DriverClient(socket, rpc)));
         });
     }
 
     close(): void {
+        this.isClosed = true;
         this.socket.destroy();
     }
 }
