@@ -37,3 +37,25 @@ test('каталог поиска — то место, которое CLI пер
     assert.equal(pipeDirectory('win32'), '\\\\.\\pipe\\');
     assert.equal(pipeDirectory('linux', '/tmp'), '/tmp/cocos-cli');
 });
+
+test('обратные и прямые слэши в одном пути дают один ключ', () => {
+    assert.equal(
+        instanceKey('D:\\cocos\\games\\CyberCore', 'win32'),
+        instanceKey('D:/cocos/games/CyberCore', 'win32'));
+});
+
+test('хвостовой слэш и повторяющиеся разделители ключ не меняют', () => {
+    const base = instanceKey('D:/cocos/games/CyberCore', 'win32');
+    assert.equal(
+        instanceKey('D:/cocos/games/CyberCore/', 'win32'),
+        base);
+    assert.equal(
+        instanceKey('D:/cocos//games/CyberCore', 'win32'),
+        base);
+});
+
+test('относительные сегменты схлопываются к одному ключу', () => {
+    assert.equal(
+        instanceKey('D:/cocos/games/Other/../CyberCore', 'win32'),
+        instanceKey('D:/cocos/games/CyberCore', 'win32'));
+});
