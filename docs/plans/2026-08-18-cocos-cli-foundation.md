@@ -1792,25 +1792,32 @@ Expected: FAIL — `Cannot find module '../lib/commands/scene.js'`
 
 ```typescript
 import { Command } from 'commander';
+import type { SceneResult } from '@cocos-cli/shared';
 import { renderTree, DumpNode } from '../render/tree';
 import { EXIT } from '../exit';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
-interface SceneAnswer<T> { success: boolean; data?: T; error?: string }
-
-async function sceneCall<T>(client: DriverClient, method: string, ...args: unknown[]): Promise<T> {
-    const answer = await client.scene.call(method, ...args) as SceneAnswer<T>;
-    if (!answer || answer.success !== true || answer.data === undefined) {
-        throw new Error(answer?.error || `scene-скрипт не ответил на ${method}`);
+/**
+ * `client.scene.call` типизирован контрактом `SceneMethods`, поэтому метод, его аргументы и форма
+ * ответа проверяются компилятором. Здесь остаётся одно: развернуть `SceneResult` в значение или
+ * в отказ. Своих интерфейсов для ответа сцены не заводи и `as` не пиши — контракт уже есть.
+ */
+async function unwrap<T>(
+    answer: SceneResult<T> | Promise<SceneResult<T>>, method: string
+): Promise<T> {
+    const settled = await answer;
+    if (!settled || settled.success !== true || settled.data === undefined) {
+        throw new Error(
+            (settled && settled.success === false && settled.error) || `scene-скрипт не ответил на ${method}`);
     }
-    return answer.data;
+    return settled.data;
 }
 
 export async function sceneTree(
     client: DriverClient, options: { uuid?: boolean }
 ): Promise<{ text: string; count: number }> {
-    const dump = await sceneCall<{ nodes: DumpNode[] }>(client, 'dumpSceneNodes');
+    const dump = await unwrap(client.scene.call('dumpSceneNodes'), 'dumpSceneNodes');
     const nodes = dump.nodes || [];
     return {
         count: nodes.length,
@@ -1819,8 +1826,7 @@ export async function sceneTree(
 }
 
 export async function sceneInfo(client: DriverClient): Promise<string> {
-    const info = await sceneCall<{ name: string; uuid: string; nodeCount: number }>(
-        client, 'getCurrentSceneInfo');
+    const info = await unwrap(client.scene.call('getCurrentSceneInfo'), 'getCurrentSceneInfo');
     return `${info.name}  ${info.uuid}  узлов: ${info.nodeCount}`;
 }
 
