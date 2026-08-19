@@ -26,8 +26,16 @@ const TREE = {
     }
 };
 
+// getNodeInfo здесь стейтфул: addComponent опрашивает его до и после навешивания. `accept`
+// решает, регистрирует ли движок данное написание — по умолчанию любое.
+const bareType = type => type.startsWith('cc.') ? type.slice(3) : type;
+const FAST = { timeoutMs: 30, intervalMs: 5 };
+
 const recorder = (overrides = {}) => {
     const calls = [];
+    const components = new Map([['u_bg', ['Sprite']]]);
+    const accept = overrides.acceptComponent || (() => true);
+
     return {
         calls,
         editor: {
@@ -35,8 +43,16 @@ const recorder = (overrides = {}) => {
                 beginRecording: async (...a) => { calls.push(['beginRecording', ...a]); return 'r1'; },
                 endRecording: async (...a) => { calls.push(['endRecording', ...a]); },
                 cancelRecording: async () => { calls.push(['cancelRecording']); },
-                createNode: async (...a) => { calls.push(['createNode', ...a]); return 'u_new'; },
-                createComponent: async (...a) => { calls.push(['createComponent', ...a]); },
+                createNode: async (...a) => {
+                    calls.push(['createNode', ...a]);
+                    components.set('u_new', []);
+                    return 'u_new';
+                },
+                createComponent: async (options) => {
+                    calls.push(['createComponent', options]);
+                    if (!accept(options.component)) return;
+                    components.get(options.uuid).push(bareType(options.component));
+                },
                 setProperty: async (...a) => { calls.push(['setProperty', ...a]); return true; }
             }
         },
@@ -45,8 +61,17 @@ const recorder = (overrides = {}) => {
                 calls.push([method, ...a]);
                 if (method === 'resolveNodePaths') return TREE;
                 if (method === 'getNodeInfo') {
-                    return overrides.getNodeInfo ?? { success: true, data: { name: 'Bg', uuid: 'u_bg', active: true,
-                        components: [{ type: 'Sprite', enabled: true }] } };
+                    if (overrides.getNodeInfo) return overrides.getNodeInfo;
+                    const [uuid] = a;
+                    const types = components.get(uuid) || [];
+                    return { success: true, data: { name: uuid === 'u_new' ? 'New' : 'Bg', uuid, active: true,
+                        components: types.map(type => ({ type, enabled: true })) } };
+                }
+                if (method === 'addComponentToNode') {
+                    const [uuid, type] = a;
+                    if (!accept(type)) return { success: false, error: `Component type not found: ${type}` };
+                    components.get(uuid).push(bareType(type));
+                    return { success: true, data: { componentId: 'c1' } };
                 }
                 return { success: true, data: {} };
             }
@@ -87,7 +112,7 @@ test('get отдаёт одну строку с именем, состояние
 
 test('создание с компонентом укладывается в одну скобку undo', async () => {
     const driver = recorder();
-    await nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Sprite'] });
+    await nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Sprite'] }, FAST);
     const names = driver.calls.map(c => c[0]);
     assert.equal(names[0], 'resolveNodePaths');
     assert.equal(names[1], 'beginRecording');
@@ -96,12 +121,25 @@ test('создание с компонентом укладывается в о�
     assert.ok(names.includes('createComponent'));
 });
 
-test('падение посреди создания снимает скобку, а не оставляет её открытой', async () => {
+test('отчёт называет зарегистрированное имя компонента, а не то, что попросили (L3)', async () => {
     const driver = recorder();
-    driver.editor.scene.createComponent = async () => { throw new Error('нет такого компонента'); };
+    const text = await nodeCreate(
+        driver, { parent: 'Canvas/Bg', name: 'New', components: ['cc.MeshRenderer'] }, FAST);
+    assert.match(text, /\[MeshRenderer\]/);
+    assert.ok(!text.includes('cc.MeshRenderer'));
+});
+
+test('компонент, который движок так и не зарегистрировал, — отказ, а не тихий ok', async () => {
+    const driver = recorder({ acceptComponent: () => false });
     await assert.rejects(
-        () => nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Nope'] }),
-        /нет такого компонента/);
+        () => nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Nope'] }, FAST),
+        /Nope/);
+});
+
+test('падение при добавлении компонента снимает скобку, а не оставляет её открытой', async () => {
+    const driver = recorder({ acceptComponent: () => false });
+    await assert.rejects(
+        () => nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Nope'] }, FAST));
     assert.ok(driver.calls.map(c => c[0]).includes('cancelRecording'));
 });
 

@@ -1,5 +1,6 @@
 import type { SceneResult } from '@cocos-cli/shared';
 import { EXIT } from '../exit';
+import { settle } from '../settle';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
@@ -49,4 +50,95 @@ export async function withClient(
     } finally {
         resolved.client.close();
     }
+}
+
+const CC_PREFIX = 'cc.';
+
+function bareComponentType(type: string): string {
+    return type.indexOf(CC_PREFIX) === 0 ? type.slice(CC_PREFIX.length) : type;
+}
+
+/**
+ * `getNodeInfo` always names a component by its bare JS class ("MeshRenderer"), never by the
+ * `cc.`-qualified spelling a caller may type. The editor's `create-component` message silently
+ * does nothing for the spelling it does not register under, and the scene-side fallback throws
+ * `Component type not found` for the other — so both spellings are tried, caller's own first.
+ */
+function spellingCandidates(type: string): string[] {
+    const bare = bareComponentType(type);
+    const prefixed = `${CC_PREFIX}${bare}`;
+    return type === bare ? [bare, prefixed] : [prefixed, bare];
+}
+
+function componentTypesOf(components: Array<{ type: string }> | undefined): string[] {
+    return (components || []).map(component => component.type);
+}
+
+async function componentTypesNow(client: DriverClient, nodeUuid: string): Promise<string[]> {
+    return componentTypesOf((await unwrap(client.scene.call('getNodeInfo', nodeUuid), 'getNodeInfo')).components);
+}
+
+/**
+ * The first type in `after` a running count from `before` cannot account for. A growing
+ * multiset rather than a set difference, because a node can already carry several components of
+ * the same type — the only way to tell an old instance from the one just added is by count.
+ */
+function newlyAppearedType(before: string[], after: string[]): string | null {
+    const remaining = new Map<string, number>();
+    for (const type of before) remaining.set(type, (remaining.get(type) || 0) + 1);
+    for (const type of after) {
+        const left = remaining.get(type) || 0;
+        if (left > 0) { remaining.set(type, left - 1); continue; }
+        return type;
+    }
+    return null;
+}
+
+interface PollOptions {
+    timeoutMs?: number;
+    intervalMs?: number;
+}
+
+async function pollForNewComponent(
+    client: DriverClient, nodeUuid: string, before: string[], pollOptions?: PollOptions
+): Promise<string | null> {
+    let found: string | null = null;
+    await settle(async () => {
+        found = newlyAppearedType(before, await componentTypesNow(client, nodeUuid));
+        return found !== null;
+    }, pollOptions);
+    return found;
+}
+
+export interface ComponentAddOutcome {
+    /** The name the component actually registered under — never the spelling the caller typed. */
+    type: string;
+    alreadyPresent: boolean;
+}
+
+/** Neither add path is trusted on its own word — each spelling is tried, then polled for. Shared by
+ * `component add` and `node create --component` so success and failure both take one shape. */
+export async function addComponent(
+    client: DriverClient, nodeUuid: string, type: string, pollOptions?: PollOptions
+): Promise<ComponentAddOutcome> {
+    const before = await componentTypesNow(client, nodeUuid);
+    const bare = bareComponentType(type);
+    if (before.includes(bare)) return { type: bare, alreadyPresent: true };
+
+    for (const candidate of spellingCandidates(type)) {
+        await client.editor.scene.createComponent({ uuid: nodeUuid, component: candidate }).catch(() => undefined);
+        let found = await pollForNewComponent(client, nodeUuid, before, pollOptions);
+        if (found) return { type: found, alreadyPresent: false };
+
+        const fallback = await client.scene.call('addComponentToNode', nodeUuid, candidate);
+        if (fallback.success) {
+            found = await pollForNewComponent(client, nodeUuid, before, pollOptions);
+            if (found) return { type: found, alreadyPresent: false };
+        }
+    }
+
+    const after = await componentTypesNow(client, nodeUuid);
+    throw new Error(
+        `компонент '${type}' не появился на узле ${nodeUuid} после добавления; есть: ${
+            after.join(', ') || '(ни одного)'}`);
 }

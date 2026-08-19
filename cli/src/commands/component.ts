@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { unwrap, withClient } from './shared';
+import { addComponent, unwrap, withClient } from './shared';
 import { withUndoBracket } from '../undo-bracket';
 import { renderWriteReport } from '../render/report';
 import { readBackMatches, typedDump } from '../property/writers';
@@ -145,11 +145,13 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
 
     component
         .command('add <path> <type>')
-        .description('навесить компонент на узел')
+        .description('навесить компонент на узел, проверив, что он появился')
         .action((target: string, type: string) => withClient(resolve, async client => {
             const uuid = await resolveNode(client, target);
-            await client.editor.scene.createComponent({ uuid, component: type });
-            return { stdout: `ok  ${type} навешен на ${target}` };
+            const outcome = await addComponent(client, uuid, type);
+            return { stdout: outcome.alreadyPresent
+                ? `ok  ${outcome.type} уже на ${target}`
+                : `ok  ${outcome.type} навешен на ${target}` };
         }));
 
     component

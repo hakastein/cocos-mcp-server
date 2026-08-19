@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { unwrap, withClient } from './shared';
+import { addComponent, unwrap, withClient } from './shared';
 import { withUndoBracket } from '../undo-bracket';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
@@ -44,16 +44,22 @@ export interface CreateSpec {
 /**
  * Скобка охватывает и структурный шаг, и настройку, чтобы созданный узел откатывался одним
  * Ctrl+Z. Провал любого шага снимает скобку: оставленная открытой запись пережила бы процесс.
+ *
+ * `componentPollOptions` тюнингует только опрос `addComponent` после навешивания — тестовый
+ * рычаг, боевой вызов его не передаёт и получает предустановленный таймаут `settle`.
  */
-export async function nodeCreate(client: DriverClient, spec: CreateSpec): Promise<string> {
+export async function nodeCreate(
+    client: DriverClient, spec: CreateSpec, componentPollOptions?: { timeoutMs?: number; intervalMs?: number }
+): Promise<string> {
     const parentUuid = await resolveNode(client, spec.parent);
 
-    const { result: created, undoNote } = await withUndoBracket(client, parentUuid, async () => {
+    const { result, undoNote } = await withUndoBracket(client, parentUuid, async () => {
         const createdUuid = await client.editor.scene.createNode({
             parent: parentUuid, name: spec.name
         }) as string;
+        const registered: string[] = [];
         for (const type of spec.components) {
-            await client.editor.scene.createComponent({ uuid: createdUuid, component: type });
+            registered.push((await addComponent(client, createdUuid, type, componentPollOptions)).type);
         }
         if (spec.pos) {
             await client.editor.scene.setProperty({
@@ -62,11 +68,11 @@ export async function nodeCreate(client: DriverClient, spec: CreateSpec): Promis
                 dump: { type: 'cc.Vec3', value: { x: spec.pos[0], y: spec.pos[1], z: spec.pos[2] } }
             });
         }
-        return createdUuid;
+        return { createdUuid, registered };
     });
 
-    return `ok  создан ${spec.parent}/${spec.name}  ${created}`
-        + (spec.components.length ? `  [${spec.components.join(',')}]` : '')
+    return `ok  создан ${spec.parent}/${spec.name}  ${result.createdUuid}`
+        + (result.registered.length ? `  [${result.registered.join(',')}]` : '')
         + (undoNote ? `  ${undoNote}` : '  undo=1');
 }
 
