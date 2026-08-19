@@ -49,6 +49,27 @@ test('uuid показывается только когда его попрос�
 });
 
 test('цикл в родителях не вешает рендер', () => {
-    const cyclic = [node('a', 'A', 'b'), node('b', 'B', 'a')];
+    const cyclic = [
+        node('r', 'R', 'missing'),
+        node('a', 'A', 'r'),
+        node('b', 'B', 'a'),
+        node('a', 'A2', 'b')
+    ];
     assert.equal(typeof renderTree(cyclic), 'string');
+});
+
+test('многокорневое дерево рендерится с правильным порядком', () => {
+    const multiRoot = [
+        node('root1', 'Light', 'none1'),
+        node('child1', 'SomeNode', 'root1'),
+        node('root2', 'Camera', 'none2'),
+        node('child2', 'AnotherNode', 'root2')
+    ];
+    const text = renderTree(multiRoot);
+    const lines = text.split('\n');
+    assert.equal(lines.length, 4);
+    assert.match(lines[0], /^Light/);
+    assert.match(lines[1], /SomeNode/);
+    assert.match(lines[2], /^Camera/);
+    assert.match(lines[3], /AnotherNode/);
 });
