@@ -28,6 +28,15 @@ export const getNodeInfo: SceneMethods['getNodeInfo'] = (nodeUuid) => {
     }
 };
 
+function countDescendants(node: any): number {
+    let count = 0;
+    for (const child of node.children || []) {
+        if (!child) continue;
+        count += 1 + countDescendants(child);
+    }
+    return count;
+}
+
 export const getCurrentSceneInfo: SceneMethods['getCurrentSceneInfo'] = () => {
     try {
         const scene = requireActiveScene();
@@ -36,7 +45,7 @@ export const getCurrentSceneInfo: SceneMethods['getCurrentSceneInfo'] = () => {
             data: {
                 name: scene.name,
                 uuid: scene.uuid,
-                nodeCount: scene.children.length
+                nodeCount: countDescendants(scene)
             }
         };
     } catch (error: any) {
