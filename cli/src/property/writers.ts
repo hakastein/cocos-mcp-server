@@ -3,8 +3,11 @@ import {
     PropertyDescriptor, PropertyKind, isArrayDescriptor, isDumpDescriptor, resolveKind
 } from './kind';
 import { projectDescriptor, projectValue } from './readers';
-import type { ToolContext } from '../context';
-import type { WriteReport } from '../scene-contract';
+import type { DriverClient } from '../driver-client';
+import type {
+    CurveWriteReport, GradientWriteReport, ReferenceApplied, ReferenceOutcomeReport,
+    ReferencePlanReport, SceneResult, WriteReport
+} from '@cocos-cli/shared/dist/scene-contract';
 
 export interface ReferenceOptions {
     targetComponentType?: string;
@@ -26,7 +29,7 @@ export interface PropertyWriter {
     readonly name: string;
     readonly kind: PropertyKind;
     claims(target: WriteTarget, value: unknown): boolean;
-    write(target: WriteTarget, value: unknown, ctx: ToolContext): Promise<WriteReport>;
+    write(target: WriteTarget, value: unknown, ctx: DriverClient): Promise<WriteReport>;
 }
 
 export interface ReferenceStep {
@@ -141,7 +144,7 @@ function show(value: unknown): string {
 
 // ----- Read-back through the editor dump ---------------------------------------------------
 
-export async function readBack(target: WriteTarget, ctx: ToolContext, property?: string): Promise<unknown> {
+export async function readBack(target: WriteTarget, ctx: DriverClient, property?: string): Promise<unknown> {
     const node = await ctx.editor.scene.queryNode(target.nodeUuid) as any;
     const component = node && node.__comps__ && node.__comps__[target.componentIndex];
     const segments = (property === undefined ? target.propertyPath : property).split('.');
@@ -153,7 +156,7 @@ export async function readBack(target: WriteTarget, ctx: ToolContext, property?:
     return isDumpDescriptor(current) ? projectDescriptor(current) : projectValue(kindOf(target), current);
 }
 
-export async function componentCid(target: WriteTarget, ctx: ToolContext): Promise<string | undefined> {
+export async function componentCid(target: WriteTarget, ctx: DriverClient): Promise<string | undefined> {
     const node = await ctx.editor.scene.queryNode(target.nodeUuid) as any;
     const component = node && node.__comps__ && node.__comps__[target.componentIndex];
     if (!component) return undefined;
@@ -162,7 +165,7 @@ export async function componentCid(target: WriteTarget, ctx: ToolContext): Promi
 
 // ----- The channels ------------------------------------------------------------------------
 
-async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: ToolContext): Promise<WriteReport> {
+async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: DriverClient): Promise<WriteReport> {
     const refused: string[] = [];
     let landed = 0;
     for (const step of plan.steps) {
@@ -189,14 +192,14 @@ async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: ToolCo
     return report;
 }
 
-async function readsMatch(target: WriteTarget, reads: ReadCheck[], ctx: ToolContext): Promise<boolean> {
+async function readsMatch(target: WriteTarget, reads: ReadCheck[], ctx: DriverClient): Promise<boolean> {
     for (const read of reads) {
         if (!readBackMatches(read.expected, await readBack(target, ctx, read.property))) return false;
     }
     return true;
 }
 
-async function readBackComplaint(target: WriteTarget, reads: ReadCheck[], ctx: ToolContext): Promise<string> {
+async function readBackComplaint(target: WriteTarget, reads: ReadCheck[], ctx: DriverClient): Promise<string> {
     const mismatches: string[] = [];
     for (const read of reads) {
         let actual: unknown;
@@ -506,12 +509,12 @@ const gradientWriter: PropertyWriter = {
     claims: (target, value) => kindOf(target) === 'gradient' && carriesGradientKeys(value),
     write: async (target, value, ctx) => {
         const spec = (value || {}) as Record<string, any>;
-        const result = await ctx.sceneScript.call(
+        const result = await ctx.scene.call(
             'setParticleGradient', target.nodeUuid, target.componentType, target.propertyPath,
             Array.isArray(spec.colorKeys) ? spec.colorKeys : [],
             Array.isArray(spec.alphaKeys) ? spec.alphaKeys : [],
             spec.mode, enablesModule(target, spec)
-        );
+        ) as SceneResult<GradientWriteReport>;
         if (!result || result.success !== true) return unwritten(sceneError(result));
         const applied = Number(result.data.colorKeys) > 0;
         return {
@@ -528,10 +531,10 @@ const curveWriter: PropertyWriter = {
     write: async (target, value, ctx) => {
         const spec = (value || {}) as Record<string, any>;
         const keyframes = Array.isArray(spec.keyframes) ? spec.keyframes : (Array.isArray(value) ? value : []);
-        const result = await ctx.sceneScript.call(
+        const result = await ctx.scene.call(
             'setParticleCurve', target.nodeUuid, target.componentType, target.propertyPath,
             keyframes, spec.mode, spec.multiplier, enablesModule(target, spec)
-        );
+        ) as SceneResult<CurveWriteReport>;
         if (!result || result.success !== true) return unwritten(sceneError(result));
         const applied = Number(result.data.keyCount) > 0;
         return {
@@ -670,7 +673,7 @@ const assetWriter: PropertyWriter = {
  * the editor records a cc.TargetOverrideInfo replayed after the load. A live assignment records
  * none, so the field reads back perfectly and is empty the next time the scene is opened.
  */
-async function writeReference(target: WriteTarget, value: unknown, ctx: ToolContext): Promise<WriteReport> {
+async function writeReference(target: WriteTarget, value: unknown, ctx: DriverClient): Promise<WriteReport> {
     const options = target.refOptions || {};
     const args: Record<string, unknown> = {
         nodeUuid: target.nodeUuid, componentType: target.componentType, property: target.propertyPath
@@ -685,7 +688,7 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: ToolCont
         args.targetUuid = uuidOf(value);
     }
 
-    const plan = await ctx.sceneScript.call('resolveComponentReference', args);
+    const plan = await ctx.scene.call('resolveComponentReference', args) as SceneResult<ReferencePlanReport>;
     if (!plan || plan.success !== true) return unwritten(sceneError(plan));
     const { componentIndex, property, isArray, dumpType, uuids, expected } = plan.data;
     const path = `__comps__.${componentIndex}.${property}`;
@@ -699,7 +702,7 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: ToolCont
         await ctx.editor.scene.setProperty({ uuid: target.nodeUuid, path, dump } as any);
     } catch (error) {
         const refusal = messageOf(error);
-        const direct = await ctx.sceneScript.call('applyComponentReference', args);
+        const direct = await ctx.scene.call('applyComponentReference', args) as SceneResult<ReferenceApplied>;
         if (!direct || direct.success !== true) {
             return unwritten(`set-property refused '${path}' (${refusal}), and assigning on the live `
                 + `component failed too: ${sceneError(direct)}`);
@@ -709,8 +712,9 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: ToolCont
 
     // Read before this pruning and the leftover overrides answer with what the field held before
     // the write, so the verdict comes out inverted.
-    await ctx.sceneScript.call('pruneComponentReferenceOverrides', target.nodeUuid, componentIndex, property);
-    const outcome = await ctx.sceneScript.call('componentReferenceOutcome', target.nodeUuid, componentIndex, property);
+    await ctx.scene.call('pruneComponentReferenceOverrides', target.nodeUuid, componentIndex, property);
+    const rawOutcome = await ctx.scene.call('componentReferenceOutcome', target.nodeUuid, componentIndex, property);
+    const outcome = rawOutcome as SceneResult<ReferenceOutcomeReport>;
     if (!outcome || outcome.success !== true) {
         return {
             written: true, verified: false, persisted: live ? false : null,

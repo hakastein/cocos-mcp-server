@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { classifyNode, LAYER_UI_2D } from '../dist/node-type.js';
+import { classifyNode, LAYER_UI_2D } from '../lib/node-type.js';
 
 test('a ScrollView-only node is 2D and the reasons say which component decided it', () => {
     const verdict = classifyNode(['cc.ScrollView']);

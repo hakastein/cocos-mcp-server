@@ -3,8 +3,10 @@ import {
 } from './writers';
 import { projectValue } from './readers';
 import { withUndoBracket } from '../undo-bracket';
-import type { ToolContext } from '../context';
-import type { PrefabOverrideOutcome, SceneDirtyReport, SceneResult, WriteReport } from '../scene-contract';
+import type { DriverClient } from '../driver-client';
+import type {
+    PrefabOverrideOutcome, SceneDirtyReport, SceneResult, SerializedValue, WriteReport
+} from '@cocos-cli/shared/dist/scene-contract';
 
 export interface VerifiedWriteOptions {
     verify?: 'readback' | 'disk' | 'serializer';
@@ -13,7 +15,7 @@ export interface VerifiedWriteOptions {
 export async function verifiedWrite(
     target: WriteTarget,
     value: unknown,
-    ctx: ToolContext,
+    ctx: DriverClient,
     opts: VerifiedWriteOptions = {}
 ): Promise<WriteReport> {
     const writer = writerFor(target, value);
@@ -40,7 +42,7 @@ export async function verifiedWrite(
  * and the serializer does not is a write that reads back perfectly and reaches no file.
  */
 async function withSerializerVerdict(
-    report: WriteReport, target: WriteTarget, ctx: ToolContext
+    report: WriteReport, target: WriteTarget, ctx: DriverClient
 ): Promise<WriteReport> {
     const cid = await componentCid(target, ctx);
     if (cid === undefined) {
@@ -76,11 +78,12 @@ async function withSerializerVerdict(
  * whether a save carries this write.
  */
 async function withOverrideVerdict(
-    report: WriteReport, target: WriteTarget, cid: string, ctx: ToolContext
+    report: WriteReport, target: WriteTarget, cid: string, ctx: DriverClient
 ): Promise<WriteReport> {
     let result: SceneResult<PrefabOverrideOutcome>;
     try {
-        result = await ctx.sceneScript.call('prefabInstancePropertyOutcome', target.nodeUuid, cid, target.propertyPath);
+        const raw = await ctx.scene.call('prefabInstancePropertyOutcome', target.nodeUuid, cid, target.propertyPath);
+        result = raw as SceneResult<PrefabOverrideOutcome>;
     } catch (error) {
         return addDetail(report, `the prefab override behind this write was not read (${messageOf(error)})`);
     }
@@ -117,7 +120,7 @@ type SerializedLookup = { value: unknown } | { problem: string; inPrefabInstance
  * The serializer writes backing fields, so the accessor `color` is emitted as `_color` and asking
  * for the accessor name alone reports a property nothing carries.
  */
-async function serializedValue(target: WriteTarget, cid: string, ctx: ToolContext): Promise<SerializedLookup> {
+async function serializedValue(target: WriteTarget, cid: string, ctx: DriverClient): Promise<SerializedLookup> {
     const underscored = target.propertyPath.replace(/(^|\.)([^.]+)$/, '$1_$2');
     const spellings = underscored === target.propertyPath || /(^|\.)_/.test(target.propertyPath)
         ? [target.propertyPath]
@@ -126,7 +129,8 @@ async function serializedValue(target: WriteTarget, cid: string, ctx: ToolContex
     let problem = '';
     let inPrefabInstance = false;
     for (const property of spellings) {
-        const result = await ctx.sceneScript.call('serializedComponentValue', target.nodeUuid, cid, property);
+        const raw = await ctx.scene.call('serializedComponentValue', target.nodeUuid, cid, property);
+        const result = raw as SceneResult<SerializedValue>;
         if (!result || result.success !== true) {
             problem = `the serialized form was not read (${(result && result.error) || 'no answer'})`;
             continue;
@@ -168,10 +172,10 @@ export function withoutUuidWrappers(value: unknown): unknown {
  * `sceneDirtyAgainstDisk` compares the open scene with the file, which the editor's own dirty
  * flag does not: it counts undo steps.
  */
-async function diskVerdict(ctx: ToolContext): Promise<string> {
+async function diskVerdict(ctx: DriverClient): Promise<string> {
     let result: SceneResult<SceneDirtyReport>;
     try {
-        result = await ctx.sceneScript.call('sceneDirtyAgainstDisk');
+        result = await ctx.scene.call('sceneDirtyAgainstDisk') as SceneResult<SceneDirtyReport>;
     } catch (error) {
         return `the scene was not compared with the file on disk (${messageOf(error)})`;
     }

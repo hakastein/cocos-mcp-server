@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import r from '../dist/result.js';
+import r from '../lib/result.js';
 
 const { ok, fail, isOk } = r;
 

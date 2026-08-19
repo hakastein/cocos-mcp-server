@@ -1,4 +1,4 @@
-import type { ToolContext } from './context';
+import type { DriverClient } from './driver-client';
 
 interface OpenBracket {
     id: string | null;
@@ -11,7 +11,7 @@ export interface Bracketed<T> {
 }
 
 export async function withUndoBracket<T>(
-    ctx: ToolContext, nodeUuid: string, write: () => Promise<T>
+    ctx: DriverClient, nodeUuid: string, write: () => Promise<T>
 ): Promise<Bracketed<T>> {
     const bracket = await beginRecording(nodeUuid, ctx);
     let result: T;
@@ -35,15 +35,15 @@ function undoNoteFor(bracket: OpenBracket, leftOpen: string | null): string | nu
     return null;
 }
 
-async function beginRecording(nodeUuid: string, ctx: ToolContext): Promise<OpenBracket> {
+async function beginRecording(nodeUuid: string, ctx: DriverClient): Promise<OpenBracket> {
     try {
-        return { id: await ctx.editor.scene.beginRecording(nodeUuid) };
+        return { id: await ctx.editor.scene.beginRecording(nodeUuid) as string };
     } catch (error) {
         return { id: null, reason: messageOf(error) };
     }
 }
 
-async function endRecording(bracket: OpenBracket, ctx: ToolContext): Promise<string | null> {
+async function endRecording(bracket: OpenBracket, ctx: DriverClient): Promise<string | null> {
     if (bracket.id === null) return null;
     try {
         await ctx.editor.scene.endRecording(bracket.id);
@@ -53,7 +53,7 @@ async function endRecording(bracket: OpenBracket, ctx: ToolContext): Promise<str
     }
 }
 
-async function cancelRecording(bracket: OpenBracket, ctx: ToolContext): Promise<void> {
+async function cancelRecording(bracket: OpenBracket, ctx: DriverClient): Promise<void> {
     if (bracket.id === null) return;
     try {
         await ctx.editor.scene.cancelRecording(bracket.id);

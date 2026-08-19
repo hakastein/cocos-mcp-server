@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
     WRITERS, writerFor, buildClassElement, buildClassPatch, readBackMatches, readBackMismatches
-} from '../dist/property/writers.js';
-import { withoutUuidWrappers } from '../dist/property/verified-write.js';
+} from '../lib/property/writers.js';
+import { withoutUuidWrappers } from '../lib/property/verified-write.js';
 
 const fixtures = JSON.parse(
     readFileSync(fileURLToPath(new URL('./fixtures/descriptors.json', import.meta.url)), 'utf8')
@@ -263,7 +263,7 @@ function referenceCtx({ projectionChecked = true, projected = [NODE], refuseSetP
         }
     };
     return {
-        sceneScript: { call: async (method) => answers[method] },
+        scene: { call: async (method) => answers[method] },
         editor: {
             scene: {
                 setProperty: async () => {
