@@ -2,6 +2,7 @@ import { Command, CommanderError } from 'commander';
 import { discover, probeAddress } from './discovery';
 import { renderInstances } from './render/instances';
 import { resolveClient } from './resolve';
+import { registerScene } from './commands/scene';
 import { EXIT } from './exit';
 
 export function buildProgram(): Command {
@@ -24,6 +25,8 @@ export function buildProgram(): Command {
             }
             process.exitCode = found.length ? EXIT.OK : EXIT.NO_EDITOR;
         });
+
+    registerScene(program, () => resolveClient(program.opts().project));
 
     return program;
 }
