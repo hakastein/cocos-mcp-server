@@ -20,7 +20,8 @@ const TREE = {
                     + 'those exact spellings — every member of a same-named sibling group carries its '
                     + 'position as #1, #2, #3 in child order.'
             },
-            'Nope': { error: "path 'Nope' does not resolve — not even its first segment 'Nope'." }
+            'Nope': { error: "path 'Nope' does not resolve — not even its first segment 'Nope'." },
+            'Reference-Image-Canvas': { uuid: 'u_ric', matchedPath: 'Reference-Image-Canvas' }
         }
     }
 };
@@ -67,8 +68,15 @@ test('несуществующий путь — отказ, называющий
 
 test('уже готовый uuid проходит без обращения к сцене', async () => {
     const driver = recorder();
-    assert.equal(await resolveNode(driver, 'u_something_long_enough_uuid'), 'u_something_long_enough_uuid');
+    const uuid = 'f0rQc7yj9Gpqltg+gTq5ZA'; // форма настоящего сжатого uuid Cocos: 22 base64-символа
+    assert.equal(await resolveNode(driver, uuid), uuid);
     assert.equal(driver.calls.length, 0);
+});
+
+test('имя узла той же длины и алфавита, что uuid, всё равно разрешается путём', async () => {
+    const driver = recorder();
+    assert.equal(await resolveNode(driver, 'Reference-Image-Canvas'), 'u_ric');
+    assert.ok(driver.calls.some(call => call[0] === 'resolveNodePaths'));
 });
 
 test('get отдаёт одну строку с именем, состоянием и компонентами', async () => {

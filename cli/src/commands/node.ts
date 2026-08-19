@@ -4,7 +4,10 @@ import { withUndoBracket } from '../undo-bracket';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
-const UUID_LIKE = /^[A-Za-z0-9+/_-]{20,}$/;
+// Cocos compresses a node/component uuid to exactly 22 chars of standard base64
+// (`A-Za-z0-9+/`, no `-`/`_`) — see shared/test/reference-projection.test.mjs's fixture uuids.
+// A node NAME can land in this same alphabet and length, so both constraints matter.
+const UUID_LIKE = /^[A-Za-z0-9+/]{22}$/;
 
 export async function resolveNode(client: DriverClient, pathOrUuid: string): Promise<string> {
     if (UUID_LIKE.test(pathOrUuid) && !pathOrUuid.includes('/')) return pathOrUuid;
