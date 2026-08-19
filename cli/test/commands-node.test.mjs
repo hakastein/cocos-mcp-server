@@ -25,7 +25,7 @@ const TREE = {
     }
 };
 
-const recorder = () => {
+const recorder = (overrides = {}) => {
     const calls = [];
     return {
         calls,
@@ -35,7 +35,8 @@ const recorder = () => {
                 endRecording: async (...a) => { calls.push(['endRecording', ...a]); },
                 cancelRecording: async () => { calls.push(['cancelRecording']); },
                 createNode: async (...a) => { calls.push(['createNode', ...a]); return 'u_new'; },
-                createComponent: async (...a) => { calls.push(['createComponent', ...a]); }
+                createComponent: async (...a) => { calls.push(['createComponent', ...a]); },
+                setProperty: async (...a) => { calls.push(['setProperty', ...a]); return true; }
             }
         },
         scene: {
@@ -43,7 +44,7 @@ const recorder = () => {
                 calls.push([method, ...a]);
                 if (method === 'resolveNodePaths') return TREE;
                 if (method === 'getNodeInfo') {
-                    return { success: true, data: { name: 'Bg', uuid: 'u_bg', active: true,
+                    return overrides.getNodeInfo ?? { success: true, data: { name: 'Bg', uuid: 'u_bg', active: true,
                         components: [{ type: 'Sprite', enabled: true }] } };
                 }
                 return { success: true, data: {} };
@@ -94,4 +95,26 @@ test('падение посреди создания снимает скобку
         () => nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Nope'] }),
         /нет такого компонента/);
     assert.ok(driver.calls.map(c => c[0]).includes('cancelRecording'));
+});
+
+test('get помечает неактивный узел и выключенный компонент как (off)', async () => {
+    const text = await nodeGet(recorder({
+        getNodeInfo: { success: true, data: { name: 'Bg', uuid: 'u_bg', active: false,
+            components: [{ type: 'Sprite', enabled: false }] } }
+    }), 'Canvas/Bg');
+    assert.match(text, /Bg {2}\(off\)/);
+    assert.match(text, /Sprite\(off\)/);
+});
+
+test('создание с позицией пишет её внутри той же скобки undo, а не после неё', async () => {
+    const driver = recorder();
+    await nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: [], pos: [1, 2, 3] });
+    const names = driver.calls.map(c => c[0]);
+    const beginIdx = names.indexOf('beginRecording');
+    const endIdx = names.indexOf('endRecording');
+    const setPropertyIdx = names.indexOf('setProperty');
+    assert.ok(setPropertyIdx > beginIdx, 'setProperty не найден после beginRecording');
+    assert.ok(setPropertyIdx < endIdx, 'setProperty оказался после endRecording — вне скобки');
+    const setPropertyCall = driver.calls.find(c => c[0] === 'setProperty');
+    assert.deepEqual(setPropertyCall[1].dump.value, { x: 1, y: 2, z: 3 });
 });

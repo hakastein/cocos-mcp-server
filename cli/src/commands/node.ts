@@ -1,27 +1,10 @@
 import { Command } from 'commander';
-import type { SceneResult } from '@cocos-cli/shared/dist/scene-contract';
-import { EXIT } from '../exit';
+import { unwrap, withClient } from './shared';
 import { withUndoBracket } from '../undo-bracket';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
 const UUID_LIKE = /^[A-Za-z0-9+/_-]{20,}$/;
-
-/**
- * `client.scene.call` is typed by `SceneMethods`, so unwrapping it once here — as `scene.ts`
- * already does — is the only place a `SceneResult` gets turned into a value or a thrown error.
- * No local re-declaration of the answer shape, no `as`.
- */
-async function unwrap<T>(
-    answer: SceneResult<T> | Promise<SceneResult<T>>, method: string
-): Promise<T> {
-    const settled = await answer;
-    if (!settled || settled.success !== true || settled.data === undefined) {
-        throw new Error(
-            (settled && settled.success === false && settled.error) || `scene-скрипт не ответил на ${method}`);
-    }
-    return settled.data;
-}
 
 export async function resolveNode(client: DriverClient, pathOrUuid: string): Promise<string> {
     if (UUID_LIKE.test(pathOrUuid) && !pathOrUuid.includes('/')) return pathOrUuid;
@@ -87,27 +70,10 @@ export async function nodeCreate(client: DriverClient, spec: CreateSpec): Promis
 export function registerNode(program: Command, resolve: () => Promise<Resolved>): void {
     const node = program.command('node').description('узлы открытой сцены');
 
-    const withClient = async (run: (client: DriverClient) => Promise<string>) => {
-        const resolved = await resolve();
-        if (!resolved.ok) {
-            process.stderr.write(resolved.message + '\n');
-            process.exitCode = EXIT.NO_EDITOR;
-            return;
-        }
-        try {
-            process.stdout.write(await run(resolved.client) + '\n');
-        } catch (error: unknown) {
-            process.stderr.write((error instanceof Error ? error.message : String(error)) + '\n');
-            process.exitCode = EXIT.FAILED;
-        } finally {
-            resolved.client.close();
-        }
-    };
-
     node
         .command('get <path>')
         .description('имя, состояние и компоненты узла')
-        .action((target: string) => withClient(client => nodeGet(client, target)));
+        .action((target: string) => withClient(resolve, async client => ({ stdout: await nodeGet(client, target) })));
 
     node
         .command('create')
@@ -117,21 +83,23 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
         .option('--component <type...>', 'компоненты, которые навесить', [])
         .option('--pos <x,y,z>', 'позиция')
         .action((options: { parent: string; name: string; component: string[]; pos?: string }) =>
-            withClient(client => nodeCreate(client, {
-                parent: options.parent,
-                name: options.name,
-                components: options.component,
-                pos: options.pos
-                    ? options.pos.split(',').map(Number) as [number, number, number]
-                    : undefined
+            withClient(resolve, async client => ({
+                stdout: await nodeCreate(client, {
+                    parent: options.parent,
+                    name: options.name,
+                    components: options.component,
+                    pos: options.pos
+                        ? options.pos.split(',').map(Number) as [number, number, number]
+                        : undefined
+                })
             })));
 
     node
         .command('rm <path>')
         .description('удалить узел')
-        .action((target: string) => withClient(async client => {
+        .action((target: string) => withClient(resolve, async client => {
             const uuid = await resolveNode(client, target);
             await client.editor.scene.removeNode({ uuid });
-            return `ok  удалён ${target}`;
+            return { stdout: `ok  удалён ${target}` };
         }));
 }
