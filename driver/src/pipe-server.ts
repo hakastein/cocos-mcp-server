@@ -13,15 +13,26 @@ import type { DriverSettings, DriverStatus } from './types';
 
 const VERSION = '2.0.0';
 
+const BEGIN_RECORDING = 'editor.scene.beginRecording';
+const END_RECORDING = 'editor.scene.endRecording';
+const CANCEL_RECORDING = 'editor.scene.cancelRecording';
+
 function surfaceChecksum(): string {
     return createHash('sha1').update(ALL_METHODS.join('\n')).digest('hex').slice(0, 12);
 }
 
 export class PipeServer {
     private server: net.Server | null = null;
+    private readonly sockets = new Set<net.Socket>();
     private readonly queue = new PQueue({ concurrency: 1 });
-    private readonly rpc = new JSONRPCServer();
+    private readonly rpc = new JSONRPCServer<net.Socket>();
     private readonly address = pipePath(Editor.Project.path);
+
+    // bracketOwner blocks other sockets' calls while a bracket is open; the queue alone can't, since it sits empty between an undo bracket's round-trips.
+    private bracketOwner: net.Socket | null = null;
+    private bracketUndoId: string | null = null;
+    private bracketGate: Promise<void> = Promise.resolve();
+    private releaseBracketGate: (() => void) | null = null;
 
     constructor(
         private readonly editor: EditorApi,
@@ -37,12 +48,47 @@ export class PipeServer {
         }));
 
         for (const name of ALL_METHODS) {
-            this.rpc.addMethod(name, (params: unknown) => this.queue.add(() => {
-                const fn = resolveMethod(name, this.editor, this.scene);
-                if (!fn) throw new Error(`driver does not carry '${name}'`);
-                return fn(...(Array.isArray(params) ? params : []));
-            }));
+            this.rpc.addMethod(name, async (params: unknown, socket: net.Socket) => {
+                // Waiting outside queue.add, not inside it, so the owner's own calls still get the sole concurrency:1 slot.
+                while (this.bracketOwner && this.bracketOwner !== socket) {
+                    await this.bracketGate;
+                }
+                if (name === BEGIN_RECORDING && this.bracketOwner === null) {
+                    this.holdBracket(socket);
+                }
+
+                return this.queue.add(async () => {
+                    const fn = resolveMethod(name, this.editor, this.scene);
+                    if (!fn) throw new Error(`driver does not carry '${name}'`);
+                    try {
+                        const result = await fn(...(Array.isArray(params) ? params : []));
+                        if (name === BEGIN_RECORDING) this.bracketUndoId = result as string;
+                        return result;
+                    } catch (error) {
+                        if (name === BEGIN_RECORDING && this.bracketOwner === socket) this.freeBracket();
+                        throw error;
+                    } finally {
+                        if ((name === END_RECORDING || name === CANCEL_RECORDING)
+                            && this.bracketOwner === socket) {
+                            this.freeBracket();
+                        }
+                    }
+                });
+            });
         }
+    }
+
+    private holdBracket(owner: net.Socket): void {
+        this.bracketOwner = owner;
+        this.bracketUndoId = null;
+        this.bracketGate = new Promise<void>(resolve => { this.releaseBracketGate = resolve; });
+    }
+
+    private freeBracket(): void {
+        this.bracketOwner = null;
+        this.bracketUndoId = null;
+        this.releaseBracketGate?.();
+        this.releaseBracketGate = null;
     }
 
     async start(): Promise<void> {
@@ -57,6 +103,8 @@ export class PipeServer {
             server.once('error', reject);
             server.listen(this.address, resolve);
         });
+        // `once` above only covers the listen race; left alone it would eat the next fault and leave none for the one after, which Node then throws as fatal.
+        server.on('error', (error: Error) => console.error('[cocos-cli] pipe server error:', error));
         this.server = server;
         console.log(`[cocos-cli] listening on ${this.address}`);
     }
@@ -65,6 +113,8 @@ export class PipeServer {
         const server = this.server;
         this.server = null;
         if (!server) return;
+        for (const socket of this.sockets) socket.destroy();
+        this.sockets.clear();
         await new Promise<void>(resolve => server.close(() => resolve()));
     }
 
@@ -77,33 +127,34 @@ export class PipeServer {
     }
 
     /**
-     * Скобка undo переживает несколько запросов, поэтому обрыв соединения посреди неё оставил
-     * бы редактор в записи навсегда. Открытая скобка снимается вместе с сокетом — по undoId,
-     * который вернул сам beginRecording, а не по факту его вызова: cancelRecording требует
-     * этот id аргументом, поэтому снятие держится на разборе ответа, а не на имени метода.
+     * An undo bracket survives several requests, so a connection dropped mid-bracket would
+     * otherwise leave the editor recording forever. It is released with the socket, using the
+     * undoId beginRecording actually returned — cancelRecording takes that as an argument, not
+     * the fact that beginRecording was merely called.
      */
     private serve(socket: net.Socket): void {
-        let undoId: string | null = null;
+        this.sockets.add(socket);
         socket.pipe(split2()).on('data', async (line: string) => {
             if (!line.trim()) return;
             let request: any;
             try { request = JSON.parse(line); } catch { return; }
 
-            const response = await this.rpc.receive(request);
-
-            if (request.method === 'editor.scene.beginRecording') {
-                undoId = response && response.result !== undefined ? String(response.result) : null;
-            } else if (request.method === 'editor.scene.endRecording'
-                || request.method === 'editor.scene.cancelRecording') {
-                undoId = null;
+            try {
+                const response = await this.rpc.receive(request, socket);
+                if (response && !socket.destroyed) socket.write(JSON.stringify(response) + '\n');
+            } catch (error) {
+                console.error('[cocos-cli] request handling failed:', error);
             }
-
-            if (response && !socket.destroyed) socket.write(JSON.stringify(response) + '\n');
         });
         socket.on('close', () => {
-            if (!undoId) return;
-            this.editor.scene.cancelRecording(undoId).catch(
-                (error: unknown) => console.warn('[cocos-cli] dangling undo bracket:', error));
+            this.sockets.delete(socket);
+            if (this.bracketOwner !== socket) return;
+            const undoId = this.bracketUndoId;
+            this.freeBracket();
+            if (undoId) {
+                this.editor.scene.cancelRecording(undoId).catch(
+                    (error: unknown) => console.warn('[cocos-cli] dangling undo bracket:', error));
+            }
         });
         socket.on('error', () => socket.destroy());
     }
