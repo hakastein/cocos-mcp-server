@@ -10,7 +10,7 @@
 `editor.*` (58 методов поверх `Editor.Message`) и `scene.*` (29 методов поверх scene-скрипта) по
 JSON-RPC через именованный канал, логики не содержит. `cli/` — вся логика: разбор команд,
 оркестрация многошаговых операций, undo-скобки, проверка записей, рендер вывода. `shared/` —
-только типы.
+типы и чистая логика, нужная обеим сторонам.
 
 **Tech Stack:** TypeScript, `json-rpc-2.0`, `split2`, `commander`, `archy`, `cli-table3`,
 `picocolors`, `zod` 3.25, `p-queue` ^6, `tsup`, `node:test`.
@@ -48,6 +48,10 @@ shared/
   package.json  tsconfig.json
   src/protocol.ts               имена 87 методов, форма hello, типы запроса
   src/scene-contract.ts         переезд из source/scene-contract.ts
+  src/pipe-name.ts              путь проекта -> путь канала (Task 3)
+  src/node-path.ts              нужен scene-скрипту и CLI (перенесён в правках Task 2)
+  src/serialized-diff.ts        то же
+  src/reference-projection.ts   то же
 driver/
   package.json                  манифест расширения Cocos: main, panels, contributions
   tsconfig.json  tsup.config.ts
@@ -74,7 +78,6 @@ cli/
   src/commands/node.ts
   src/commands/component.ts
   src/property/*                переезд
-  src/node-path.ts              переезд
   src/undo-bracket.ts           переезд
   test/*.test.mjs               переезд существующих тестов чистых модулей
 ```
@@ -1451,9 +1454,9 @@ git commit -m "каркас cli на commander, instances перечисляет
 ## Task 9: Переезд чистых модулей в CLI
 
 **Files:**
-- Move: `source/node-path.ts`, `source/node-type.ts`, `source/property/*`,
+- Move: `source/node-type.ts`, `source/property/*`,
   `source/undo-bracket.ts`, `source/settle.ts`, `source/json-arg.ts`, `source/result.ts`,
-  `source/tool-args.ts`, `source/serialized-diff.ts`, `source/scene-signature.ts` → `cli/src/`
+  `source/tool-args.ts`, `source/scene-signature.ts` → `cli/src/`
 - Move: соответствующие файлы из `test/` → `cli/test/`
 - Delete: `source/` целиком после переезда, вместе с `source/tools-v2/`, `source/registry.ts`,
   `source/tool.ts`, `source/context.ts`, `source/editor-api.ts` (переехал в Task 2)
@@ -1464,9 +1467,10 @@ git commit -m "каркас cli на commander, instances перечисляет
 
 **Interfaces:**
 - Consumes: `shared/src/scene-contract.ts`
-- Produces: те же экспорты, что и раньше, по новым путям. `node-path.ts` продолжает отдавать
-  `buildPathIndex`, `resolvePathInIndex`, `normalizePath`; `undo-bracket.ts` — `withUndoBracket`;
-  `result.ts` — `ok`, `fail`, `isOk`, `ToolResult`
+- Produces: те же экспорты, что и раньше, по новым путям. `undo-bracket.ts` — `withUndoBracket`;
+  `result.ts` — `ok`, `fail`, `isOk`, `ToolResult`. `node-path`, `serialized-diff` и
+  `reference-projection` сюда НЕ переезжают: они живут в `shared/` с правок Task 2, потому что
+  их зовёт scene-скрипт в редакторе. Импортируй их из `@cocos-cli/shared`.
 
 Инструменты (`tools-v2/`) не переезжают: команды пишутся заново в задачах 11–13 (спека §12,
 большой взрыв).
@@ -1475,11 +1479,11 @@ git commit -m "каркас cli на commander, instances перечисляет
 
 ```bash
 mkdir -p cli/src/property cli/test/fixtures
-for f in node-path node-type undo-bracket settle json-arg result tool-args serialized-diff scene-signature; do
+for f in node-type undo-bracket settle json-arg result tool-args scene-signature; do
   git mv "source/$f.ts" "cli/src/$f.ts"
 done
 git mv source/property cli/src/property
-for f in node-path node-type property-kind property-writers serialized-diff settle json-arg result; do
+for f in node-type property-kind property-writers settle json-arg result; do
   git mv "test/$f.test.mjs" "cli/test/$f.test.mjs"
 done
 git mv test/fixtures cli/test/fixtures
@@ -1495,7 +1499,7 @@ git rm test/validate-references-tool.test.mjs test/build-task-conflicts.test.mjs
 ```
 
 Оставшиеся в `source/` чистые модули (`prefab-json`, `prefab-value`, `prefab-linkage`,
-`reference-scan`, `reference-projection`, `batch-plan`, `build-task`, `asset-query`, `asset-json`,
+`reference-scan`, `batch-plan`, `build-task`, `asset-query`, `asset-json`,
 `project-log`, `log-search`, `ecs-census`, `missing-scripts`) переезжают во втором плане вместе
 со своими группами команд. До тех пор они остаются в `source/` и не собираются.
 
@@ -1921,7 +1925,8 @@ git commit -m "команды scene: tree, info, open, save против жив�
 - Test: `cli/test/commands-node.test.mjs`
 
 **Interfaces:**
-- Consumes: `DriverClient`, `buildPathIndex`, `resolvePathInIndex` из `cli/src/node-path.ts`
+- Consumes: `DriverClient`; разрешение пути делает scene-метод `resolveNodePaths`, локальный
+  разбор дерева CLI не нужен
 - Produces: `registerNode(program: Command, resolve: () => Promise<Resolved>): void`,
   `resolveNode(client: DriverClient, pathOrUuid: string): Promise<string>`,
   `nodeGet(client: DriverClient, pathOrUuid: string): Promise<string>`,
@@ -2610,7 +2615,8 @@ git commit -m "команды component: add, rm, set с проверкой за
       └ scene.*           29 методов поверх scene-скрипта
     scene script          driver/src/scene/ единственное место, где живёт cc.*
 
-`shared/` держит только типы: контракт сцены, список 87 методов, форму рукопожатия.
+`shared/` держит типы и чистую логику, нужную обеим сторонам: контракт сцены, список 87 методов,
+форму рукопожатия, имя канала, разбор путей узлов, сравнение сериализованных значений.
 
 **Ключевое ограничение:** `cc.*` существует только в контексте scene-скрипта. Всё, что их
 требует, идёт через `scene.*`, никогда через `editor.*`.
