@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import { discover, probeAddress } from './discovery';
 import { renderInstances } from './render/instances';
 import { resolveClient } from './resolve';
@@ -29,13 +29,13 @@ export function buildProgram(): Command {
 }
 
 if (require.main === module) {
-    buildProgram().parseAsync(process.argv).catch((error: any) => {
-        const code = typeof error?.code === 'string' ? error.code : '';
-        if (code.startsWith('commander.')) {
+    buildProgram().parseAsync(process.argv).catch((error: unknown) => {
+        if (error instanceof CommanderError) {
             process.exitCode = error.exitCode === 0 ? EXIT.OK : EXIT.USAGE;
             return;
         }
-        process.stderr.write(String(error?.message || error) + '\n');
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(message + '\n');
         process.exitCode = EXIT.PROTOCOL;
     });
 }
