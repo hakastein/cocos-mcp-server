@@ -2,9 +2,12 @@ import * as net from 'net';
 import split2 from 'split2';
 import { JSONRPCClient } from 'json-rpc-2.0';
 import { EDITOR_METHODS } from '@cocos-cli/shared';
+import type { SceneMethods } from '@cocos-cli/shared/dist/scene-contract';
 
 export interface SceneFacade {
-    call(method: string, ...args: unknown[]): Promise<unknown>;
+    call<K extends keyof SceneMethods>(
+        method: K, ...args: Parameters<SceneMethods[K]>
+    ): Promise<Awaited<ReturnType<SceneMethods[K]>>>;
 }
 
 export type EditorFacade = Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>;
@@ -25,7 +28,11 @@ export class DriverClient {
             editor[group][method] = (...args: unknown[]) => Promise.resolve(this.rpc.request(`editor.${name}`, args));
         }
         this.editor = editor;
-        this.scene = { call: (method, ...args) => Promise.resolve(this.rpc.request(`scene.${method}`, args)) };
+        this.scene = {
+            call: <K extends keyof SceneMethods>(method: K, ...args: Parameters<SceneMethods[K]>) =>
+                Promise.resolve(this.rpc.request(`scene.${method}`, args)) as
+                    Promise<Awaited<ReturnType<SceneMethods[K]>>>
+        };
     }
 
     static connect(address: string): Promise<DriverClient> {

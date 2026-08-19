@@ -37,7 +37,10 @@ function undoNoteFor(bracket: OpenBracket, leftOpen: string | null): string | nu
 
 async function beginRecording(nodeUuid: string, ctx: DriverClient): Promise<OpenBracket> {
     try {
-        return { id: await ctx.editor.scene.beginRecording(nodeUuid) as string };
+        const id = await ctx.editor.scene.beginRecording(nodeUuid);
+        return typeof id === 'string'
+            ? { id }
+            : { id: null, reason: `the undo id came back as ${typeof id}, not a string` };
     } catch (error) {
         return { id: null, reason: messageOf(error) };
     }

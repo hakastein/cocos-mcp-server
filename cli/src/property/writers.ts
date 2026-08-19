@@ -4,10 +4,7 @@ import {
 } from './kind';
 import { projectDescriptor, projectValue } from './readers';
 import type { DriverClient } from '../driver-client';
-import type {
-    CurveWriteReport, GradientWriteReport, ReferenceApplied, ReferenceOutcomeReport,
-    ReferencePlanReport, SceneResult, WriteReport
-} from '@cocos-cli/shared/dist/scene-contract';
+import type { WriteReport } from '@cocos-cli/shared/dist/scene-contract';
 
 export interface ReferenceOptions {
     targetComponentType?: string;
@@ -514,7 +511,7 @@ const gradientWriter: PropertyWriter = {
             Array.isArray(spec.colorKeys) ? spec.colorKeys : [],
             Array.isArray(spec.alphaKeys) ? spec.alphaKeys : [],
             spec.mode, enablesModule(target, spec)
-        ) as SceneResult<GradientWriteReport>;
+        );
         if (!result || result.success !== true) return unwritten(sceneError(result));
         const applied = Number(result.data.colorKeys) > 0;
         return {
@@ -534,7 +531,7 @@ const curveWriter: PropertyWriter = {
         const result = await ctx.scene.call(
             'setParticleCurve', target.nodeUuid, target.componentType, target.propertyPath,
             keyframes, spec.mode, spec.multiplier, enablesModule(target, spec)
-        ) as SceneResult<CurveWriteReport>;
+        );
         if (!result || result.success !== true) return unwritten(sceneError(result));
         const applied = Number(result.data.keyCount) > 0;
         return {
@@ -688,7 +685,7 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: DriverCl
         args.targetUuid = uuidOf(value);
     }
 
-    const plan = await ctx.scene.call('resolveComponentReference', args) as SceneResult<ReferencePlanReport>;
+    const plan = await ctx.scene.call('resolveComponentReference', args);
     if (!plan || plan.success !== true) return unwritten(sceneError(plan));
     const { componentIndex, property, isArray, dumpType, uuids, expected } = plan.data;
     const path = `__comps__.${componentIndex}.${property}`;
@@ -702,7 +699,7 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: DriverCl
         await ctx.editor.scene.setProperty({ uuid: target.nodeUuid, path, dump } as any);
     } catch (error) {
         const refusal = messageOf(error);
-        const direct = await ctx.scene.call('applyComponentReference', args) as SceneResult<ReferenceApplied>;
+        const direct = await ctx.scene.call('applyComponentReference', args);
         if (!direct || direct.success !== true) {
             return unwritten(`set-property refused '${path}' (${refusal}), and assigning on the live `
                 + `component failed too: ${sceneError(direct)}`);
@@ -713,8 +710,7 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: DriverCl
     // Read before this pruning and the leftover overrides answer with what the field held before
     // the write, so the verdict comes out inverted.
     await ctx.scene.call('pruneComponentReferenceOverrides', target.nodeUuid, componentIndex, property);
-    const rawOutcome = await ctx.scene.call('componentReferenceOutcome', target.nodeUuid, componentIndex, property);
-    const outcome = rawOutcome as SceneResult<ReferenceOutcomeReport>;
+    const outcome = await ctx.scene.call('componentReferenceOutcome', target.nodeUuid, componentIndex, property);
     if (!outcome || outcome.success !== true) {
         return {
             written: true, verified: false, persisted: live ? false : null,

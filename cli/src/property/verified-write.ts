@@ -82,8 +82,7 @@ async function withOverrideVerdict(
 ): Promise<WriteReport> {
     let result: SceneResult<PrefabOverrideOutcome>;
     try {
-        const raw = await ctx.scene.call('prefabInstancePropertyOutcome', target.nodeUuid, cid, target.propertyPath);
-        result = raw as SceneResult<PrefabOverrideOutcome>;
+        result = await ctx.scene.call('prefabInstancePropertyOutcome', target.nodeUuid, cid, target.propertyPath);
     } catch (error) {
         return addDetail(report, `the prefab override behind this write was not read (${messageOf(error)})`);
     }
@@ -129,8 +128,7 @@ async function serializedValue(target: WriteTarget, cid: string, ctx: DriverClie
     let problem = '';
     let inPrefabInstance = false;
     for (const property of spellings) {
-        const raw = await ctx.scene.call('serializedComponentValue', target.nodeUuid, cid, property);
-        const result = raw as SceneResult<SerializedValue>;
+        const result = await ctx.scene.call('serializedComponentValue', target.nodeUuid, cid, property);
         if (!result || result.success !== true) {
             problem = `the serialized form was not read (${(result && result.error) || 'no answer'})`;
             continue;
@@ -175,7 +173,7 @@ export function withoutUuidWrappers(value: unknown): unknown {
 async function diskVerdict(ctx: DriverClient): Promise<string> {
     let result: SceneResult<SceneDirtyReport>;
     try {
-        result = await ctx.scene.call('sceneDirtyAgainstDisk') as SceneResult<SceneDirtyReport>;
+        result = await ctx.scene.call('sceneDirtyAgainstDisk');
     } catch (error) {
         return `the scene was not compared with the file on disk (${messageOf(error)})`;
     }
