@@ -74,6 +74,42 @@ test('многокорневое дерево рендерится с прави
     assert.match(lines[3], /AnotherNode/);
 });
 
+test('одноимённые соседи подписаны #1, #2 — путь из дерева резолвер принимает', () => {
+    const crowd = [
+        node('u_root', 'gizmoRoot', 'u_scene'),
+        node('u_i1', 'IconController', 'u_root'),
+        node('u_i2', 'IconController', 'u_root'),
+        node('u_solo', 'Grid', 'u_root')
+    ];
+    const lines = renderTree(crowd).split('\n');
+    assert.match(lines[1], /IconController#1$/);
+    assert.match(lines[2], /IconController#2$/);
+    assert.match(lines[3], /Grid$/);
+});
+
+test('счёт соседей идёт по каждому списку детей отдельно', () => {
+    const twoParents = [
+        node('u_root', 'Root', 'u_scene'),
+        node('u_a', 'A', 'u_root'),
+        node('u_b', 'B', 'u_root'),
+        node('u_a1', 'Pad', 'u_a'),
+        node('u_a2', 'Pad', 'u_a'),
+        node('u_b1', 'Pad', 'u_b')
+    ];
+    const lines = renderTree(twoParents).split('\n');
+    assert.match(lines[2], /Pad#1$/);
+    assert.match(lines[3], /Pad#2$/);
+    assert.match(lines[5], /Pad$/);
+});
+
+test('одноимённые корни считаются одним списком соседей', () => {
+    const roots = [
+        node('u_1', 'Canvas', 'u_scene'),
+        node('u_2', 'Canvas', 'u_scene')
+    ];
+    assert.deepEqual(renderTree(roots).split('\n'), ['Canvas#1', 'Canvas#2']);
+});
+
 test('пустой список узлов даёт пустую строку', () => {
     assert.equal(renderTree([]), '');
 });

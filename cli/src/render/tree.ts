@@ -1,4 +1,5 @@
 import archy from 'archy';
+import { siblingLabels } from '@cocos-cli/shared';
 
 export interface DumpNode {
     uuid: string;
@@ -21,9 +22,22 @@ export function renderTree(nodes: DumpNode[], options: TreeOptions = {}): string
         children.set(node.parentUuid, list);
     }
 
+    // Печатается адрес, а не имя: `siblingLabels` — то же правило, по которому индексирует
+    // резолвер путей, поэтому строка, снятая с дерева, принимается как путь без правки.
+    const roots = nodes.filter(node => !known.has(node.parentUuid));
+    const addressed = new Map<DumpNode, string>();
+    const address = (siblings: DumpNode[]): void => {
+        siblingLabels(siblings).forEach((text, i) => addressed.set(siblings[i], text));
+    };
+    address(roots);
+    for (const node of nodes) {
+        const list = children.get(node.uuid);
+        if (list) address(list);
+    }
+
     const label = (node: DumpNode): string => {
         const types = (node.components || []).map(component => component.type).join(',');
-        return node.name
+        return (addressed.get(node) || node.name)
             + (types ? `  [${types}]` : '')
             + (node.active ? '' : '  (off)')
             + (options.uuid ? `  ${node.uuid}` : '');
@@ -38,8 +52,7 @@ export function renderTree(nodes: DumpNode[], options: TreeOptions = {}): string
         return { label: label(node), nodes: (children.get(node.uuid) || []).map(build) };
     };
 
-    return nodes
-        .filter(node => !known.has(node.parentUuid))
+    return roots
         .map(root => archy(build(root)))
         .join('')
         .replace(/\n+$/, '');
