@@ -11,6 +11,7 @@
     "test:only": "node --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
+    "@cocos-cli/shared": "^1.0.0",
     "fs-extra": "^11.3.0",
     "json-rpc-2.0": "^1.7.1",
     "p-queue": "^6.6.2",

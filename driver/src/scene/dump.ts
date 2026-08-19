@@ -1,4 +1,4 @@
-import { siblingLabels } from '../node-path';
+import { siblingLabels } from '@cocos-cli/shared';
 import type { SceneMethods } from '@cocos-cli/shared/dist/scene-contract';
 import { componentClassName, findNodeByUuid, requireActiveScene } from './engine';
 

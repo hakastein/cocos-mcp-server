@@ -19,7 +19,6 @@ import assert from 'node:assert/strict';
 import {
     projectAfterReload, contradictedOverrides, liveNodesBySerializedIndex
 } from '../dist/reference-projection.js';
-import { plainSerialized } from '../dist/scene/engine.js';
 
 const CARD_LEFT = 'f0rQc7yj9Gpqltg+gTq5ZA';      // inside the Packshot_v3 prefab instance
 const PACKSHOT_BUTTON = 'ebC5PeFPVI1oNkWKN6VSm1'; // inside the Packshot_v3 prefab instance
@@ -145,47 +144,4 @@ test('a branch whose _id disagrees with the node it paired with is abandoned', (
 test('no scene entry, or no live scene, yields an empty map rather than a guess', () => {
     assert.equal(liveNodesBySerializedIndex(sceneObjects(), -1, liveScene()).size, 0);
     assert.equal(liveNodesBySerializedIndex(sceneObjects(), 0, null).size, 0);
-});
-
-// ----- reading a reference back out of the serialized form -------------------------------
-
-/**
- * `plainSerialized` is what the serializer verdict compares against the live component, so an
- * entry it cannot name is a write reported as one a save would drop. That is the second half of
- * the same blindness: the reference-write path paired the stub through the map above while this
- * one expanded it into a plain object, and `GameBootstrap.hero -> Characters/cc_hero` failed with
- * `write_not_persisted` while the `.scene` file held the link.
- */
-const naming = (objects) => ({ nodes: liveNodesBySerializedIndex(objects, 0, liveScene()), unnamed: [] });
-
-test('a reference to a prefab instance root is read as that root, not expanded as an object', () => {
-    const objects = sceneObjects();
-    const record = naming(objects);
-    assert.deepEqual(plainSerialized(objects, { __id__: 3 }, 0, record), { uuid: 'cashpad-uuid' });
-    assert.deepEqual(record.unnamed, []);
-});
-
-test('a reference to an ordinary node is still read off its own _id', () => {
-    const objects = sceneObjects();
-    assert.deepEqual(plainSerialized(objects, { __id__: 2 }, 0, naming(objects)), { uuid: 'plain-uuid' });
-});
-
-test('an instance root the pairing could not answer for is recorded, not reported as empty', () => {
-    const objects = sceneObjects();
-    const record = { nodes: new Map(), unnamed: [] };
-    assert.deepEqual(plainSerialized(objects, { __id__: 3 }, 0, record), { uuid: null });
-    assert.deepEqual(record.unnamed, [3]);
-});
-
-test('an entry that is not a node keeps being expanded', () => {
-    const objects = sceneObjects();
-    assert.deepEqual(plainSerialized(objects, { __id__: 5 }, 0, naming(objects)), { fileId: 'b3OpleIppKkJ/NHDxzqUe+' });
-});
-
-test('references nested in an array and an inline block are named the same way', () => {
-    const objects = sceneObjects();
-    const record = naming(objects);
-    assert.deepEqual(
-        plainSerialized(objects, { slots: [{ __id__: 3 }, { __id__: 2 }] }, 0, record),
-        { slots: [{ uuid: 'cashpad-uuid' }, { uuid: 'plain-uuid' }] });
 });

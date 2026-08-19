@@ -6,8 +6,8 @@ export default defineConfig({
     format: ['cjs'],
     target: 'node20',
     platform: 'node',
-    noExternal: [/.*/],
-    external: ['electron'],
+    noExternal: ['json-rpc-2.0', 'split2', 'p-queue', 'fs-extra', 'vue', '@cocos-cli/shared'],
+    external: ['cc', 'electron'],
     splitting: false,
     sourcemap: 'inline',
     clean: true

@@ -50,3 +50,14 @@ export interface Hello {
     version: string;
     surfaceChecksum: string;
 }
+
+export {
+    UUID_OR_PATH_KEY, UuidPathPair, augmentToolDefinition, pairsOf, requestedPaths,
+    PathResolved, PathResolution, ApplyOk, ApplyError, applyResolvedPaths,
+    PathIndexNode, PathIndex, normalizePath, siblingLabels, buildPathIndex, resolvePathInIndex
+} from './node-path';
+export { SerializedDiff, BENIGN_DIFF_PATHS, diffSerialized } from './serialized-diff';
+export {
+    LiveNodeShape, liveNodesBySerializedIndex, ReferenceOverride, projectAfterReload,
+    contradictedOverrides
+} from './reference-projection';

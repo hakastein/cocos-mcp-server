@@ -1,21 +1,8 @@
-/**
- * Path addressing: schema augmentation, resolution against a node tree, and the two failures
- * that must be loud — a path that matches nothing and a path that matches several nodes.
- *
- * The tree side is exercised against a plain object tree of the same shape the engine hands
- * the scene script, so the whole matching rule is testable without an editor.
- */
+/** Schema-side tests use literal tool definitions, not the real tool surface — that lives outside this package and is being rewritten as CLI commands. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import np from '../dist/node-path.js';
-import { assetTools } from '../dist/tools-v2/asset.js';
-import { prefabTools } from '../dist/tools-v2/prefab.js';
-import { sceneTools } from '../dist/tools-v2/scene.js';
-import { nodeTools } from '../dist/tools-v2/node.js';
-import { componentTools } from '../dist/tools-v2/component.js';
-import { sceneOpsTools } from '../dist/tools-v2/scene-ops.js';
-import { ToolRegistry } from '../dist/registry.js';
 
 const {
     augmentToolDefinition, applyResolvedPaths, requestedPaths, pairsOf,
@@ -45,8 +32,6 @@ const scene = {
 };
 
 const index = buildPathIndex(scene);
-
-// ----- resolution ---------------------------------------------------------------------
 
 test('an unambiguous path resolves to its uuid', () => {
     const r = resolvePathInIndex(index, 'InteractivePoints/InteractionPad_01');
@@ -83,8 +68,6 @@ test('the bare name of same-named siblings is an ambiguity error listing every s
 });
 
 test('an ambiguous path is never silently resolved to the first match', () => {
-    // the exact regression: 'Crowd/Gangster/Hat' used to be BOTH the address of the first
-    // gangster's hat and the ambiguous name of two, and exactness won without a word
     const r = resolvePathInIndex(index, 'Crowd/Gangster/Hat');
     assert.equal(r.uuid, undefined);
     assert.match(r.error, /matches 2 nodes/);
@@ -121,12 +104,38 @@ test('a prefix that is itself ambiguous still reports a usable nearer prefix', (
     assert.match(r.error, /'Crowd' exists/);
 });
 
-// ----- schema augmentation ------------------------------------------------------------
+const componentSetComponentProperty = {
+    name: 'component_set_component_property',
+    description: 'Write ONE property of a component.',
+    inputSchema: {
+        properties: {
+            nodeUuid: { type: 'string' },
+            componentType: { type: 'string' },
+            property: { type: 'string' },
+            targetUuid: { type: 'string' },
+            targetUuids: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['nodeUuid', 'componentType', 'property']
+    }
+};
 
-const componentToolNamed = (name) => componentTools.find(t => t.name === name);
+const nodeCreateNode = {
+    name: 'node_create_node',
+    description: 'Create a node.',
+    inputSchema: {
+        properties: { name: { type: 'string' }, parentUuid: { type: 'string' } },
+        required: []
+    }
+};
+
+const sceneGetCurrentScene = {
+    name: 'scene_get_current_scene',
+    description: 'Current scene info.',
+    inputSchema: { properties: {}, required: [] }
+};
 
 test('the reference-writing tool gains nodePath, targetPath and targetPaths', () => {
-    const augmented = augmentToolDefinition(componentToolNamed('component_set_component_property'));
+    const augmented = augmentToolDefinition(componentSetComponentProperty);
     const props = augmented.inputSchema.properties;
     for (const name of ['nodePath', 'targetPath', 'targetPaths']) {
         assert.ok(props[name], `${name} missing`);
@@ -136,16 +145,15 @@ test('the reference-writing tool gains nodePath, targetPath and targetPaths', ()
 });
 
 test('the path parameter says outright that it wins over the uuid', () => {
-    const augmented = augmentToolDefinition(componentToolNamed('component_set_component_property'));
+    const augmented = augmentToolDefinition(componentSetComponentProperty);
     assert.match(augmented.inputSchema.properties.nodePath.description, /WINS when nodeUuid is also given/);
     assert.match(augmented.description, /preferred when both are given/);
 });
 
 test('a uuid that was required is no longer required on its own, but the pair still is', () => {
-    const original = componentToolNamed('component_set_component_property');
-    assert.ok(original.inputSchema.required.includes('nodeUuid'));
+    assert.ok(componentSetComponentProperty.inputSchema.required.includes('nodeUuid'));
 
-    const augmented = augmentToolDefinition(original);
+    const augmented = augmentToolDefinition(componentSetComponentProperty);
     assert.ok(!augmented.inputSchema.required.includes('nodeUuid'));
 
     const pair = pairsOf(augmented.inputSchema).find(p => p.uuid === 'nodeUuid');
@@ -158,7 +166,7 @@ test('a uuid that was required is no longer required on its own, but the pair st
 });
 
 test('a uuid that was optional stays optional', () => {
-    const augmented = new ToolRegistry(nodeTools).list().find(t => t.name === 'node_create_node');
+    const augmented = augmentToolDefinition(nodeCreateNode);
     const pair = pairsOf(augmented.inputSchema).find(p => p.uuid === 'parentUuid');
     assert.ok(pair, 'node_create_node should accept parentPath');
     assert.equal(pair.required, false);
@@ -167,57 +175,10 @@ test('a uuid that was optional stays optional', () => {
 });
 
 test('augmenting a tool with no node arguments changes nothing', () => {
-    const original = sceneTools.find(tool => tool.name === 'scene_get_current_scene');
-    assert.equal(augmentToolDefinition(original), original);
+    assert.equal(augmentToolDefinition(sceneGetCurrentScene), sceneGetCurrentScene);
 });
 
-test('every tool taking a node uuid gains the matching path, across all categories', () => {
-    const surveyed = [
-        ...prefabTools,
-        ...sceneTools,
-        ...componentTools,
-        ...new ToolRegistry(nodeTools).list()
-    ];
-    let covered = 0;
-    for (const tool of surveyed) {
-        const uuidParams = Object.keys(tool.inputSchema?.properties || {})
-            .filter(n => ['nodeUuid', 'targetUuid', 'targetUuids', 'parentUuid', 'rootUuid'].includes(n));
-        if (!uuidParams.length) continue;
-        const augmented = augmentToolDefinition(tool);
-        for (const uuidParam of uuidParams) {
-            const pair = pairsOf(augmented.inputSchema).find(p => p.uuid === uuidParam);
-            assert.ok(pair, `${tool.name}: ${uuidParam} got no path spelling`);
-            assert.ok(augmented.inputSchema.properties[pair.path], `${tool.name}: ${pair.path} not declared`);
-            covered++;
-        }
-    }
-    assert.ok(covered > 15, `the loop found almost nothing to cover (${covered}) — the survey is broken, not the feature`);
-});
-
-test('the file-based prefab tools advertise no scene-node argument and no path pair', () => {
-    // nodePath scopes these writes to the .prefab file; a resolved scene uuid would land elsewhere
-    const advertised = new ToolRegistry(prefabTools).list();
-    const sceneUuidParams = [
-        'nodeUuid', 'targetUuid', 'targetUuids', 'parentUuid', 'newParentUuid', 'rootUuid', 'uuid'
-    ];
-    for (const name of [
-        'prefab_dump', 'prefab_validate_prefab', 'prefab_add_component', 'prefab_remove_component',
-        'prefab_get_component_property', 'prefab_set_component_property'
-    ]) {
-        const tool = advertised.find(t => t.name === name);
-        assert.ok(tool, `${name} is not on the prefab surface`);
-        assert.deepEqual(pairsOf(tool.inputSchema), [], `${name} gained a uuid/path pair`);
-        assert.deepEqual(
-            Object.keys(tool.inputSchema.properties).filter(p => sceneUuidParams.includes(p)),
-            [],
-            `${name} declares a scene-node argument`
-        );
-    }
-});
-
-// ----- applying resolutions -----------------------------------------------------------
-
-const refSchema = augmentToolDefinition(componentToolNamed('component_set_component_property')).inputSchema;
+const refSchema = augmentToolDefinition(componentSetComponentProperty).inputSchema;
 
 test('requestedPaths collects singles and arrays without duplicates', () => {
     const paths = requestedPaths(refSchema, {
@@ -306,43 +267,4 @@ test('both failing paths are reported together', () => {
 test('the augmented schema carries its pairs under an x- keyword, inert for schema consumers', () => {
     assert.ok(UUID_OR_PATH_KEY.startsWith('x-'));
     assert.ok(Array.isArray(refSchema[UUID_OR_PATH_KEY]));
-});
-
-test('set_node_transform takes a nodePath, while a uuid that is not a node does not', async () => {
-    const registry = new ToolRegistry(nodeTools);
-    const nodeSchema = registry.list().find(t => t.name === 'node_set_node_transform').inputSchema;
-    assert.ok(nodeSchema.properties.nodePath, 'set_node_transform should accept nodePath');
-    assert.equal(nodeSchema.required.includes('uuid'), false, 'the path alone is enough');
-    assert.deepEqual(pairsOf(nodeSchema).find(p => p.uuid === 'uuid'),
-        { uuid: 'uuid', path: 'nodePath', array: false, required: true });
-
-    const sceneScript = {
-        call: () => Promise.resolve({
-            success: true,
-            data: {
-                resolutions: {
-                    'Stage_3_Hookah/Hookah_model_v2':
-                        { uuid: 'uuid-1', matchedPath: 'Stage_3_Hookah/Hookah_model_v2' }
-                }
-            }
-        })
-    };
-    let queried;
-    const editor = { scene: { queryNode: async (uuid) => { queried = uuid; return null; } } };
-    const result = await registry.invoke('node_set_node_transform',
-        { nodePath: 'Stage_3_Hookah/Hookah_model_v2', scale: { x: 1, y: 1, z: 1 } },
-        { sceneScript, editor, settings: { enableDebugLog: false } });
-    assert.equal(queried, 'uuid-1', 'the path reached the handler as the uuid it names');
-    assert.equal(result.error.code, 'node_not_found', 'neither validation nor path resolution refused it');
-
-    const componentSchema = new ToolRegistry(sceneOpsTools).list()
-        .find(t => t.name === 'sceneAdvanced_reset_component').inputSchema;
-    assert.ok(componentSchema.properties.uuid, 'reset_component still takes a bare uuid');
-    assert.equal(componentSchema.properties.nodePath, undefined);
-    assert.equal(pairsOf(componentSchema).length, 0);
-
-    const assetSchema = new ToolRegistry(assetTools).list()
-        .find(t => t.name === 'project_get_asset_info').inputSchema;
-    assert.equal(assetSchema.properties.nodePath, undefined);
-    assert.equal(pairsOf(assetSchema).length, 0);
 });
