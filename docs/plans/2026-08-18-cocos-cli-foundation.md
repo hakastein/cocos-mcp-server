@@ -1792,7 +1792,7 @@ Expected: FAIL — `Cannot find module '../lib/commands/scene.js'`
 
 ```typescript
 import { Command } from 'commander';
-import type { SceneResult } from '@cocos-cli/shared';
+import type { SceneResult } from '@cocos-cli/shared/dist/scene-contract';
 import { renderTree, DumpNode } from '../render/tree';
 import { EXIT } from '../exit';
 import type { DriverClient } from '../driver-client';
