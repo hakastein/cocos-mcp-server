@@ -603,7 +603,7 @@ export function instanceKey(projectPath: string, platform: NodeJS.Platform = pro
 export function pipeDirectory(
     platform: NodeJS.Platform = process.platform, tmp: string = os.tmpdir()
 ): string {
-    return platform === 'win32' ? '\\\\.\\pipe\\' : path.join(tmp, 'cocos-cli');
+    return platform === 'win32' ? '\\\\.\\pipe\\' : path.posix.join(tmp, 'cocos-cli');
 }
 
 export function pipePath(
@@ -612,7 +612,7 @@ export function pipePath(
     const key = instanceKey(projectPath, platform);
     return platform === 'win32'
         ? `\\\\.\\pipe\\${PIPE_PREFIX}${key}`
-        : path.join(pipeDirectory(platform, tmp), `${key}.sock`);
+        : path.posix.join(pipeDirectory(platform, tmp), `${key}.sock`);
 }
 ```
 
@@ -1137,7 +1137,7 @@ export async function discover(
 function addressOf(name: string): string {
     return process.platform === 'win32'
         ? `\\\\.\\pipe\\${name}`
-        : path.join(pipeDirectory(), name);
+        : path.posix.join(pipeDirectory(), name);
 }
 
 function listAddresses(): string[] {
