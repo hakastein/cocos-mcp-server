@@ -73,3 +73,7 @@ test('многокорневое дерево рендерится с прави
     assert.match(lines[2], /^Camera/);
     assert.match(lines[3], /AnotherNode/);
 });
+
+test('пустой список узлов даёт пустую строку', () => {
+    assert.equal(renderTree([]), '');
+});
