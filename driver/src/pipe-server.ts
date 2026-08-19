@@ -62,7 +62,16 @@ export class PipeServer {
                     if (!fn) throw new Error(`driver does not carry '${name}'`);
                     try {
                         const result = await fn(...(Array.isArray(params) ? params : []));
-                        if (name === BEGIN_RECORDING) this.bracketUndoId = result as string;
+                        if (name === BEGIN_RECORDING) {
+                            if (this.bracketOwner === socket) {
+                                this.bracketUndoId = result as string;
+                            } else {
+                                // The close handler already freed the bracket without this id, because
+                                // it ran before beginRecording resolved. Cancel with the id it now has.
+                                this.editor.scene.cancelRecording(result as string).catch(
+                                    (error: unknown) => console.warn('[cocos-cli] dangling undo bracket:', error));
+                            }
+                        }
                         return result;
                     } catch (error) {
                         if (name === BEGIN_RECORDING && this.bracketOwner === socket) this.freeBracket();
