@@ -9,13 +9,12 @@ export interface RenderedWrite {
 }
 
 /**
- * `persisted: null` означает, что сохранение никто не проверял. Печатать его как `false` —
- * значит выдать непроверенное за опровергнутое. `channel` в контракте необязателен, и его
- * отсутствие тоже unknown: без канала неизвестно, что означает `persisted: false`.
+ * `persisted: null` означает, что сохранение никто не проверял — печатать его как `false` значит
+ * выдать непроверенное за опровергнутое; та же логика разводит и три исхода заголовка.
  */
 export function renderWriteReport(write: RenderedWrite): string {
     const { report } = write;
-    const head = report.written && report.verified ? 'ok' : 'НЕ ЗАПИСАНО';
+    const head = !report.written ? 'НЕ ЗАПИСАНО' : report.verified ? 'ok' : 'ЗАПИСАНО, НЕ ПРОВЕРЕНО';
     const persisted = report.persisted === null ? 'unknown' : String(report.persisted);
     const target = `${write.component}.${write.property}`;
     const value = write.value === undefined ? '' : ` = ${JSON.stringify(write.value)}`;

@@ -45,6 +45,15 @@ test('незаписанное значение не выдаётся за ok', 
     assert.doesNotMatch(text, /^ok/);
 });
 
+test('записанное, но не проверенное — не то же самое, что не записанное', () => {
+    const written = renderWriteReport(write({ written: true, verified: false, persisted: null }));
+    const notWritten = renderWriteReport(write({ written: false, verified: false, persisted: null }));
+    assert.doesNotMatch(written, /^ok/);
+    assert.doesNotMatch(written, /^НЕ ЗАПИСАНО/);
+    assert.match(notWritten, /^НЕ ЗАПИСАНО/);
+    assert.notEqual(written.split(/\s{2,}/)[0], notWritten.split(/\s{2,}/)[0]);
+});
+
 test('detail из отчёта доезжает до строки', () => {
     const text = renderWriteReport(write({ detail: 'сериализатор не отдаёт это свойство' }));
     assert.match(text, /сериализатор не отдаёт/);
