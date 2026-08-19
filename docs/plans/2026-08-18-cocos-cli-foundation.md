@@ -571,7 +571,7 @@ test('на windows это канал в пространстве имён, на 
     assert.equal(pipePath('D:/cocos/games/CyberCore', 'win32'), `\\\\.\\pipe\\${PIPE_PREFIX}${key}`);
     assert.equal(
         pipePath('/home/u/game', 'linux', '/tmp'),
-        `/tmp/cocos-cli/${instanceKey('/home/u/game', 'linux')}.sock`);
+        `/tmp/cocos-cli/${PIPE_PREFIX}${instanceKey('/home/u/game', 'linux')}.sock`);
 });
 
 test('каталог поиска — то место, которое CLI перечисляет', () => {
@@ -612,7 +612,7 @@ export function pipePath(
     const key = instanceKey(projectPath, platform);
     return platform === 'win32'
         ? `\\\\.\\pipe\\${PIPE_PREFIX}${key}`
-        : path.posix.join(pipeDirectory(platform, tmp), `${key}.sock`);
+        : path.posix.join(pipeDirectory(platform, tmp), `${PIPE_PREFIX}${key}.sock`);
 }
 ```
 
