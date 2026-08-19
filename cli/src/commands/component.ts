@@ -2,10 +2,12 @@ import { Command } from 'commander';
 import { unwrap, withClient } from './shared';
 import { withUndoBracket } from '../undo-bracket';
 import { renderWriteReport } from '../render/report';
-import { readBackMatches } from '../property/writers';
+import { readBackMatches, typedDump } from '../property/writers';
+import { isDumpDescriptor, resolveKind } from '../property/kind';
 import { resolveNode } from './node';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
+import type { PropertyDescriptor } from '../property/kind';
 
 export interface SetSpec {
     node: string;
@@ -31,34 +33,58 @@ async function findComponent(client: DriverClient, nodeUuid: string, type: strin
     return { ...components[index], index };
 }
 
-async function componentClassId(
-    client: DriverClient, nodeUuid: string, componentIndex: number
-): Promise<string | undefined> {
-    const node = await client.editor.scene.queryNode(nodeUuid) as { __comps__?: Array<Record<string, unknown>> };
+interface ComponentSnapshot {
+    cid: string | undefined;
+    descriptor: PropertyDescriptor | undefined;
+    properties: string[];
+}
+
+/**
+ * The registered class id and a property's own dump descriptor both live only in the editor's
+ * live `query-node` snapshot — `getNodeInfo` (the typed scene method) carries neither. One query
+ * answers both, the same route `property/writers.ts`'s `componentCid`/`readBack` already read.
+ */
+async function queryComponentSnapshot(
+    client: DriverClient, nodeUuid: string, componentIndex: number, property: string
+): Promise<ComponentSnapshot> {
+    const node = await client.editor.scene.queryNode(nodeUuid) as {
+        __comps__?: Array<Record<string, unknown> & { value?: Record<string, unknown> }>;
+    };
     const component = node && node.__comps__ && node.__comps__[componentIndex];
-    if (!component) return undefined;
+    if (!component) return { cid: undefined, descriptor: undefined, properties: [] };
     const cid = component.__type__ ?? component.cid ?? component.type;
-    return typeof cid === 'string' ? cid : undefined;
+    const properties = component.value ? Object.keys(component.value) : [];
+    const raw = component.value && component.value[property];
+    return {
+        cid: typeof cid === 'string' ? cid : undefined,
+        descriptor: isDumpDescriptor(raw) ? raw : undefined,
+        properties
+    };
 }
 
 export async function componentSet(client: DriverClient, spec: SetSpec): Promise<string> {
     const nodeUuid = await resolveNode(client, spec.node);
     const component = await findComponent(client, nodeUuid, spec.component);
+    const snapshot = await queryComponentSnapshot(client, nodeUuid, component.index, spec.property);
+    if (!snapshot.descriptor) {
+        throw new Error(`у компонента '${spec.component}' нет свойства '${spec.property}' в живом дампе; есть: ${
+            snapshot.properties.join(', ') || '(живой дамп недоступен)'}`);
+    }
+    const dump = typedDump(snapshot.descriptor, resolveKind(snapshot.descriptor), spec.value);
 
-    const { result: written, undoNote } = await withUndoBracket(client, nodeUuid, async () =>
-        await client.editor.scene.setProperty({
+    const { result: written, undoNote } = await withUndoBracket(client, nodeUuid, () =>
+        client.editor.scene.setProperty({
             uuid: nodeUuid,
             path: `__comps__.${component.index}.${spec.property}`,
-            dump: { value: spec.value }
-        }) as boolean);
+            dump
+        }));
 
     let persisted: boolean | null = null;
     let detail: string | undefined;
-    const cid = await componentClassId(client, nodeUuid, component.index);
-    if (cid === undefined) {
+    if (snapshot.cid === undefined) {
         detail = 'класс компонента не удалось прочитать из живого дампа, вывод о сохранении не делается';
     } else {
-        const answer = await client.scene.call('serializedComponentValue', nodeUuid, cid, spec.property);
+        const answer = await client.scene.call('serializedComponentValue', nodeUuid, snapshot.cid, spec.property);
         if (answer.success !== true) {
             detail = answer.error;
         } else if (!answer.data.found) {
@@ -75,7 +101,7 @@ export async function componentSet(client: DriverClient, spec: SetSpec): Promise
         component: spec.component,
         property: spec.property,
         value: spec.value,
-        report: { written, verified: persisted !== null, persisted, channel: 'editor', detail },
+        report: { written: written === true, verified: persisted !== null, persisted, channel: 'editor', detail },
         undoNote: undoNote ?? undefined
     });
 }

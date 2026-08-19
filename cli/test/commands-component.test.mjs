@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import { componentSet } from '../lib/commands/component.js';
 
+const COLOR_DESCRIPTOR = { type: 'cc.Color', value: { r: 255, g: 255, b: 255, a: 255 } };
+
 const recorder = (over = {}) => {
     const calls = [];
     return {
@@ -15,7 +17,7 @@ const recorder = (over = {}) => {
                 setProperty: async (...a) => { calls.push(['setProperty', ...a]); return true; },
                 queryNode: async () => {
                     calls.push(['queryNode']);
-                    return { __comps__: [{ __type__: 'cc.Sprite' }] };
+                    return { __comps__: [{ __type__: 'cc.Sprite', value: { color: COLOR_DESCRIPTOR } }] };
                 },
                 ...over.scene
             }
@@ -80,7 +82,7 @@ test('сериализатор отдаёт другое значение — pe
                 endRecording: async () => { },
                 cancelRecording: async () => { },
                 setProperty: async () => true,
-                queryNode: async () => ({ __comps__: [{ __type__: 'cc.Sprite' }] })
+                queryNode: async () => ({ __comps__: [{ __type__: 'cc.Sprite', value: { color: COLOR_DESCRIPTOR } }] })
             }
         },
         scene: {
@@ -102,4 +104,19 @@ test('сериализатор отдаёт другое значение — pe
     const text = await componentSet(driver,
         { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ffffff' });
     assert.match(text, /persisted=false/);
+});
+
+test('узел без запрошенного свойства — отказ, называющий, какие свойства есть', async () => {
+    await assert.rejects(
+        () => componentSet(recorder(),
+            { node: 'Canvas/Bg', component: 'Sprite', property: 'spriteFrame', value: 'x' }),
+        /color/);
+});
+
+test('cc.Color получает подсказку типа, и значение доезжает разобранным', async () => {
+    const driver = recorder();
+    await componentSet(driver, { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ff0000' });
+    const setPropertyCall = driver.calls.find(c => c[0] === 'setProperty');
+    assert.equal(setPropertyCall[1].dump.type, 'cc.Color');
+    assert.deepEqual(setPropertyCall[1].dump.value, { r: 255, g: 0, b: 0, a: 255 });
 });
