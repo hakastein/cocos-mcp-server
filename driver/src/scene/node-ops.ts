@@ -1,4 +1,4 @@
-import type { SceneMethods } from '@cocos-cli/shared/dist/scene-contract';
+import type { SceneMethods } from '@cocos-cli/shared';
 import { findNodeByUuid, requireActiveScene } from './engine';
 
 // `cce` is the editor-side engine facade available in the scene process (it exposes

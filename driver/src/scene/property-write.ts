@@ -1,7 +1,7 @@
 import {
     ReferenceOverride, projectAfterReload, contradictedOverrides, liveNodesBySerializedIndex
 } from '@cocos-cli/shared';
-import type { SceneMethods } from '@cocos-cli/shared/dist/scene-contract';
+import type { SceneMethods } from '@cocos-cli/shared';
 import {
     componentClassName, ctorIsA, declaredPropertyCtor, findComponentByUuid,
     findNodeByUuid, findNodeByUuidOrNull, requireActiveScene, serializedEntityUuid

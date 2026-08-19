@@ -1,4 +1,4 @@
-import type { SceneResult } from '@cocos-cli/shared/dist/scene-contract';
+import type { SceneResult } from '@cocos-cli/shared';
 import { EXIT } from '../exit';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';

@@ -1,4 +1,4 @@
-import type { WriteReport } from '@cocos-cli/shared/dist/scene-contract';
+import type { WriteReport } from '@cocos-cli/shared';
 
 export interface RenderedWrite {
     component: string;

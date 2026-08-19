@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import type { SceneNodeEntry } from '@cocos-cli/shared/dist/scene-contract';
+import type { SceneNodeEntry } from '@cocos-cli/shared';
 import { renderTree, DumpNode } from '../render/tree';
 import { unwrap, withClient } from './shared';
 import type { DriverClient } from '../driver-client';

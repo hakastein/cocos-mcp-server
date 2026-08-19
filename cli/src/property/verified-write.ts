@@ -6,7 +6,7 @@ import { withUndoBracket } from '../undo-bracket';
 import type { DriverClient } from '../driver-client';
 import type {
     PrefabOverrideOutcome, SceneDirtyReport, SceneResult, SerializedValue, WriteReport
-} from '@cocos-cli/shared/dist/scene-contract';
+} from '@cocos-cli/shared';
 
 export interface VerifiedWriteOptions {
     verify?: 'readback' | 'disk' | 'serializer';

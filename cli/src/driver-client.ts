@@ -2,7 +2,7 @@ import * as net from 'net';
 import split2 from 'split2';
 import { JSONRPCClient } from 'json-rpc-2.0';
 import { EDITOR_METHODS } from '@cocos-cli/shared';
-import type { SceneMethods } from '@cocos-cli/shared/dist/scene-contract';
+import type { SceneMethods } from '@cocos-cli/shared';
 
 export interface SceneFacade {
     call<K extends keyof SceneMethods>(

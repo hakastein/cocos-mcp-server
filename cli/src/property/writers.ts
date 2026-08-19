@@ -4,7 +4,7 @@ import {
 } from './kind';
 import { projectDescriptor, projectValue } from './readers';
 import type { DriverClient } from '../driver-client';
-import type { WriteReport } from '@cocos-cli/shared/dist/scene-contract';
+import type { WriteReport } from '@cocos-cli/shared';
 
 export interface ReferenceOptions {
     targetComponentType?: string;

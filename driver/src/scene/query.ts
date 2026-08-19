@@ -1,7 +1,7 @@
 import {
     buildPathIndex, resolvePathInIndex, siblingLabels, diffSerialized, liveNodesBySerializedIndex
 } from '@cocos-cli/shared';
-import type { DeclaredProperty, PrefabLinkageReport, SceneMethods, SceneResult } from '@cocos-cli/shared/dist/scene-contract';
+import type { DeclaredProperty, PrefabLinkageReport, SceneMethods, SceneResult } from '@cocos-cli/shared';
 import {
     ctorIsA, findNodeByUuid, plainSerialized, requireActiveScene, SerializedNodeNaming
 } from './engine';
