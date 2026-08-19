@@ -61,3 +61,4 @@ export {
     LiveNodeShape, liveNodesBySerializedIndex, ReferenceOverride, projectAfterReload,
     contradictedOverrides
 } from './reference-projection';
+export { PIPE_PREFIX, instanceKey, pipePath, pipeDirectory } from './pipe-name';
