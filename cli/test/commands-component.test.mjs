@@ -95,7 +95,9 @@ test('сериализатор отдаёт другое значение — pe
                         components: [{ type: 'Sprite', enabled: true }] } };
                 }
                 if (method === 'serializedComponentValue') {
-                    return { success: true, data: { found: true, value: '#000000' } };
+                    // Форма, которую реально отдаёт сериализатор для cc.Color — объект каналов,
+                    // не строка; здесь это ЧЁРНЫЙ, при записанном БЕЛОМ — настоящее расхождение.
+                    return { success: true, data: { found: true, value: { r: 0, g: 0, b: 0, a: 255 } } };
                 }
                 return { success: true, data: {} };
             }
@@ -104,6 +106,77 @@ test('сериализатор отдаёт другое значение — pe
     const text = await componentSet(driver,
         { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ffffff' });
     assert.match(text, /persisted=false/);
+});
+
+test('сериализатор знает свойство только под именем backing-поля — обе попытки, найдено', async () => {
+    // 'opacity' — то, что пишет пользователь; сериализатор в этом дампе отдаёт только '_opacity'.
+    // Числовой kind изолирует случай от расхождения формы (C1б) — только проверка спеллинга (C1а).
+    const driver = {
+        editor: {
+            scene: {
+                beginRecording: async () => 'r1',
+                endRecording: async () => { },
+                cancelRecording: async () => { },
+                setProperty: async () => true,
+                queryNode: async () => ({ __comps__: [{ __type__: 'cc.UIOpacity',
+                    value: { opacity: { type: 'Number', value: 255 } } }] })
+            }
+        },
+        scene: {
+            call: async (method, ...args) => {
+                if (method === 'resolveNodePaths') {
+                    return { success: true, data: { resolutions: { 'Canvas/Bg': { uuid: 'u_bg' } } } };
+                }
+                if (method === 'getNodeInfo') {
+                    return { success: true, data: { name: 'Bg', uuid: 'u_bg', active: true,
+                        components: [{ type: 'UIOpacity', enabled: true }] } };
+                }
+                if (method === 'serializedComponentValue') {
+                    const property = args[2];
+                    if (property === '_opacity') return { success: true, data: { found: true, value: 128 } };
+                    return { success: true, data: { found: false, reason: `сериализатор не отдаёт '${property}'` } };
+                }
+                return { success: true, data: {} };
+            }
+        }
+    };
+    const text = await componentSet(driver,
+        { node: 'Canvas/Bg', component: 'UIOpacity', property: 'opacity', value: 128 });
+    assert.match(text, /persisted=true/);
+});
+
+test('typedDump превращает ввод в структуру — сравнение идёт по спроецированной форме, не по сырой', async () => {
+    // Сериализатор отвечает найденным на первую же попытку ('color'), так что сценарий не задевает
+    // подбор спеллинга (C1а) — здесь только форма значения (C1б): '#ff0000' против {r,g,b,a}.
+    const driver = {
+        editor: {
+            scene: {
+                beginRecording: async () => 'r1',
+                endRecording: async () => { },
+                cancelRecording: async () => { },
+                setProperty: async () => true,
+                queryNode: async () => ({ __comps__: [{ __type__: 'cc.Sprite', value: { color: COLOR_DESCRIPTOR } }] })
+            }
+        },
+        scene: {
+            call: async (method) => {
+                if (method === 'resolveNodePaths') {
+                    return { success: true, data: { resolutions: { 'Canvas/Bg': { uuid: 'u_bg' } } } };
+                }
+                if (method === 'getNodeInfo') {
+                    return { success: true, data: { name: 'Bg', uuid: 'u_bg', active: true,
+                        components: [{ type: 'Sprite', enabled: true }] } };
+                }
+                if (method === 'serializedComponentValue') {
+                    return { success: true, data: { found: true, value: { r: 255, g: 0, b: 0, a: 255 } } };
+                }
+                return { success: true, data: {} };
+            }
+        }
+    };
+    const text = await componentSet(driver,
+        { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ff0000' });
+    assert.match(text, /persisted=true/);
 });
 
 test('узел без запрошенного свойства — отказ, называющий, какие свойства есть', async () => {

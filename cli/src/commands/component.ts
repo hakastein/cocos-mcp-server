@@ -3,6 +3,7 @@ import { unwrap, withClient } from './shared';
 import { withUndoBracket } from '../undo-bracket';
 import { renderWriteReport } from '../render/report';
 import { readBackMatches, typedDump } from '../property/writers';
+import { projectValue } from '../property/readers';
 import { isDumpDescriptor, resolveKind } from '../property/kind';
 import { resolveNode } from './node';
 import type { DriverClient } from '../driver-client';
@@ -62,6 +63,36 @@ async function queryComponentSnapshot(
     };
 }
 
+/**
+ * The serializer writes backing fields, so the accessor `color` is emitted as `_color`; asking
+ * for the accessor name alone answers `found:false` for a property the file does carry. Same
+ * fallback `property/verified-write.ts`'s `serializedValue` uses.
+ */
+function propertySpellings(property: string): string[] {
+    const underscored = property.replace(/(^|\.)([^.]+)$/, '$1_$2');
+    return underscored === property || /(^|\.)_/.test(property) ? [property] : [property, underscored];
+}
+
+interface SerializedLookup {
+    found: boolean;
+    value?: unknown;
+    unnamedReference?: boolean;
+    problem?: string;
+}
+
+async function findSerializedValue(
+    client: DriverClient, nodeUuid: string, cid: string, property: string
+): Promise<SerializedLookup> {
+    let problem = '';
+    for (const spelling of propertySpellings(property)) {
+        const answer = await client.scene.call('serializedComponentValue', nodeUuid, cid, spelling);
+        if (answer.success !== true) { problem = answer.error; continue; }
+        if (answer.data.found) return { found: true, value: answer.data.value, unnamedReference: answer.data.unnamedReference };
+        problem = answer.data.reason || `сериализатор не отдаёт свойство '${spelling}'`;
+    }
+    return { found: false, problem };
+}
+
 export async function componentSet(client: DriverClient, spec: SetSpec): Promise<string> {
     const nodeUuid = await resolveNode(client, spec.node);
     const component = await findComponent(client, nodeUuid, spec.component);
@@ -70,7 +101,8 @@ export async function componentSet(client: DriverClient, spec: SetSpec): Promise
         throw new Error(`у компонента '${spec.component}' нет свойства '${spec.property}' в живом дампе; есть: ${
             snapshot.properties.join(', ') || '(живой дамп недоступен)'}`);
     }
-    const dump = typedDump(snapshot.descriptor, resolveKind(snapshot.descriptor), spec.value);
+    const kind = resolveKind(snapshot.descriptor);
+    const dump = typedDump(snapshot.descriptor, kind, spec.value) as { value: unknown };
 
     const { result: written, undoNote } = await withUndoBracket(client, nodeUuid, () =>
         client.editor.scene.setProperty({
@@ -84,16 +116,18 @@ export async function componentSet(client: DriverClient, spec: SetSpec): Promise
     if (snapshot.cid === undefined) {
         detail = 'класс компонента не удалось прочитать из живого дампа, вывод о сохранении не делается';
     } else {
-        const answer = await client.scene.call('serializedComponentValue', nodeUuid, snapshot.cid, spec.property);
-        if (answer.success !== true) {
-            detail = answer.error;
-        } else if (!answer.data.found) {
-            detail = answer.data.reason || 'сериализатор не отдаёт это свойство';
-        } else if (answer.data.unnamedReference) {
+        const found = await findSerializedValue(client, nodeUuid, snapshot.cid, spec.property);
+        if (!found.found) {
+            detail = found.problem || 'сериализатор не отдаёт это свойство';
+        } else if (found.unnamedReference) {
             detail = 'сериализатор ссылается на узел по позиции без сопоставления, вывод о сохранении не делается';
         } else {
-            persisted = readBackMatches(spec.value, answer.data.value);
-            if (!persisted) detail = `сериализатор отдаёт другое значение: ${JSON.stringify(answer.data.value)}`;
+            // Both sides projected the same way: `dump.value` is what setProperty actually sent, the
+            // raw `spec.value` a caller typed ('#ff0000') is not what the serializer ever echoes back.
+            const expected = projectValue(kind, dump.value);
+            const actual = projectValue(kind, found.value);
+            persisted = readBackMatches(expected, actual);
+            if (!persisted) detail = `сериализатор отдаёт другое значение: ${JSON.stringify(actual)}`;
         }
     }
 
