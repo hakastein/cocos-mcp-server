@@ -19,7 +19,7 @@ Three npm workspaces, one repo:
 - `shared/` — types and pure logic both sides need.
 - `driver/` — the editor extension. Its `package.json` name is still `cocos-mcp-server` (existing
   installs key off it); nothing else in this repo calls it that. It holds native primitives and
-  decides nothing.
+  decides nothing, plus a small Vue settings panel that is unrelated to the primitive surface.
 - `cli/` — the `cocos` binary. Command parsing, node-path resolution, undo brackets, verified writes,
   rendering — everything an agent-facing decision needs lives here.
 
@@ -67,6 +67,13 @@ Command groups implemented in `cli/src/commands/` today: `scene`, `node`, `compo
 top-level `instances`. More groups (prefab, asset, build, project, log, ecs, a raw `evalInScene`
 escape hatch) are future work, not yet wired to any command.
 
+`driver/` also carries a small subsystem outside this diagram entirely: a Vue settings panel
+(`driver/src/panels/default/index.ts`, its own `tsup` entry) that shows `PipeServer` status and
+edits `enableDebugLog`, wired to `driver/src/main.ts` through three `Editor.Message` IPC methods
+(`openPanel`, `getDriverStatus`, `updateSettings`) declared in `driver/package.json`'s
+`contributions.messages`. It does not go through the pipe or `EDITOR_METHODS`/`SCENE_METHODS` at
+all — it is the editor UI talking to its own extension, not the CLI talking to the driver.
+
 ## Key Files
 
 | File | Role |
@@ -74,25 +81,26 @@ escape hatch) are future work, not yet wired to any command.
 | `shared/src/protocol.ts` | `EDITOR_METHODS`/`SCENE_METHODS` — the 87-method list that is the driver's whole reachable surface; `isKnownMethod`; the handshake `Hello` shape |
 | `shared/src/pipe-name.ts` | project path → channel address, computed identically by both sides |
 | `shared/src/scene-contract.ts` | `SceneMethods`, `WriteReport`, `SceneResult` — the typed contract with the scene script |
-| `driver/src/main.ts` | extension entry: `load`/`unload`, starts and stops the `PipeServer` |
+| `driver/src/main.ts` | extension entry: `load`/`unload`, starts and stops the `PipeServer`; also answers the panel's IPC (`openPanel`, `getDriverStatus`, `updateSettings`) |
 | `driver/src/pipe-server.ts` | the channel server: one request at a time (`p-queue`), the bracket gate that blocks other connections while one holds an open undo bracket, `hello`'s `surfaceChecksum` |
 | `driver/src/method-table.ts` | resolves a dotted method name to a callable, refusing anything `isKnownMethod` does not know |
 | `driver/src/editor-api.ts` | every `Editor.Message` call, typed over `EditorMessageMaps` |
+| `driver/src/scene-script-client.ts` | `SceneScriptClient` — wraps `editor.scene.executeSceneScript`, typed by `SceneMethods`; what `method-table.ts` calls for every `scene.*` request |
 | `driver/src/scene/` | the scene script; `index.ts` assembles `SceneMethods` from `dump`/`node-ops`/`component-ops`/`property-write`/`prefab-ops`/`query`, with `engine.ts` holding the helpers they share |
+| `driver/src/panels/default/index.ts` | the Vue settings panel — status and `enableDebugLog`, over the IPC `main.ts` answers, not over the pipe |
 | `cli/src/main.ts` | the command tree (`buildProgram`), the entry point `bin/cocos.js` runs |
 | `cli/src/discovery.ts` | enumerates channels, probes each with `hello`, `selectInstance` narrows by `--project` |
 | `cli/src/resolve.ts` | `resolveClient` — discovery, selection and connect, in the shape every command's `resolve` thunk needs |
 | `cli/src/driver-client.ts` | `DriverClient` — the `editor.*`/`scene.*` facades over JSON-RPC; `editor` is generated from `EDITOR_METHODS`, `scene.call` is typed by `SceneMethods` |
 | `cli/src/commands/shared.ts` | `withClient` (resolve → run → print → close — the one place command output touches `stdout`/`stderr`) and `unwrap` (`SceneResult<T>` → value or thrown error) |
 | `cli/src/undo-bracket.ts` | `withUndoBracket` — one write wrapped in one undo step, `undoNote` when the editor refused or left it open |
-| `cli/src/property/` | kind resolution (`kind.ts`), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`) |
+| `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`) |
 | `cli/src/render/` | `tree.ts`, `report.ts`, `instances.ts` — the text (or `--json`) the agent actually reads |
 
 Everything a command decides that does not need a live editor lives in a pure module beside
-`commands/`: `property/`, `render/`, `node-type.ts`, `scene-signature.ts`, `settle.ts`,
-`discovery.ts`'s `selectInstance`. These are what the test suite covers. `commands/*.ts`,
-`driver-client.ts`, `resolve.ts` and `main.ts` talk to a live editor or to Commander's own wiring,
-and are verified live.
+`commands/`: `property/`, `render/`, `node-type.ts`, `settle.ts`, `discovery.ts`'s `selectInstance`.
+These are what the test suite covers. `commands/*.ts`, `driver-client.ts`, `resolve.ts` and `main.ts`
+talk to a live editor or to Commander's own wiring, and are verified live.
 
 ## Write Honesty and Undo Brackets
 
@@ -107,8 +115,11 @@ A property write answers a `WriteReport` (`shared/src/scene-contract.ts`):
 
 `cli/src/property/writers.ts` holds the writer cascade (`WRITERS`, one entry per property kind, the
 first `claims()` wins) and `cli/src/property/verified-write.ts` follows a writer's result with a
-disk- or serializer-verdict pass. `cli/src/render/report.ts`'s `renderWriteReport` is how a
-`WriteReport` reaches the agent's terminal — `persisted: null` prints as `unknown`, never as `false`.
+disk- or serializer-verdict pass — both are pure, tested, and ready to drive a command, but no
+command calls them yet: `component set` (`cli/src/commands/component.ts`) currently assembles its
+own `WriteReport` by hand for the scalar/vec/color/enum case only, rather than going through the
+cascade. `cli/src/render/report.ts`'s `renderWriteReport` is how a `WriteReport` reaches the agent's
+terminal either way — `persisted: null` prints as `unknown`, never as `false`.
 
 **Undo brackets.** `withUndoBracket(client, nodeUuid, write)` (`cli/src/undo-bracket.ts`) wraps a
 write in the driver's begin/end-recording pair so Ctrl+Z takes it back, and returns an `undoNote`
