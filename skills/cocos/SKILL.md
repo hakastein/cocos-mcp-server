@@ -1,148 +1,149 @@
 ---
 name: cocos
-description: Use when a task touches a Cocos Creator playable — its scene, nodes, components, prefabs or assets — including when a .scene/.prefab/.meta path is mentioned, when asked what nodes or components exist or how something is wired, when adding or configuring a component, and especially when about to Read, grep or hand-parse a scene or prefab file.
+description: Cocos Creator, open project — what nodes and components a scene holds, how something is wired, creating a node, adding and configuring a component. Required before reading, grepping or hand-parsing a `.scene`, `.prefab` or `.meta` — searching those files answers false-negative.
 ---
 
-# Cocos через CLI
+# Cocos through the `cocos` CLI
 
-Открытый редактор — источник истины. `.scene` и `.prefab` — сериализованный вывод, а не ответ на вопрос «что в этой сцене». Когда Cocos открыт на проекте, спрашивай командой `cocos`, а не чтением файла.
+The open editor is the source of truth about the scene. The `cocos` binary asks it directly: one command in the shell, the answer on stdout.
 
-Мост — расширение из репозитория `hakastein/cocos-mcp-server`, каталоги `driver/` и `cli/`. Если команды не хватает — она добавляется туда, а не обходится молча.
+The bridge lives in the `hakastein/cocos-mcp-server` repository: `driver/` is the editor extension, `cli/` is the binary itself.
 
-## Читать файлы сцены не работает
+The CLI prints its own text in Russian. Literal output is quoted verbatim below.
 
-Компоненты-скрипты сериализуются **сжатым cid**, а не именем класса. Проверено на `CyberCore/assets/scenes/cc_action_1a.scene`:
+## Searching `.scene` answers false-negative
 
-| | |
+Script components serialize under a compressed cid. Checked against the open `cc_action_1a.scene` (337 KB):
+
+| query | answer |
 |---|---|
-| `grep GameBootstrap` по файлу сцены | **0 вхождений** |
+| `grep -c FollowCamera cc_action_1a.scene` | `0` |
+| `cocos scene tree \| grep FollowCamera` | `Main Camera  [Camera,FollowCamera,BuiltinPipelineSettings]` |
+| `grep -c GameBootstrap cc_action_1a.scene` | `0` |
 | `cocos scene tree \| grep GameBootstrap` | `Game  [GameRoot,GameBootstrap]` |
 
-В файле он лежит как `"__type__": "04e75MuPw1E2Y0YvYSnSKa5"`. «Я поискал в файле, компонента там нет» — **ложноотрицательный ответ, всегда**.
+In the file the component sits as `"__type__": "04e75MuPw1E2Y0YvYSnSKa5"`. Node references are indices, `{"__id__": 47}`. The `_active` field holds a local flag, and `activeInHierarchy` does not follow from it.
 
-Ссылки на узлы в файле — индексы вида `{"__id__": 47}`. Поле `_active` — локальный флаг, про `activeInHierarchy` он не говорит ничего.
+Ask `cocos` about what a scene or a prefab contains.
 
-## Адресуй узлы путём, а не uuid
-
-Uuid живёт ровно одну сессию редактора. Перезагрузка сцены, обновление базы ассетов или пересборка скриптов выдают корням инстансов префабов **новые** uuid, тогда как обычные узлы свои сохраняют. Список uuid из прошлого дампа протухает **пятнами**, и об этом никто не сообщит.
-
-Все команды принимают путь. Uuid тоже принимается, но нужен редко.
+## Reading
 
 ```bash
-cocos node get "InteractivePoints/InteractionPad_01"
+cocos instances                # which editors are open
+cocos scene info               # scene name, uuid, node count
+cocos scene tree               # the tree: addresses, [components], (off) on inactive nodes
+cocos node get <path>          # one node: its components and uuid
 ```
 
-Неоднозначный или несуществующий путь — громкий отказ с кодом 1, называющий, что есть рядом. Молчаливого выбора первого попавшегося не бывает.
+`scene tree` is one call for the whole scene, and ordinary text grep works on it from there. Once the node is known, `node get` is cheaper.
 
-Одноимённые соседи несут позицию на **каждом** члене группы — `FloatingTexts#1`, `FloatingTexts#2`. Дерево печатает их так же, поэтому путь, скопированный из дерева, резолвер принимает.
+Flags live in each group's `--help` (`cocos node --help`). The useful ones: `--uuid` adds uuids to the tree, `--json` on `instances`.
 
-## Что есть сегодня
+## Addressing: the full path from a scene root
 
 ```bash
-cocos instances                    # какие редакторы открыты
-cocos scene tree                   # дерево целиком: имена, компоненты, (off) у неактивных
-cocos scene info                   # имя сцены и число узлов
-cocos scene open <путь>            # открыть сцену
-cocos scene save                   # сохранить
-cocos node get <путь>              # узел: компоненты и uuid
-cocos node create --parent <путь> --name <имя> [--component <тип>] [--pos x,y,z]
-cocos node rm <путь>
-cocos component add <путь> <тип>
-cocos component rm <путь> <тип>
-cocos component set <путь> <тип> --prop <имя> --value <значение>
+cocos node get "Environment/cc_scene/scene/KB3D_FTW_PropBarrels_A_Main"
 ```
 
-`--help` у каждой группы. Несколько открытых редакторов разводятся флагом `-p <подстрока>` по имени или пути проекта; при одном флаг не нужен, при нескольких без флага — отказ со списком.
+A path runs from a scene root all the way down. A slice out of the middle of the tree (`cc_scene/scene`) fails with code 1 and names what sits nearby:
 
-**Ещё не сделано:** префабы, ассеты, сборка, логи, ECS, скелетные сокеты, режим `--stdin`, автодополнение. Это второй план, а не забытое.
+```
+path 'Nope/Nothing' does not resolve — not even its first segment 'Nope'.
+The scene roots are: Main Light, Main Camera, Environment, …
+```
 
-## Дерево вместо дампа
+**Same-named siblings carry a `#1`, `#2` suffix in child order, and `scene tree` prints them that way.** A path lifted off the tree is a path the resolver takes as it stands:
 
-`cocos scene tree` на сцене из 391 узла — 18 КБ. Тот же дамп в JSON — 148 КБ. Путь узла выражен вложенностью, `parentUuid` и `childCount` не печатаются вовсе, uuid показывается по `--uuid`.
+```
+$ cocos scene tree | grep IconController
+  ├─┬ IconController#3
+$ cocos node get "Editor Scene Foreground/gizmoRoot/IconController#3"
+IconController  27kzz0ZGVPjp3Wf8wIw/Us
+```
 
-Отсюда правило: спрашивай дерево, а не сырой дамп, и грепай по дереву.
+Every member of the group carries the suffix, the first one included; a name that stands alone stays bare. A bare name out of a group fails with code 1 and lists the exact spellings.
 
-## Что означает отчёт о записи
+Commands take a uuid too, and a uuid lives exactly one editor session. A scene reload, an asset-database refresh and a script recompile hand prefab-instance roots fresh uuids while ordinary nodes keep theirs: a uuid list from an earlier dump goes stale in patches, silently.
 
-`component set` печатает строку, первое слово которой — вердикт:
+## Writing
 
-| Первое слово | Значение |
+```bash
+cocos node create --parent <path> --name <name> [--component <type>] [--pos x,y,z]
+cocos node rm <path>
+cocos component add <path> <type>
+cocos component rm <path> <type>
+cocos component set <path> <type> --prop <name> --value <value>
+cocos scene open <db://path>
+cocos scene save
+```
+
+**`component set` covers scalars, vectors, colors and enums.** Node, component and asset references, `@ccclass` arrays, gradients and curves are not wired to the command yet: the code for them sits in `cli/src/property/writers.ts` waiting for a caller.
+
+`--value` is parsed as JSON first, and whatever fails to parse goes through as a string. The value is then coerced to the property's declared type: `Boolean`, `Number`, `String`.
+
+Done editing — save the scene yourself with `cocos scene save`. Asking a human to press Ctrl+S is a wasted round trip.
+
+Engine components are registered under a prefix (`cc.MeshRenderer`), user ones under their own class name. The command tries both spellings and prints the **registered** one; where the two differ, trust the report. A component that never appeared gives a code-1 failure listing what the node does carry.
+
+## The write report
+
+`component set` prints a line whose first word is the verdict:
+
+| First word | Meaning |
 |---|---|
-| `ok` | записано и проверено чтением обратно |
-| `ЗАПИСАНО, НЕ ПРОВЕРЕНО` | редактор принял, проверить не удалось — причина названа в конце строки |
-| `НЕ ЗАПИСАНО` | не записано |
+| `ok` | written and read back |
+| `ЗАПИСАНО, НЕ ПРОВЕРЕНО` | the editor accepted it, the check did not pass; the reason ends the line |
+| `НЕ ЗАПИСАНО` | the write never landed |
 
-Дальше в строке:
+Further along the line, `persisted=`:
 
-- `persisted=true` — доказано, что сохранение донесёт значение; `false` — доказано, что не донесёт; **`unknown` — никто не смотрел**. Третье не равно второму.
-- `channel=editor` означает, что канал сериализует, поэтому `false` там — значение, которое сохранение потеряет. `channel=live` пишет только живой объект, и `false` там ожидаем по построению.
+| Value | Meaning |
+|---|---|
+| `true` | proven that a save carries the value |
+| `false` | proven that a save drops it |
+| `unknown` | nobody ran the check |
 
-Типичная причина `unknown`: узел внутри инстанса префаба — файл сцены его свойств не несёт вовсе, только оверрайд.
+`channel=editor` is the channel that serializes, so `false` there names a value a save would lose. `channel=live` writes the live object, and `false` there is expected by construction.
+
+The common cause of `unknown` is a node inside a prefab instance: the scene file carries only an override for it.
 
 ## Undo
 
-Каждая пишущая команда обёрнута в одну скобку отката. **Проверено живьём:** `node create` с компонентом и позицией снимается **одним** Ctrl+Z — узел исчезает целиком. Отчёт печатает `undo=1`.
+Every writing command is wrapped in one undo bracket. Checked live: `node create` with a component and a position comes back with a single Ctrl+Z, whole, and the report prints `undo=1`. Silence about undo means the bracket closed cleanly; a separate sentence appears when the editor refused to record the step or left it open.
 
-`--no-undo` отключает обёртку.
+Writing is safe.
 
-## Написание типа компонента
+## Exit codes
 
-Движковые компоненты зарегистрированы с префиксом: `cc.MeshRenderer`, `cc.Sprite`. Пользовательские — под своим именем класса.
-
-Команды пробуют оба написания, поэтому `MeshRenderer` и `cc.MeshRenderer` работают одинаково. В отчёте печатается **зарегистрированное** имя, а не то, что ты попросил — если они разошлись, верь отчёту.
-
-Если компонент так и не появился, команда отказывает с кодом 1 и перечисляет, что на узле есть. Успеха без проверки не бывает.
-
-## Коды выхода
-
-| Код | Значение |
+| Code | Meaning |
 |---|---|
-| 0 | успех |
-| 1 | операция отказала |
-| 2 | ошибка употребления: неизвестная команда или флаг |
-| 3 | редактор не найден или неоднозначен |
-| 4 | обрыв протокола |
+| 0 | success |
+| 1 | the operation failed |
+| 2 | usage error: unknown command or flag |
+| 3 | no editor found, or several match |
+| 4 | protocol break |
 
-Полезная нагрузка идёт в stdout, пояснения и ошибки — в stderr, поэтому stdout можно смело класть в конвейер.
+The payload goes to stdout and the explanations and errors to stderr, so stdout drops into a pipeline as it is.
 
-## Три правила, которые нарушаются чаще всего
+Several open editors are told apart by `-p <substring>` against the project name or path. With one editor the flag is redundant; with several and no flag the command fails with code 3 and a list.
 
-1. **Редактор главнее кода.** Если значение выставляется в инспекторе, код его **читает**, а не пишет. Камера слежения ставит только позицию и не зовёт `lookAt()` и не пишет поворот — наклон задан поворотом узла в редакторе. «Я выставил X в редакторе, а что-то его перебивает» означает: перестань писать X из кода, а не заведи ещё одну ручку.
-2. **Свою визуальную работу не проверяй сам.** Скриншоты и расчёты проекции дают уверенный неправильный вердикт. Сделал правку — назови, какие ручки сдвинул, и отдай на проверку человеку.
-3. **Превью всегда живо на `http://localhost:7456/`** и перезагружается само при пересборке. Просить нажать Play не надо.
+## The editor outranks the code
 
-## Частые ошибки
+A value set in the inspector is a value the code **reads**. A follow camera sets position and takes its tilt from the node rotation authored in the editor; it never calls `lookAt()` and never writes rotation. The symptom "I set X in the editor and something overrides it" is cured by deleting the code that writes X.
 
-| Ошибка | Что вместо этого |
-|---|---|
-| Грепнуть `.scene` по имени класса и заключить, что компонента нет | `cocos scene tree \| grep <Класс>` |
-| «Это же обычный JSON, из файла видно правду» | Из файла видно сериализованное состояние со сжатыми cid и индексами `__id__`. Компонент будет объявлен отсутствующим, хотя он есть. |
-| «Прочитать файл быстрее, чем звать команду» | `cocos scene tree` — один вызов. Прошлый агент, который «просто прочитал файл», втянул 992 строки ради ответа в две строки — способом, который скрипты не видит в принципе. |
-| «Вызовы могут задеть состояние редактора» | Чтение ничего не меняет, а запись снимается одним Ctrl+Z. |
-| Сохранить uuid из прошлого дампа и переиспользовать | адресовать путём |
-| Прочитать `persisted=unknown` как «не сохранилось» | это «не проверяли»; причина названа в той же строке |
-| Запросить дерево целиком ради одного узла | `cocos node get <путь>` |
-| Решить, что команды нет, не посмотрев `--help` | `cocos <группа> --help` |
-| Ошибка разбора аргументов прочитана как «мост так не умеет» | Она про этот вызов. Почини вызов; если и правда не умеет — расширь репозиторий. |
+## A human checks visual work
 
-## Красные флаги — остановись
+A screenshot and a projection calculation deliver a confident wrong verdict about your own work. After an edit, name which knobs moved and hand it to a human to check.
 
-- Собираешься читать или грепать `.scene` либо `.prefab` — нельзя, это ложноотрицательный ответ.
-- Собираешься искать имя класса в сериализованных данных — работать не может.
-- Собираешься писать поворот или масштаб, который выставил человек — не надо.
-- Собираешься открыть превью, чтобы оценить собственную визуальную правку — не надо.
+The preview is live at `http://localhost:7456/` for as long as the editor is open, and reloads itself on a rebuild (checked: it answers 200). Asking for a Play press is a wasted round trip.
 
-## Подводные камни
+## Gotchas
 
-- **Новые поля `@property` не существуют до пересборки.** Правишь `.ts` — дождись перекомпиляции, потом пиши свойство.
-- **Скаляры можно слать строками** (`"3"`, `"false"`), они приводятся. Значение поля, объявленного `String`, — **нет**: похожий на JSON текст остаётся текстом и в объект не разбирается.
-- **Массив сериализуемого `@ccclass` заменяется целиком**, поэтому добавить или убрать элемент — это прочитать, изменить, записать обратно. Вложенный `@ccclass` ведёт себя наоборот: правит те члены, которые названы.
-- **Не сохраняй сцену, пока человек её редактирует** — затрёшь несохранённые правки инспектора. Запиши что просили и оставь сохранение ему.
-- **`node.forward` ненадёжен** — риги часто развёрнуты на 180°. Бери направление из заведомо верного источника.
-- **`/tmp` в Git Bash отображается в `D:\tmp`** — временные файлы пиши абсолютным путём.
+- **A new `@property` field appears after a rebuild.** Edit the `.ts`, wait for recompilation, then write the property.
+- **`node.forward` is unreliable** — rigs are often turned 180°. Take direction from a source known to be right.
 
-## Когда команды не хватает
+## When a command is missing
 
-Мост — свой репозиторий, а не чужая библиотека. Недостающая команда добавляется в `cli/src/commands/`, недостающий примитив движка — в `driver/src/scene/`. Устройство и порядок добавления описаны в `CLAUDE.md` того репозитория.
+The bridge is our own repository. A command goes into `cli/src/commands/`, an engine primitive into `driver/src/scene/`. Its layout and the procedure for adding either are in that repository's `CLAUDE.md`.
 
-Обходной путь молча писать не надо: он переживёт задачу и станет чужим сюрпризом.
+A workaround written in silence outlives the task and reaches the next person as a surprise.
