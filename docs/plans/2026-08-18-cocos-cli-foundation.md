@@ -2165,8 +2165,8 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
         }
         try {
             process.stdout.write(await run(resolved.client) + '\n');
-        } catch (error: any) {
-            process.stderr.write(String(error?.message || error) + '\n');
+        } catch (error: unknown) {
+            process.stderr.write((error instanceof Error ? error.message : String(error)) + '\n');
             process.exitCode = EXIT.FAILED;
         } finally {
             resolved.client.close();
@@ -2540,8 +2540,8 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
         }
         try {
             process.stdout.write(await run(resolved.client) + '\n');
-        } catch (error: any) {
-            process.stderr.write(String(error?.message || error) + '\n');
+        } catch (error: unknown) {
+            process.stderr.write((error instanceof Error ? error.message : String(error)) + '\n');
             process.exitCode = EXIT.FAILED;
         } finally {
             resolved.client.close();
