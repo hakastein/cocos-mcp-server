@@ -1,20 +1,25 @@
 {
   "name": "@cocos-cli/cli",
   "version": "1.0.0",
-  "bin": { "cocos": "./bin/cocos.js" },
+  "bin": {
+    "cocos": "./bin/cocos.js"
+  },
   "scripts": {
     "build": "tsc && tsup",
     "test:only": "node --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
     "@cocos-cli/shared": "^1.0.0",
-    "commander": "^15.0.0",
-    "json-rpc-2.0": "^1.7.1",
-    "split2": "^4.2.0",
     "archy": "^1.0.0",
     "cli-table3": "^0.6.5",
+    "commander": "^15.0.0",
+    "json-rpc-2.0": "^1.7.1",
     "picocolors": "^1.1.1",
+    "split2": "^4.2.0",
     "zod": "^3.25.76"
   },
-  "devDependencies": { "tsup": "^8.0.0" }
+  "devDependencies": {
+    "@types/archy": "^0.0.36",
+    "tsup": "^8.0.0"
+  }
 }
