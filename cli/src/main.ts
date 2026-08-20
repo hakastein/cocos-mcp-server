@@ -5,6 +5,8 @@ import { resolveClient } from './resolve';
 import { registerScene } from './commands/scene';
 import { registerNode } from './commands/node';
 import { registerComponent } from './commands/component';
+import { registerPrefab } from './commands/prefab';
+import { registerAsset } from './commands/asset';
 import { EXIT } from './exit';
 
 export function buildProgram(): Command {
@@ -31,6 +33,8 @@ export function buildProgram(): Command {
     registerScene(program, () => resolveClient(program.opts().project));
     registerNode(program, () => resolveClient(program.opts().project));
     registerComponent(program, () => resolveClient(program.opts().project));
+    registerPrefab(program, () => resolveClient(program.opts().project));
+    registerAsset(program, () => resolveClient(program.opts().project));
 
     return program;
 }
