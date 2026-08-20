@@ -308,3 +308,19 @@ rewritten as `cli/src/asset/query.ts` (the editor typings dropped for a local sh
 Russian) and `prefab-linkage.ts` as `cli/src/prefab-linkage.ts` (the `Editor.Message` calls dropped,
 the verdict reshaped from MCP result fields into a head word). Do not migrate those two a second
 time — read the `cli/` version. The other ten are still unclaimed.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in YouTrack project `PLY`, driven with the `yt` CLI (`youtrack-cli`).
+See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The seven canonical triage roles are YouTrack tags under their default names.
+See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
