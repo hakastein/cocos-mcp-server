@@ -4,6 +4,9 @@
   "private": true,
   "main": "./dist/protocol.js",
   "types": "./dist/protocol.d.ts",
+  "dependencies": {
+    "@cocos/creator-types": "^3.8.6"
+  },
   "scripts": {
     "build": "tsc",
     "test:only": "node --test \"test/**/*.test.mjs\""

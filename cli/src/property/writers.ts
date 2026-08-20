@@ -4,7 +4,7 @@ import {
 } from './kind';
 import { projectDescriptor, projectValue } from './readers';
 import type { DriverClient } from '../driver-client';
-import type { WriteReport } from '@cocos-cli/shared';
+import type { PropertyDump, WriteReport } from '@cocos-cli/shared';
 
 export interface ReferenceOptions {
     targetComponentType?: string;
@@ -47,7 +47,7 @@ export interface ClassPatch extends ClassElement {
 
 interface ChannelStep {
     path: string;
-    dump: unknown;
+    dump: PropertyDump;
 }
 
 interface ReadCheck {
@@ -141,23 +141,34 @@ function show(value: unknown): string {
 
 // ----- Read-back through the editor dump ---------------------------------------------------
 
+async function componentOf(target: WriteTarget, ctx: DriverClient): Promise<unknown> {
+    const node = await ctx.editor.scene.queryNode(target.nodeUuid);
+    const components = node && node.__comps__;
+    return components ? components[target.componentIndex] : undefined;
+}
+
+function dumpMember(holder: unknown, key: string): unknown {
+    const wrapped = holder && typeof holder === 'object' ? (holder as { value?: unknown }).value : undefined;
+    return wrapped && typeof wrapped === 'object' ? (wrapped as Record<string, unknown>)[key] : undefined;
+}
+
 export async function readBack(target: WriteTarget, ctx: DriverClient, property?: string): Promise<unknown> {
-    const node = await ctx.editor.scene.queryNode(target.nodeUuid) as any;
-    const component = node && node.__comps__ && node.__comps__[target.componentIndex];
+    const component = await componentOf(target, ctx);
     const segments = (property === undefined ? target.propertyPath : property).split('.');
-    let current: any = component && component.value && component.value[segments[0]];
+    let current = dumpMember(component, segments[0]);
     for (let index = 1; index < segments.length && current !== undefined && current !== null; index++) {
-        current = current.value ? current.value[segments[index]] : undefined;
+        current = dumpMember(current, segments[index]);
     }
     if (current === undefined || current === null) return undefined;
     return isDumpDescriptor(current) ? projectDescriptor(current) : projectValue(kindOf(target), current);
 }
 
 export async function componentCid(target: WriteTarget, ctx: DriverClient): Promise<string | undefined> {
-    const node = await ctx.editor.scene.queryNode(target.nodeUuid) as any;
-    const component = node && node.__comps__ && node.__comps__[target.componentIndex];
+    const component = await componentOf(target, ctx) as
+        { __type__?: unknown; cid?: unknown; type?: unknown } | undefined;
     if (!component) return undefined;
-    return component.__type__ || component.cid || component.type || undefined;
+    const named = component.__type__ || component.cid || component.type;
+    return typeof named === 'string' ? named : undefined;
 }
 
 // ----- The channels ------------------------------------------------------------------------
@@ -167,7 +178,7 @@ async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: Driver
     let landed = 0;
     for (const step of plan.steps) {
         try {
-            await ctx.editor.scene.setProperty({ uuid: target.nodeUuid, path: step.path, dump: step.dump as any });
+            await ctx.editor.scene.setProperty({ uuid: target.nodeUuid, path: step.path, dump: step.dump });
             landed++;
         } catch (error) {
             refused.push(`${step.path}: ${messageOf(error)}`);
@@ -696,7 +707,7 @@ async function writeReference(target: WriteTarget, value: unknown, ctx: DriverCl
 
     let live = false;
     try {
-        await ctx.editor.scene.setProperty({ uuid: target.nodeUuid, path, dump } as any);
+        await ctx.editor.scene.setProperty({ uuid: target.nodeUuid, path, dump });
     } catch (error) {
         const refusal = messageOf(error);
         const direct = await ctx.scene.call('applyComponentReference', args);

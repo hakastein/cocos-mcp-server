@@ -1,3 +1,5 @@
+import type { EditorMethodName } from './editor-contract';
+
 export const EDITOR_METHODS = [
     'scene.querySceneReady', 'scene.queryDirty', 'scene.queryNodeTree', 'scene.queryNode',
     'scene.createNode', 'scene.removeNode', 'scene.duplicateNode', 'scene.setParent',
@@ -32,6 +34,11 @@ export const SCENE_METHODS = [
 export type EditorMethod = typeof EDITOR_METHODS[number];
 export type SceneMethod = typeof SCENE_METHODS[number];
 
+/** Drift either way is invisible at runtime: an unlisted method is unreachable, an undeclared one unimplemented. */
+type Exhaustive<T extends never> = T;
+type _ListedAreDeclared = Exhaustive<Exclude<EditorMethod, EditorMethodName>>;
+type _DeclaredAreListed = Exhaustive<Exclude<EditorMethodName, EditorMethod>>;
+
 export const ALL_METHODS: readonly string[] = [
     ...EDITOR_METHODS.map(name => `editor.${name}`),
     ...SCENE_METHODS.map(name => `scene.${name}`)
@@ -51,6 +58,13 @@ export interface Hello {
     surfaceChecksum: string;
 }
 
+export type {
+    EditorMethods, EditorMethodName, EditorSceneMethods, EditorAssetDbMethods,
+    EditorBuilderMethods, EditorProjectMethods,
+    SceneScriptCall, SceneNodeTree, BuildTask, BuildTaskOptions, BuildTasksInfo,
+    NodeDump, PropertyDump, PropertyWriteOptions
+} from './editor-contract';
+export type { Driver, SceneFacade } from './driver';
 export {
     PathResolved, PathResolution, PathIndexNode, PathIndex,
     normalizePath, siblingLabels, buildPathIndex, resolvePathInIndex

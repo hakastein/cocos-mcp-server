@@ -57,10 +57,13 @@ driver                 driver/src/         88 native primitives, no logic of its
 scene script           driver/src/scene/   the only place `cc.*` exists
 ```
 
-`shared/` holds the types and pure logic both sides need: the scene contract (`SceneMethods`,
-`WriteReport`, `SceneResult`), the list of all 88 methods and the check that gates them
+`shared/` holds the types and pure logic both sides need: the whole driver seam (`Driver` =
+`EditorMethods` + `SceneFacade`, in `driver.ts` over `editor-contract.ts` and `scene-contract.ts`),
+`WriteReport` and `SceneResult`, the list of all 88 methods and the check that gates them
 (`protocol.ts`), the handshake shape (`Hello`), the channel address (`pipe-name.ts`), node-path
 parsing, and serialized-value comparison (`serialized-diff.ts`, `reference-projection.ts`).
+Two adapters satisfy `Driver`: `driver/src/editor-api.ts` over `Editor.Message`, and
+`cli/src/driver-client.ts` over JSON-RPC.
 
 **Key constraint:** engine APIs (`cc.*`) exist only in the scene script context. Anything that needs
 them goes through `scene.*`, never through `editor.*`.
@@ -80,20 +83,22 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 
 | File | Role |
 |------|------|
-| `shared/src/protocol.ts` | `EDITOR_METHODS`/`SCENE_METHODS` — the 88-method list that is the driver's whole reachable surface; `isKnownMethod`; the handshake `Hello` shape |
+| `shared/src/protocol.ts` | `EDITOR_METHODS`/`SCENE_METHODS` — the 88-method list that is the driver's whole reachable surface; `isKnownMethod`; the handshake `Hello` shape; the two `Exhaustive` aliases that stop the list and `EditorMethods` from drifting apart |
+| `shared/src/editor-contract.ts` | `EditorMethods` — the 58 `editor.*` signatures, parameters and results taken from Creator's `EditorMessageMaps` so they cannot drift from it; the handful that deviate are `Answering<>` or written out, each saying why |
+| `shared/src/driver.ts` | `Driver` — `EditorMethods` and `SceneFacade` as one seam |
 | `shared/src/pipe-name.ts` | project path → channel address, computed identically by both sides |
 | `shared/src/scene-contract.ts` | `SceneMethods`, `WriteReport`, `SceneResult` — the typed contract with the scene script |
 | `driver/src/main.ts` | extension entry: `load`/`unload`, starts and stops the `PipeServer`; also answers the panel's IPC (`openPanel`, `getDriverStatus`, `updateSettings`) |
 | `driver/src/pipe-server.ts` | the channel server: one request at a time (`p-queue`), the bracket gate that blocks other connections while one holds an open undo bracket, `hello`'s `surfaceChecksum` |
 | `driver/src/method-table.ts` | resolves a dotted method name to a callable, refusing anything `isKnownMethod` does not know |
-| `driver/src/editor-api.ts` | every `Editor.Message` call, typed over `EditorMessageMaps` |
+| `driver/src/editor-api.ts` | every `Editor.Message` call, typed over `EditorMessageMaps`; `implements EditorMethods`, so a drift from the shared contract is a compile error |
 | `driver/src/scene-script-client.ts` | `SceneScriptClient` — wraps `editor.scene.executeSceneScript`, typed by `SceneMethods`; what `method-table.ts` calls for every `scene.*` request |
 | `driver/src/scene/` | the scene script; `index.ts` assembles `SceneMethods` from `dump`/`node-ops`/`component-ops`/`property-write`/`prefab-ops`/`query`, with `engine.ts` holding the helpers they share |
 | `driver/src/panels/default/index.ts` | the Vue settings panel — status and `enableDebugLog`, over the IPC `main.ts` answers, not over the pipe |
 | `cli/src/main.ts` | the command tree (`buildProgram`), the entry point `bin/cocos.js` runs |
 | `cli/src/discovery.ts` | enumerates channels, probes each with `hello`, `selectInstance` narrows by `--project` |
 | `cli/src/resolve.ts` | `resolveClient` — discovery, selection and connect, in the shape every command's `resolve` thunk needs |
-| `cli/src/driver-client.ts` | `DriverClient` — the `editor.*`/`scene.*` facades over JSON-RPC; `editor` is generated from `EDITOR_METHODS`, `scene.call` is typed by `SceneMethods` |
+| `cli/src/driver-client.ts` | `DriverClient implements Driver` — the `editor.*`/`scene.*` facades over JSON-RPC; `editor` is generated from `EDITOR_METHODS` and typed by `EditorMethods`, `scene.call` by `SceneMethods` |
 | `cli/src/commands/shared.ts` | `withClient` (resolve → run → present → close) and `emit`, the one place command output touches `stdout`/`stderr`; plus `unwrap` (`SceneResult<T>` → value or thrown error) |
 | `cli/src/undo-bracket.ts` | `withUndoBracket` — one write wrapped in one undo step, `undoNote` when the editor refused or left it open |
 | `cli/src/node-snapshot.ts` | the editor's descriptor-wrapped node dump projected to what a write reads back |
@@ -256,7 +261,7 @@ Both kinds are gated by the same list: `shared/src/protocol.ts`'s `EDITOR_METHOD
 `driver/src/method-table.ts`'s `resolveMethod` refuses anything `isKnownMethod` does not recognize —
 a primitive implemented but left off this list is unreachable from the CLI. `cli/src/driver-client.ts`'s
 `editor` facade is generated by iterating `EDITOR_METHODS`, so `client.editor.<group>.<method>` exists
-on the CLI side as soon as the name is listed, with no further CLI-side code required.
+on the CLI side as soon as the name is listed and declared, with no further CLI-side code required.
 
 **`editor.*` (a call `Editor.Message` already answers).**
 
@@ -268,7 +273,13 @@ on the CLI side as soon as the name is listed, with no further CLI-side code req
    resolve through the map's index signature rather than a declared entry, so their types are
    asserted, not proven. `project.profile` is not a message at all — it reads `Editor.Profile`
    directly and can throw synchronously.
-3. Add `'group.method'` to `EDITOR_METHODS` in `shared/src/protocol.ts`.
+3. Declare it in the matching group of `EditorMethods` (`shared/src/editor-contract.ts`) as
+   `Message<'pkg', 'message-name'>`, which takes its parameters and its result from Creator's own
+   map. `Answering<'pkg', 'message-name', R>` keeps the parameters and replaces the result, for a
+   message whose declared result is wrong; a full signature written out is for one that does not
+   forward verbatim, and it says why.
+4. Add `'group.method'` to `EDITOR_METHODS` in `shared/src/protocol.ts`. Steps 3 and 4 are checked
+   against each other — a name in one and not the other stops `protocol.ts` compiling.
 
 **`scene.*` (needs `cc.*`).** The scene script is a separate bundle (`driver/src/scene/index.ts`, its
 own `tsup` entry, loaded by the scene worker), and these places must agree:

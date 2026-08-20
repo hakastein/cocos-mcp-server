@@ -77,8 +77,8 @@ function spellingCandidates(type: string): string[] {
 }
 
 export async function queryComponents(client: DriverClient, nodeUuid: string): Promise<ComponentDump[]> {
-    const node = await client.editor.scene.queryNode(nodeUuid) as { __comps__?: ComponentDump[] };
-    return (node && node.__comps__) || [];
+    const node = await client.editor.scene.queryNode(nodeUuid);
+    return ((node && node.__comps__) as ComponentDump[] | undefined) || [];
 }
 
 /** Registered class names — `cc.MeshRenderer`, `GameBootstrap` — the way every other subcommand

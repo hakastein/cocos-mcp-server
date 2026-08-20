@@ -2,18 +2,12 @@ import * as net from 'net';
 import split2 from 'split2';
 import { JSONRPCClient } from 'json-rpc-2.0';
 import { EDITOR_METHODS } from '@cocos-cli/shared';
-import type { SceneMethods } from '@cocos-cli/shared';
+import type { Driver, EditorMethods, SceneFacade, SceneMethods } from '@cocos-cli/shared';
 
-export interface SceneFacade {
-    call<K extends keyof SceneMethods>(
-        method: K, ...args: Parameters<SceneMethods[K]>
-    ): Promise<Awaited<ReturnType<SceneMethods[K]>>>;
-}
+export type { EditorMethods, SceneFacade };
 
-export type EditorFacade = Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>;
-
-export class DriverClient {
-    readonly editor: EditorFacade;
+export class DriverClient implements Driver {
+    readonly editor: EditorMethods;
     readonly scene: SceneFacade;
     private isClosed = false;
 
@@ -21,13 +15,14 @@ export class DriverClient {
         private readonly socket: net.Socket,
         private readonly rpc: JSONRPCClient
     ) {
-        const editor: EditorFacade = {};
+        const groups: Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>> = {};
         for (const name of EDITOR_METHODS) {
             const [group, method] = name.split('.');
-            editor[group] = editor[group] || {};
-            editor[group][method] = (...args: unknown[]) => Promise.resolve(this.rpc.request(`editor.${name}`, args));
+            groups[group] = groups[group] || {};
+            groups[group][method] = (...args: unknown[]) => Promise.resolve(this.rpc.request(`editor.${name}`, args));
         }
-        this.editor = editor;
+        // The loop covers every member: protocol.ts stops compiling if list and interface diverge.
+        this.editor = groups as unknown as EditorMethods;
         this.scene = {
             call: <K extends keyof SceneMethods>(method: K, ...args: Parameters<SceneMethods[K]>) =>
                 Promise.resolve(this.rpc.request(`scene.${method}`, args)) as

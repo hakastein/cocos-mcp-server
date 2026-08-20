@@ -8,7 +8,6 @@ import type {
     CreateNodeOptions,
     CutNodeOptions,
     ExecuteComponentMethodOptions,
-    INode,
     MoveArrayOptions,
     PasteNodeOptions,
     QueryClassesOptions,
@@ -19,14 +18,12 @@ import type {
     ResetNodeOptions,
     SetPropertyOptions,
 } from '@cocos/creator-types/editor/packages/scene/@types/public';
+import type {
+    BuildTask, BuildTaskOptions, BuildTasksInfo, EditorMethods, NodeDump,
+    PropertyWriteOptions, SceneNodeTree, SceneScriptCall
+} from '@cocos-cli/shared';
 
-export type { EditorAssetInfo, AssetOperationOption, INode };
-
-export interface SceneScriptCall {
-    name: string;
-    method: string;
-    args: unknown[];
-}
+export type { EditorAssetInfo, AssetOperationOption };
 
 export class EditorRequestError extends Error {
     readonly pkg: string;
@@ -42,44 +39,7 @@ export class EditorRequestError extends Error {
     }
 }
 
-/** What `scene:query-node-tree` actually answers; the message map types it as the dump-shaped INode. */
-export interface SceneNodeTree {
-    uuid: string;
-    name?: string;
-    type?: string;
-    active?: boolean;
-    children?: SceneNodeTree[];
-}
-
-/** `IBuildTaskOption` ships outside the public typings; the fields the bridge reads by name. */
-export interface BuildTaskOptions {
-    platform?: string;
-    taskId?: string;
-    taskName?: string;
-    debug?: boolean;
-    buildPath?: string;
-    outputName?: string;
-    packages?: Record<string, any>;
-    [option: string]: any;
-}
-
-export interface BuildTask {
-    id: string | number;
-    state?: string;
-    progress?: number;
-    message?: string;
-    detailMessage?: string;
-    time?: string | number;
-    options?: BuildTaskOptions;
-    taskName?: string;
-}
-
-export interface BuildTasksInfo {
-    list?: BuildTask[];
-    free?: boolean;
-}
-
-export class EditorApi {
+export class EditorApi implements EditorMethods {
     readonly scene = {
         querySceneReady: (): Promise<boolean> =>
             this.request('scene', 'query-is-ready'),
@@ -90,23 +50,23 @@ export class EditorApi {
         queryNodeTree: (): Promise<SceneNodeTree | null> =>
             this.request('scene', 'query-node-tree') as unknown as Promise<SceneNodeTree | null>,
 
-        queryNode: (uuid: string): Promise<INode | null> =>
-            this.request('scene', 'query-node', uuid) as unknown as Promise<INode | null>,
+        queryNode: (uuid: string): Promise<NodeDump | null> =>
+            this.request('scene', 'query-node', uuid) as unknown as Promise<NodeDump | null>,
 
         createNode: (options: CreateNodeOptions): Promise<string | string[]> =>
-            this.request('scene', 'create-node', options) as unknown as Promise<string | string[]>,
+            this.request('scene', 'create-node', options),
 
         removeNode: (options: RemoveNodeOptions): Promise<void> =>
             this.request('scene', 'remove-node', options),
 
         duplicateNode: (uuids: string | string[]): Promise<string | string[]> =>
-            this.request('scene', 'duplicate-node', uuids) as unknown as Promise<string | string[]>,
+            this.request('scene', 'duplicate-node', uuids),
 
         setParent: (options: CutNodeOptions): Promise<string[]> =>
             this.request('scene', 'set-parent', options),
 
-        setProperty: (options: SetPropertyOptions): Promise<boolean> =>
-            this.request('scene', 'set-property', options),
+        setProperty: (options: PropertyWriteOptions): Promise<boolean> =>
+            this.request('scene', 'set-property', options as unknown as SetPropertyOptions),
 
         resetProperty: (options: SetPropertyOptions): Promise<boolean> =>
             this.request('scene', 'reset-property', options),
@@ -199,13 +159,13 @@ export class EditorApi {
             this.request('asset-db', 'query-asset-meta', uuidOrUrl) as unknown as
                 Promise<Record<string, any> | null>,
 
-        queryAssets: (query: QueryAssetsOption): Promise<EditorAssetInfo[]> =>
+        queryAssets: (query?: QueryAssetsOption): Promise<EditorAssetInfo[]> =>
             this.request('asset-db', 'query-assets', query),
 
         queryReady: (): Promise<boolean> =>
             this.request('asset-db', 'query-ready'),
 
-        createAsset: (url: string, content: string | null, opts?: AssetOperationOption): Promise<EditorAssetInfo | null> =>
+        createAsset: (url: string, content: string | Buffer | null, opts?: AssetOperationOption): Promise<EditorAssetInfo | null> =>
             opts === undefined
                 ? this.request('asset-db', 'create-asset', url, content)
                 : this.request('asset-db', 'create-asset', url, content, opts),
@@ -228,7 +188,7 @@ export class EditorApi {
         deleteAsset: (url: string): Promise<EditorAssetInfo | null> =>
             this.request('asset-db', 'delete-asset', url),
 
-        saveAsset: (url: string, content: string): Promise<EditorAssetInfo | null> =>
+        saveAsset: (url: string, content: string | Buffer): Promise<EditorAssetInfo | null> =>
             this.request('asset-db', 'save-asset', url, content),
 
         saveAssetMeta: (urlOrUuid: string, content: string): Promise<EditorAssetInfo | null> =>

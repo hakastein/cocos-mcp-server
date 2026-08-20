@@ -125,13 +125,13 @@ export async function nodeSet(
     const report: NodeWriteReport = { target, applied: [], warnings: [], nodeType };
 
     const { undoNote } = await withUndoBracket(client, uuid, async () => {
-        const scalars: Array<[NodeProperty, unknown]> = [];
+        const scalars: Array<[NodeProperty, string | boolean | number]> = [];
         if (spec.name !== undefined) scalars.push(['name', spec.name]);
         if (spec.active !== undefined) scalars.push(['active', spec.active]);
         if (spec.layer !== undefined) scalars.push(['layer', spec.layer]);
 
         for (const [property, value] of scalars) {
-            await client.editor.scene.setProperty({ uuid, path: property, dump: { value } as never });
+            await client.editor.scene.setProperty({ uuid, path: property, dump: { value } });
             let observed: unknown;
             const landed = await settle(async () => {
                 observed = nodePropertyOf(await snapshotOf(client, uuid), property);
@@ -152,7 +152,7 @@ export async function nodeSet(
             if (normalized.warning) report.warnings.push(normalized.warning);
 
             await client.editor.scene.setProperty({
-                uuid, path: kind, dump: { type: 'cc.Vec3', value: normalized.value } as never
+                uuid, path: kind, dump: { type: 'cc.Vec3', value: normalized.value }
             });
             let observed = current[kind];
             const landed = await settle(async () => {

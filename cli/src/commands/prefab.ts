@@ -86,7 +86,7 @@ export async function prefabInstantiate(
         payload.dump = { position: { value: { x, y, z } } };
     }
 
-    const created = await client.editor.scene.createNode(payload as never);
+    const created = await client.editor.scene.createNode(payload);
     const uuid = Array.isArray(created) ? created[0] : created;
     if (typeof uuid !== 'string' || !uuid) {
         throw new Error(`create-node produced no node for '${url}' (asset ${target.uuid})`
