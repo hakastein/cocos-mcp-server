@@ -319,9 +319,17 @@ A change in `cli/`:
 2. Run the affected command(s) against a real open editor and read the answer — don't assume it.
 
 A change in `driver/` (this includes a change to `shared/`, since `driver`'s `tsup` build inlines
-`@cocos-cli/shared` into its bundle) needs one more step: **toggle the extension off and on by hand**
-in the editor's Extension Manager. Nothing else busts Node's require cache — rebuilding does not, and
-nothing on the channel itself does either, since the driver process is what would need to reload.
+`@cocos-cli/shared` into its bundle) needs one more step: **restart the editor by hand**. Toggling
+the extension off and on in the Extension Manager leaves the old bundle running — checked live
+2026-08-20 (PLY-9): after `npm run build` and a toggle, `hello`'s `surfaceChecksum` still answered
+the old value and a freshly added method answered `Method not found`. The scene worker caches
+`driver/src/scene/` the same way, and neither the rebuild nor the toggle busts that one either. The
+driver process is what has to reload, and only a restart of the editor reloads it.
+
+Then check that the restart carried the new bundle. `cocos instances` prints the editor's pid, which
+is a different number after a restart; when the change adds or removes a method,
+`cocos instances --json` also carries `surfaceChecksum`, which moves with the method list. When the
+change touches neither list, the changed behaviour itself is the check.
 
 A write-path change is only checked once the scene has been saved and Ctrl+Z tried.
 
