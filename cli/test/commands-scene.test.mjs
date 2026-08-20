@@ -8,7 +8,7 @@ const treeOutput = async (...args) => present(await sceneTree(...args));
 
 const driver = (answers) => ({
     editor: { scene: {} },
-    scene: { call: async (method) => answers[method] ?? { success: false, error: `нет ответа на ${method}` } }
+    scene: { call: async (method) => answers[method] ?? { success: false, error: `no answer for ${method}` } }
 });
 
 const DUMP = {
@@ -23,27 +23,27 @@ const DUMP = {
     }
 };
 
-test('дерево строится из дампа и сообщает число узлов', async () => {
+test('the tree is built from the dump and reports the node count', async () => {
     const output = await treeOutput(driver({ dumpSceneNodes: DUMP }), {});
-    assert.equal(output.stderr, 'узлов: 2');
+    assert.equal(output.stderr, 'nodes: 2');
     assert.match(output.stdout, /Canvas {2}\[Canvas\]/);
     assert.match(output.stdout, /Bg {2}\[Sprite\]/);
 });
 
-test('отказ scene-скрипта поднимается как ошибка с его же текстом', async () => {
+test('a refusal from the scene script surfaces as an error carrying its own text', async () => {
     await assert.rejects(
-        () => sceneTree(driver({ dumpSceneNodes: { success: false, error: 'сцена не открыта' } }), {}),
-        /сцена не открыта/);
+        () => sceneTree(driver({ dumpSceneNodes: { success: false, error: 'no scene is open' } }), {}),
+        /no scene is open/);
 });
 
-test('дамп без узлов не притворяется деревом', async () => {
+test('a dump with no nodes does not pretend to be a tree', async () => {
     const output = await treeOutput(
         driver({ dumpSceneNodes: { success: true, data: { nodes: [] } } }), {});
-    assert.equal(output.stderr, 'узлов: 0');
-    assert.match(output.stdout, /пусто|нет узлов/i);
+    assert.equal(output.stderr, 'nodes: 0');
+    assert.match(output.stdout, /empty|no nodes/i);
 });
 
-test('info называет сцену и число узлов одной строкой', async () => {
+test('info names the scene and its node count on one line', async () => {
     const text = present(await sceneInfo(driver({
         getCurrentSceneInfo: { success: true, data: { name: 'main', uuid: 'u1', nodeCount: 42 } }
     }))).stdout;

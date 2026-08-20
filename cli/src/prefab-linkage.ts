@@ -1,7 +1,7 @@
 import type { PrefabLinkageReport } from '@cocos-cli/shared';
 import type { Verdict } from './render/verdict';
 
-/** Единственный тип ассета, чьё создание несёт префаб-связь. */
+/** The only asset type whose creation carries a prefab link. */
 export const PREFAB_ASSET_TYPE = 'cc.Prefab';
 
 export interface CreateNodeOptions {
@@ -14,12 +14,13 @@ export interface CreateNodeOptions {
 }
 
 /**
- * `scene:create-node` передаёт `type` дословно и никогда не выводит его из uuid, а редакторский
- * `createNodeFromAsset` снимает PrefabInfo на ветке `('cc.Prefab' !== type || unlinkPrefab)`. Вызов
- * с одним `assetUuid` попадает в эту ветку и получает расплющенную копию, о чём ничто не сообщает.
+ * `scene:create-node` forwards `type` verbatim and never derives it from the uuid, while the
+ * editor's `createNodeFromAsset` strips the PrefabInfo on the branch
+ * `('cc.Prefab' !== type || unlinkPrefab)`. A call carrying `assetUuid` alone lands in that branch
+ * and gets the flat copy, with nothing said about it.
  *
- * Произвольный тип сюда не пересылается: `createNodeFromAsset` для типа вне своего списка
- * создаваемых не возвращает узла вовсе.
+ * An arbitrary type is not forwarded here: for a type outside its creatable list
+ * `createNodeFromAsset` returns no node at all.
  */
 export function applyLinkageOptions(
     options: CreateNodeOptions, assetType: string | null | undefined, unlinkPrefab: boolean
@@ -39,9 +40,9 @@ export interface LinkageVerdict {
 }
 
 /**
- * «Живой узел связан» и «сохранение эту связь донесёт» — разные вопросы: PrefabInfo, который держит
- * рантайм, а сериализатор выбрасывает, это связь, умирающая на сохранении. Второй вопрос остаётся
- * неотвеченным, а не отвеченным «нет», когда до сериализатора не достучались.
+ * `the live node is linked` and `a save carries that link` are two questions: a PrefabInfo the
+ * runtime holds and the serializer drops is a link that dies on save. The second question stays
+ * unanswered rather than answered `no` when the serializer could not be reached.
  */
 export function linkageVerdict(
     linkage: PrefabLinkageReport, assetType: string | null | undefined, unlinkPrefab: boolean
@@ -50,8 +51,8 @@ export function linkageVerdict(
         return {
             verdict: 'ok',
             detail: unlinkPrefab
-                ? 'связи нет по заказу: --unlink, узел — плоская копия, правки префаба до неё не дойдут'
-                : `связи не ожидалось: ассет ${assetType || 'неизвестного типа'}, а не ${PREFAB_ASSET_TYPE}`
+                ? 'no link by request: --unlink, the node is a flat copy, and prefab edits will not reach it'
+                : `no link was expected: the asset is ${assetType || 'of an unknown type'}, not ${PREFAB_ASSET_TYPE}`
         };
     }
     return establishedLinkage(linkage);
@@ -61,32 +62,32 @@ export function establishedLinkage(linkage: PrefabLinkageReport): LinkageVerdict
     if (!linkage.linked) {
         return {
             verdict: 'FAILED',
-            detail: 'узел создан, но PrefabInfo на нём нет: сцена за ассетом не следит, в сохранённой '
-                + 'сцене блока _prefab не будет, правки префаба до узла не дойдут. Удали узел и заведи '
-                + 'запись о пробеле, а не работай с копией'
+            detail: 'the node was created but carries no PrefabInfo: the scene does not track the asset, '
+                + 'the saved scene will hold no _prefab block, and prefab edits will not reach the node. '
+                + 'Delete the node and record the gap rather than working with the copy'
         };
     }
 
     if (!linkage.persistenceChecked) {
         return {
             verdict: 'UNVERIFIED',
-            detail: `PrefabInfo на живом узле есть, против сохранённой формы не сверено (${
-                linkage.persistenceReason || 'сериализатор недоступен'})`
+            detail: `the live node carries PrefabInfo, unchecked against the saved form (${
+                linkage.persistenceReason || 'the serializer is unavailable'})`
         };
     }
 
     if (!linkage.persisted) {
         return {
             verdict: 'UNPERSISTED',
-            detail: 'PrefabInfo на живом узле есть, а сериализатор редактора его не выдаёт: сохранение '
-                + 'сцены связь уронит, и в файле узел окажется плоской копией'
+            detail: 'the live node carries PrefabInfo and the editor serializer does not emit it: saving '
+                + 'the scene drops the link, and in the file the node ends up a flat copy'
         };
     }
 
     return {
         verdict: 'ok',
-        detail: `связан с ${linkage.asset || 'ассетом'}  fileId=${linkage.fileId || 'нет'}`
-            + `  ${linkage.instanceRoot ? 'корень инстанса' : 'внутри инстанса'}  persisted=true`
+        detail: `linked to ${linkage.asset || 'an asset the report did not name'}  fileId=${linkage.fileId || 'none'}`
+            + `  ${linkage.instanceRoot ? 'instance root' : 'inside an instance'}  persisted=true`
     };
 }
 
@@ -95,7 +96,6 @@ export interface PrefabSavePath {
     name: string;
 }
 
-/** `savePath` принимается и полным адресом `.prefab`, и папкой. */
 export function prefabSavePath(savePath: string, nodeName: string, given?: string): PrefabSavePath {
     const trimmed = savePath.replace(/\/+$/, '');
     if (/\.prefab$/i.test(trimmed)) {
@@ -103,6 +103,6 @@ export function prefabSavePath(savePath: string, nodeName: string, given?: strin
         return { url: trimmed, name: given || base };
     }
     const name = given || nodeName;
-    if (!name) throw new Error(`${savePath} — папка, а имя префаба взять неоткуда; задай --name`);
+    if (!name) throw new Error(`${savePath} is a folder and there is nowhere to take the prefab name from; pass --name`);
     return { url: `${trimmed}/${name}.prefab`, name };
 }

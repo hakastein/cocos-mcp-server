@@ -1,9 +1,9 @@
 import type { PropertyKind } from './kind';
 
 /**
- * Cocos сжимает uuid узла и компонента ровно в 22 знака стандартного base64 (`A-Za-z0-9+/`),
- * а uuid ассета остаётся полным, с дефисами. Имя узла попадает в тот же алфавит и ту же длину,
- * поэтому одной длины мало — та же пара условий, что и в `resolveNode`.
+ * Cocos compresses a node or component uuid to exactly 22 chars of standard base64 (`A-Za-z0-9+/`),
+ * while an asset uuid stays full, with dashes. A node name lands in that same alphabet and length,
+ * so length alone is not enough — the same pair of conditions as in `resolveNode`.
  */
 const COMPRESSED_UUID = /^[A-Za-z0-9+/]{22}$/;
 const ASSET_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(@[0-9a-fA-F]+)?$/;
@@ -15,16 +15,15 @@ export function isReferenceKind(kind: PropertyKind): boolean {
     return REFERENCE_KINDS.indexOf(kind) !== -1;
 }
 
-/** Какой поиск превращает написание в uuid. */
 export type TargetSpelling =
     | { kind: 'uuid'; uuid: string }
     | { kind: 'assetUrl'; url: string }
     | { kind: 'nodePath'; path: string };
 
 export interface ReferenceRequest {
-    /** Пусто — каллер попросил очистить поле. */
+    /** Empty means the caller asked for the field to be cleared. */
     targets: TargetSpelling[];
-    /** Каллер написал массив; какой формы поле на самом деле, отвечает сцена, а не эта разметка. */
+    /** The caller wrote an array; what shape the field actually has is the scene's answer, not this parse's. */
     array: boolean;
 }
 
@@ -42,13 +41,13 @@ function targetOf(item: unknown): TargetSpelling | { error: string } {
         const uuid = typeof holder.uuid === 'string' ? holder.uuid : holder.__uuid__;
         if (typeof uuid === 'string' && uuid) return { kind: 'uuid', uuid };
     }
-    return { error: `ссылка задаётся путём узла, db://-путём ассета или uuid; получено ${JSON.stringify(item)}` };
+    return { error: `a reference is spelled as a node path, an asset db:// url or a uuid; got ${JSON.stringify(item)}` };
 }
 
 /**
- * Разбор `--value` для ссылочного свойства. Ничего не ищет и ни к чему не обращается: решает
- * только, чем окажется каждое написание, чтобы неразрешимое значение отваливалось до записи, а не
- * после того, как оно уже обнулило слот.
+ * Parses `--value` for a reference property. It looks nothing up and reaches nothing: it decides
+ * only what each spelling will turn out to be, so an unresolvable value is refused before the write
+ * rather than after it has already emptied the slot.
  */
 export function referenceRequest(value: unknown): ReferenceRequest | { error: string } {
     if (value === null || value === undefined || value === '') return { targets: [], array: false };

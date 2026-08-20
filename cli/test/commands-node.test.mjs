@@ -1,7 +1,7 @@
 /**
- * Адресация узла путём — единственный способ, которым агент называет узлы, поэтому неоднозначный
- * путь обязан быть громким отказом. Создание проверяется по составу вызовов: скобка undo
- * охватывает и структурный шаг, и настройку.
+ * Addressing a node by path is the only way an agent names nodes, so an ambiguous path has to be a
+ * loud refusal. Creation is checked by the sequence of calls: the undo bracket covers both the
+ * structural step and the setup.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,9 +29,9 @@ const TREE = {
     }
 };
 
-// Состав компонентов здесь стейтфул: `node get` читает его через getNodeInfo, addComponent —
-// через дамп узла, где класс назван зарегистрированным именем. `accept` решает, регистрирует ли
-// движок данное написание — по умолчанию любое.
+// The component list here is stateful: `node get` reads it through getNodeInfo and addComponent
+// through the node dump, where a class carries its registered name. `accept` decides whether the
+// engine registers a given spelling — by default any of them.
 const FAST = { timeoutMs: 30, intervalMs: 5 };
 
 const recorder = (overrides = {}) => {
@@ -86,38 +86,38 @@ const recorder = (overrides = {}) => {
     };
 };
 
-test('путь превращается в uuid через scene-скрипт', async () => {
+test('a path becomes a uuid through the scene script', async () => {
     assert.equal(await resolveNode(recorder(), 'Canvas/Bg'), 'u_bg');
 });
 
-test('неоднозначный путь — отказ, называющий обоих кандидатов', async () => {
+test('an ambiguous path is refused, naming both candidates', async () => {
     await assert.rejects(() => resolveNode(recorder(), 'Canvas/Btn'), /Canvas\/Btn/);
 });
 
-test('несуществующий путь — отказ, называющий его самого', async () => {
+test('a path that exists nowhere is refused, quoted back', async () => {
     await assert.rejects(() => resolveNode(recorder(), 'Nope'), /Nope/);
 });
 
-test('уже готовый uuid проходит без обращения к сцене', async () => {
+test('a uuid already in hand passes without reaching the scene', async () => {
     const driver = recorder();
-    const uuid = 'f0rQc7yj9Gpqltg+gTq5ZA'; // форма настоящего сжатого uuid Cocos: 22 base64-символа
+    const uuid = 'f0rQc7yj9Gpqltg+gTq5ZA'; // the shape of a real compressed Cocos uuid: 22 base64 chars
     assert.equal(await resolveNode(driver, uuid), uuid);
     assert.equal(driver.calls.length, 0);
 });
 
-test('имя узла той же длины и алфавита, что uuid, всё равно разрешается путём', async () => {
+test('a node name of the same length and alphabet as a uuid still resolves as a path', async () => {
     const driver = recorder();
     assert.equal(await resolveNode(driver, 'Reference-Image-Canvas'), 'u_ric');
     assert.ok(driver.calls.some(call => call[0] === 'resolveNodePaths'));
 });
 
-test('get отдаёт одну строку с именем, состоянием и компонентами', async () => {
+test('get answers one line with the name, the state and the components', async () => {
     const text = await printed(nodeGet(recorder(), 'Canvas/Bg'));
     assert.match(text, /Bg/);
     assert.match(text, /Sprite/);
 });
 
-test('создание с компонентом укладывается в одну скобку undo', async () => {
+test('creating with a component fits in one undo bracket', async () => {
     const driver = recorder();
     await nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Sprite'] }, FAST);
     const names = driver.calls.map(c => c[0]);
@@ -128,28 +128,28 @@ test('создание с компонентом укладывается в о�
     assert.ok(names.includes('createComponent'));
 });
 
-test('отчёт называет зарегистрированное имя компонента, а не то, что попросили (L3)', async () => {
+test('the report names the registered component name rather than the one asked for (L3)', async () => {
     const driver = recorder({ acceptComponent: type => type.startsWith('cc.') });
     const text = await printed(nodeCreate(
         driver, { parent: 'Canvas/Bg', name: 'New', components: ['MeshRenderer'] }, FAST));
     assert.match(text, /\[cc\.MeshRenderer\]/);
 });
 
-test('компонент, который движок так и не зарегистрировал, — отказ, а не тихий ok', async () => {
+test('a component the engine never registered is refused rather than passed off as ok', async () => {
     const driver = recorder({ acceptComponent: () => false });
     await assert.rejects(
         () => nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Nope'] }, FAST),
         /Nope/);
 });
 
-test('падение при добавлении компонента снимает скобку, а не оставляет её открытой', async () => {
+test('a failure while adding a component drops the bracket instead of leaving it open', async () => {
     const driver = recorder({ acceptComponent: () => false });
     await assert.rejects(
         () => nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Nope'] }, FAST));
     assert.ok(driver.calls.map(c => c[0]).includes('cancelRecording'));
 });
 
-test('get помечает неактивный узел и выключенный компонент как (off)', async () => {
+test('get marks an inactive node and a disabled component as (off)', async () => {
     const text = await printed(nodeGet(recorder({
         getNodeInfo: { success: true, data: { name: 'Bg', uuid: 'u_bg', active: false,
             components: [{ type: 'Sprite', enabled: false }] } }
@@ -158,15 +158,15 @@ test('get помечает неактивный узел и выключенны
     assert.match(text, /Sprite\(off\)/);
 });
 
-test('создание с позицией пишет её внутри той же скобки undo, а не после неё', async () => {
+test('creating with a position writes it inside that same undo bracket, not after it', async () => {
     const driver = recorder();
     await nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: [], pos: [1, 2, 3] });
     const names = driver.calls.map(c => c[0]);
     const beginIdx = names.indexOf('beginRecording');
     const endIdx = names.indexOf('endRecording');
     const setPropertyIdx = names.indexOf('setProperty');
-    assert.ok(setPropertyIdx > beginIdx, 'setProperty не найден после beginRecording');
-    assert.ok(setPropertyIdx < endIdx, 'setProperty оказался после endRecording — вне скобки');
+    assert.ok(setPropertyIdx > beginIdx, 'setProperty is not after beginRecording');
+    assert.ok(setPropertyIdx < endIdx, 'setProperty landed after endRecording — outside the bracket');
     const setPropertyCall = driver.calls.find(c => c[0] === 'setProperty');
     assert.deepEqual(setPropertyCall[1].dump.value, { x: 1, y: 2, z: 3 });
 });

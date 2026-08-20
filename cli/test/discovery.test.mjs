@@ -1,7 +1,7 @@
 /**
- * Выбор инстанса — единственное место, где CLI решает, с каким редактором говорить. Проверяется
- * молчаливый выбор единственного, разведение по подстроке, и две громкие неудачи: не найдено
- * ничего и найдено несколько без указания.
+ * Instance selection is the only place the CLI decides which editor to talk to. Covered here: the
+ * silent pick of the only one, telling instances apart by substring, and the two loud failures —
+ * nothing found, and several found with nothing naming one.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,54 +15,54 @@ const CYBER = hello('CyberCore', 'D:/cocos/games/CyberCore');
 const WEED = hello('tl_weedmanager1a', 'D:/cocos/games/tl_weedmanager1a');
 const WINDOWS = hello('WindowsPath', 'D:\\cocos\\games\\WindowsPath');
 
-test('единственный живой инстанс берётся без указания', () => {
+test('the only live instance is taken without being named', () => {
     const result = selectInstance([CYBER]);
     assert.equal(result.ok, true);
     assert.equal(result.chosen.project, 'CyberCore');
 });
 
-test('ни одного живого — отказ, который называет, что искали', () => {
+test('no live instance gives a refusal that names where it looked', () => {
     const result = selectInstance([]);
     assert.equal(result.ok, false);
-    assert.match(result.message, /ни одного/i);
+    assert.match(result.message, /no open/i);
 });
 
-test('несколько живых без указания — отказ со списком обоих', () => {
+test('several live instances with none named give a refusal listing both', () => {
     const result = selectInstance([CYBER, WEED]);
     assert.equal(result.ok, false);
     assert.match(result.message, /CyberCore/);
     assert.match(result.message, /tl_weedmanager1a/);
 });
 
-test('подстрока разводит инстансы и не смотрит на регистр', () => {
+test('a substring tells instances apart and ignores case', () => {
     assert.equal(selectInstance([CYBER, WEED], 'weed').chosen.project, 'tl_weedmanager1a');
     assert.equal(selectInstance([CYBER, WEED], 'CYBER').chosen.project, 'CyberCore');
 });
 
-test('подстрока матчится и по пути проекта, не только по имени', () => {
+test('a substring matches the project path too, not only the name', () => {
     assert.equal(selectInstance([CYBER, WEED], 'games/CyberCore').chosen.project, 'CyberCore');
 });
 
-test('подстрока, подходящая обоим, — отказ, а не молчаливый первый', () => {
+test('a substring matching both gives a refusal rather than the silent first', () => {
     const result = selectInstance([CYBER, WEED], 'cocos/games');
     assert.equal(result.ok, false);
-    assert.match(result.message, /несколько/i);
+    assert.match(result.message, /several/i);
 });
 
-test('подстрока, не подходящая никому, называет её саму', () => {
+test('a substring matching nothing is quoted back', () => {
     const result = selectInstance([CYBER, WEED], 'zzz');
     assert.equal(result.ok, false);
     assert.match(result.message, /zzz/);
 });
 
-test('канал, который не ответил, в кандидаты не попадает', async () => {
+test('a channel that did not answer never becomes a candidate', async () => {
     const list = () => ['cocos-cli-aaa', 'cocos-cli-bbb', 'somethingelse'];
     const probe = async (address) => (address.endsWith('aaa') ? CYBER : null);
     const found = await discover(probe, list);
     assert.deepEqual(found.map(h => h.project), ['CyberCore']);
 });
 
-test('коды выхода различают ненайденный редактор и отказавшую операцию', () => {
+test('the exit codes tell a missing editor from a failed operation', () => {
     assert.equal(EXIT.OK, 0);
     assert.equal(EXIT.FAILED, 1);
     assert.equal(EXIT.USAGE, 2);
@@ -70,7 +70,7 @@ test('коды выхода различают ненайденный редак
     assert.equal(EXIT.PROTOCOL, 4);
 });
 
-test('обратные слэши в пути кандидата нормализуются при матчинге', () => {
+test('backslashes in a candidate path are normalized while matching', () => {
     assert.equal(
         selectInstance([WINDOWS], 'D:/cocos/games/WindowsPath').chosen.project,
         'WindowsPath');

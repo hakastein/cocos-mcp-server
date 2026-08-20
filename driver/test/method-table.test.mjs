@@ -11,29 +11,29 @@ const editor = {
 };
 const scene = { call: (method) => `scene:${method}` };
 
-test('имя из пространства editor резолвится в функцию своей группы', () => {
+test('a name from the editor namespace resolves to a function of its group', () => {
     const fn = resolveMethod('editor.scene.createNode', editor, scene);
     assert.equal(typeof fn, 'function');
     assert.equal(fn(), 'created');
 });
 
-test('имя из пространства scene уходит в клиент scene-скрипта под своим именем', () => {
+test('a name from the scene namespace goes to the scene-script client under that name', () => {
     const fn = resolveMethod('scene.dumpSceneNodes', editor, scene);
     assert.equal(fn(), 'scene:dumpSceneNodes');
 });
 
-test('имени вне списка 87 не соответствует ничего', () => {
+test('a name outside the list of 87 matches nothing', () => {
     assert.equal(resolveMethod('editor.scene.deleteEverything', editor, scene), null);
     assert.equal(resolveMethod('scene.wipeProject', editor, scene), null);
     assert.equal(resolveMethod('editor.queryConfig', editor, scene), null);
 });
 
-test('обращение к прототипу не проходит, даже когда такое имя существует у объекта', () => {
+test('reaching the prototype does not get through, even when the object has such a name', () => {
     assert.equal(resolveMethod('editor.scene.constructor', editor, scene), null);
     assert.equal(resolveMethod('editor.__proto__.toString', editor, scene), null);
     assert.equal(resolveMethod('__proto__', editor, scene), null);
 });
 
-test('известное имя, для которого редактор не дал функции, тоже даёт null', () => {
+test('a known name the editor gave no function for also yields null', () => {
     assert.equal(resolveMethod('editor.scene.saveScene', { scene: {} }, scene), null);
 });

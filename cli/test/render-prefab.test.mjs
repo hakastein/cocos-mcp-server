@@ -19,43 +19,43 @@ const dump = (over = {}) => ({
     ...over
 });
 
-test('узел печатается путём и списком компонентов', () => {
+test('a node prints as its path and a component list', () => {
     assert.equal(renderPrefabDump(dump()), 'char_hero  [CharacterAnimator]');
 });
 
-test('выключенный узел помечен так же, как в дереве сцены', () => {
+test('a node switched off is marked the same way as in the scene tree', () => {
     const off = dump();
     off.nodes[0].active = false;
     assert.match(renderPrefabDump(off), /\(off\)/);
 });
 
-test('выключенный компонент назван вместе со своим состоянием', () => {
+test('a disabled component is named together with its state', () => {
     const off = dump();
     off.nodes[0].components = [component({ enabled: false })];
     assert.match(renderPrefabDump(off), /CharacterAnimator\(off\)/);
 });
 
-// Мёртвый слот — то, ради чего дамп и читают: он роняет превью на загрузке сцены.
-test('мёртвый компонент назван отдельным словом и своим cid', () => {
+// The dead slot is what the dump gets read for: it crashes preview on scene load.
+test('a dead component is named by its own word and its cid', () => {
     const dead = dump();
     dead.nodes[0].components = [component({ missing: true, className: 'cc.MissingScript', cid: '04e75MuPw1E2Y0Yv' })];
     const text = renderPrefabDump(dead);
-    assert.match(text, /МЁРТВЫЙ/);
+    assert.match(text, /DEAD/);
     assert.match(text, /04e75MuPw1E2Y0Yv/);
 });
 
-test('узел без компонентов печатается одним путём, без пустых скобок', () => {
+test('a node with no components prints as a bare path, with no empty brackets', () => {
     const bare = dump();
     bare.nodes[0].components = [];
     assert.equal(renderPrefabDump(bare), 'char_hero');
 });
 
-test('сводка молчит о мёртвых, когда их нет', () => {
-    assert.doesNotMatch(prefabDumpSummary(dump()), /МЁРТВ/);
+test('the summary stays silent about dead slots when there are none', () => {
+    assert.doesNotMatch(prefabDumpSummary(dump()), /dead/);
 });
 
-test('сводка называет число мёртвых слотов, когда они есть', () => {
-    assert.match(prefabDumpSummary(dump({ missingCount: 2 })), /МЁРТВЫХ КОМПОНЕНТОВ: 2/);
+test('the summary names the dead-slot count when there are any', () => {
+    assert.match(prefabDumpSummary(dump({ missingCount: 2 })), /dead components: 2/);
 });
 
 const override = (over = {}) => ({
@@ -75,38 +75,38 @@ const report = (overrides) => ({
     overrideCount: overrides.length, removedComponents: 0, mountedChildren: 0, overrides
 });
 
-test('инстанс без оверрайдов говорит об этом словами, а не пустой строкой', () => {
-    assert.equal(renderPrefabOverrides(report([])), 'оверрайдов нет');
+test('an instance with no overrides says so in words rather than as an empty string', () => {
+    assert.equal(renderPrefabOverrides(report([])), 'no overrides');
 });
 
-test('оверрайд печатается индексом, путём свойства, целью и значением', () => {
+test('an override prints as index, property path, target and value', () => {
     const text = renderPrefabOverrides(report([override()]));
     assert.match(text, /^0\s+_lpos\s+char_hero\/Hips\s+Vec3\s+\{"x":1/);
 });
 
-test('цель-компонент названа классом и узлом', () => {
+test('a component target is named by its class and its node', () => {
     const text = renderPrefabOverrides(report([override({
         target: { kind: 'component', name: 'char_hero', path: 'char_hero', type: 'CharacterAnimator' }
     })]));
-    assert.match(text, /CharacterAnimator на char_hero/);
+    assert.match(text, /CharacterAnimator on char_hero/);
 });
 
-// Оверрайд переживает значение, для которого записан, поэтому цель без имени должна остаться
-// адресуемой — по localID, а не превратиться в прочерк.
-test('цель, которую не удалось назвать, печатается своим localID', () => {
+// An override outlives the value it was recorded for, so a target with no name has to stay
+// addressable — by localID, rather than turning into a dash.
+test('a target that could not be named prints as its localID', () => {
     const text = renderPrefabOverrides(report([override({ target: null, localID: ['a', 'b'] })]));
     assert.match(text, /localID a\/b/);
 });
 
-test('ссылка на ассет печатается именем и uuid', () => {
+test('an asset reference prints as a name and a uuid', () => {
     const text = renderPrefabOverrides(report([override({
         valueKind: 'asset', valueType: 'SkeletalAnimationClip', assetName: 'idle', assetUuid: 'a1'
     })]));
     assert.match(text, /idle\s+a1/);
 });
 
-test('снятые компоненты и добавленные дети попадают в сводку', () => {
+test('removed components and mounted children reach the summary', () => {
     const summary = prefabOverridesSummary({ ...report([]), removedComponents: 1, mountedChildren: 2 });
-    assert.match(summary, /снятых компонентов: 1/);
-    assert.match(summary, /добавленных детей: 2/);
+    assert.match(summary, /removed components: 1/);
+    assert.match(summary, /mounted children: 2/);
 });

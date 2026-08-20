@@ -5,9 +5,9 @@ import { addComponent } from '../lib/commands/shared.js';
 
 const FAST = { timeoutMs: 30, intervalMs: 5 };
 
-// Движок регистрирует класс под тем написанием, которое принял: движковый — `cc.MeshRenderer`,
-// пользовательский — своим именем. Дамп узла отдаёт именно его, поэтому список компонентов здесь
-// хранится зарегистрированными именами.
+// The engine registers a class under the spelling it accepted: an engine one as `cc.MeshRenderer`,
+// a user one under its own name. The node dump answers exactly that, so the component list here is
+// kept as registered names.
 function makeDriver(nodeUuid, initialTypes, behavior = {}) {
     const calls = [];
     const components = new Map([[nodeUuid, [...initialTypes]]]);
@@ -46,20 +46,20 @@ function makeDriver(nodeUuid, initialTypes, behavior = {}) {
     };
 }
 
-test('компонент появился через редакторское сообщение — не alreadyPresent', async () => {
+test('a component that appeared through the editor message is not alreadyPresent', async () => {
     const driver = makeDriver('n1', [], { editorAccepts: () => true });
     const outcome = await addComponent(driver, 'n1', 'Sprite', FAST);
     assert.equal(outcome.type, 'Sprite');
     assert.equal(outcome.alreadyPresent, false);
 });
 
-test('отчёт называет зарегистрированное имя класса, а не написание из запроса', async () => {
+test('the report names the registered class name rather than the spelling from the request', async () => {
     const driver = makeDriver('n1', [], { editorAccepts: () => true });
     const outcome = await addComponent(driver, 'n1', 'cc.MeshRenderer', FAST);
     assert.equal(outcome.type, 'cc.MeshRenderer');
 });
 
-test('голое имя редактор молча игнорирует — запасной путь через scene-метод добавляет под cc.-написанием', async () => {
+test('the editor silently ignores the bare name — the scene-method fallback adds it under the cc. spelling', async () => {
     const driver = makeDriver('n1', [], {
         editorAccepts: type => type.startsWith('cc.'),
         sceneAccepts: type => type.startsWith('cc.')
@@ -71,14 +71,14 @@ test('голое имя редактор молча игнорирует — з�
     assert.ok(tried.includes('cc.MeshRenderer'));
 });
 
-test('компонент так и не появился ни под одним написанием — отказ, а не тихий ok', async () => {
+test('a component that appeared under no spelling is refused rather than passed off as ok', async () => {
     const driver = makeDriver('n1', ['Sprite'], { editorAccepts: () => false, sceneAccepts: () => false });
     await assert.rejects(
         () => addComponent(driver, 'n1', 'Nope', FAST),
         error => /Nope/.test(error.message) && /Sprite/.test(error.message));
 });
 
-test('уже на узле — не добавляется повторно, отчёт называет то, что уже есть', async () => {
+test('already on the node — not added twice, and the report names what is already there', async () => {
     const driver = makeDriver('n1', ['cc.Sprite'], {});
     const outcome = await addComponent(driver, 'n1', 'cc.Sprite', FAST);
     assert.equal(outcome.alreadyPresent, true);
@@ -86,7 +86,7 @@ test('уже на узле — не добавляется повторно, о�
     assert.ok(!driver.calls.some(c => c[0] === 'createComponent'));
 });
 
-test('уже на узле опознаётся и по голому написанию, а не только по зарегистрированному', async () => {
+test('already on the node is recognized by the bare spelling too, not only by the registered one', async () => {
     const driver = makeDriver('n1', ['cc.Sprite'], {});
     const outcome = await addComponent(driver, 'n1', 'Sprite', FAST);
     assert.equal(outcome.alreadyPresent, true);

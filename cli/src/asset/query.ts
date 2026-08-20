@@ -1,7 +1,7 @@
 /**
- * Что отвечают `asset-db:query-assets` и `asset-db:query-asset-info`, сужённое до полей, которые
- * читает CLI. Фасад `client.editor` не типизирован, а тянуть в `cli` пакет типов редактора ради
- * одного интерфейса — заводить незаявленную зависимость.
+ * What `asset-db:query-assets` and `asset-db:query-asset-info` answer, narrowed to the fields the
+ * CLI reads. The `client.editor` facade is untyped, and pulling the editor's typings package into
+ * `cli` for one interface would add an undeclared dependency.
  */
 export interface AssetRecord {
     name: string;
@@ -34,8 +34,8 @@ interface TypeFilter {
 }
 
 /**
- * Тип без единого ключа сглобил бы всю папку — так и вело себя `spriteFrame`, пока его не было в
- * таблице: спрайт-фреймами возвращался весь проект.
+ * A type with no key at all would glob the whole folder — which is how `spriteFrame` behaved while
+ * it was missing from this table: the entire project came back as sprite frames.
  */
 const TYPE_FILTERS: Record<AssetType, TypeFilter> = {
     all: {},
@@ -53,7 +53,7 @@ const TYPE_FILTERS: Record<AssetType, TypeFilter> = {
 export function assetQuery(folder: string, type: AssetType): AssetQuery {
     const filter = TYPE_FILTERS[type];
     if (!filter) {
-        throw new Error(`тип ассета '${type}' не имеет фильтра; известные: ${ASSET_TYPES.join(', ')}`);
+        throw new Error(`asset type '${type}' has no filter; the known ones: ${ASSET_TYPES.join(', ')}`);
     }
     const root = String(folder).trim().replace(/\/+$/, '');
     const query: AssetQuery = { pattern: `${root}/**/*${filter.extension ?? ''}` };
@@ -80,7 +80,7 @@ export function matchesAssetName(assetName: string, query: string, exactMatch: b
 }
 
 /**
- * `total` считается до среза, поэтому урезанный список не выдаёт себя за весь набор.
+ * `total` is counted before the cut, so a truncated listing does not pass itself off as the whole set.
  */
 export function selectAssets<T extends { name: string }>(
     assets: readonly T[],
@@ -104,27 +104,27 @@ export function isAssetUrl(text: string): boolean {
 }
 
 /**
- * База ассетов зовёт `.startsWith` на том, что ей дали, поэтому не-db:// значение всплывает голым
- * TypeError, не называющим аргумент. Отказ здесь называет.
+ * The asset database calls `.startsWith` on whatever it is handed, so a non-`db://` value surfaces
+ * as a bare TypeError that names no argument. The refusal here names it.
  */
 export function requireAssetUrl(text: string, what: string): string {
     const rest = isAssetUrl(text) ? text.slice(ASSET_URL_PREFIX.length).replace(/\/+$/, '') : '';
     if (!rest) {
-        throw new Error(`${what} задаётся db://-путём (например db://assets/scripts/foo.ts); получено ${
+        throw new Error(`${what} is spelled as a db:// url (for example db://assets/scripts/foo.ts); got ${
             JSON.stringify(text)}`);
     }
     return ASSET_URL_PREFIX + rest;
 }
 
 /**
- * Папка, накрывающая оба адреса, — область, по которой имеет смысл ждать импорт после переноса:
- * работа импортёра ложится и на исходную ветку, и на целевую.
+ * The folder covering both addresses is the scope worth waiting on after a move: the importer's work
+ * falls on the source branch and on the target one alike.
  */
 export function commonAssetFolder(source: string, target: string): string {
     const left = source.split('/');
     const right = target.split('/');
     const shared: string[] = [];
-    // Последний сегмент — имя самого ассета, папкой он не бывает.
+    // The last segment is the asset's own name, which is never a folder.
     const limit = Math.min(left.length, right.length) - 1;
     for (let index = 0; index < limit; index++) {
         if (left[index] !== right[index]) break;

@@ -25,7 +25,7 @@ export interface SetSpec {
     component: string;
     property: string;
     value: unknown;
-    /** Какой компонент целевого узла брать, когда поле объявлено без типа. */
+    /** Which component of the target node to take when the field is declared without a type. */
     targetComponent?: string;
 }
 
@@ -49,16 +49,17 @@ async function findComponent(client: DriverClient, nodeUuid: string, type: strin
     const components = await queryComponents(client, nodeUuid);
     const choice = selectComponent(components, type);
     if (!choice) {
-        throw new Error(`на узле нет компонента '${type}'; есть: ${
-            componentClassNames(components).join(', ') || '(ни одного)'}`);
+        throw new Error(`the node carries no component '${type}'; it carries: ${
+            componentClassNames(components).join(', ') || '(none)'}`);
     }
     return { ...choice, dump: components[choice.index] };
 }
 
 /**
- * Ссылку каллер пишет так, как её видит в дереве и в базе ассетов: путём узла, db://-путём или
- * uuid. Всё это превращается в uuid ЗДЕСЬ, до первой записи, — неразрешённый адрес обязан отвалиться
- * отказом, а не набором свойства мусором, который редактор молча превращает в null.
+ * A caller spells a reference the way the tree and the asset database show it: a node path, a
+ * `db://` url or a uuid. All of that becomes a uuid HERE, before the first write — an address that
+ * resolves to nothing has to be refused rather than set as a value the editor silently turns into
+ * null.
  */
 async function targetUuid(
     client: DriverClient, kind: PropertyKind, target: TargetSpelling
@@ -67,14 +68,14 @@ async function targetUuid(
     if (target.kind === 'assetUrl') {
         const uuid = await client.editor.assetDb.queryUuid(target.url).catch(() => undefined);
         if (typeof uuid !== 'string' || !uuid) {
-            throw new Error(`база ассетов не знает '${target.url}'`);
+            throw new Error(`the asset database does not know '${target.url}'`);
         }
         return uuid;
     }
     if (kind === 'assetRef') {
         throw new Error(
-            `'${target.path}' не похоже ни на db://-путь ассета, ни на его uuid; ссылка на ассет `
-            + 'задаётся одним из них');
+            `'${target.path}' looks like neither an asset's db:// url nor its uuid; an asset `
+            + 'reference is spelled as one of the two');
     }
     return resolveNode(client, target.path);
 }
@@ -91,10 +92,10 @@ async function resolveReferenceValue(
 }
 
 /**
- * Узлы и компоненты проверяет `writeReference`: он спрашивает сцену, что построит следующая
- * загрузка, и для ссылки внутрь инстанса префаба это единственный верный ответ — файл сцены там
- * держит null, а значение живёт в оверрайде. Всем остальным видам вердикт о сохранении даёт
- * сериализатор.
+ * `writeReference` checks nodes and components: it asks the scene what the next load will build,
+ * and for a reference into a prefab instance that is the only correct answer — the scene file holds
+ * null there and the value lives in an override. Every other kind gets its persistence verdict from
+ * the serializer.
  */
 function verificationFor(kind: PropertyKind): VerifiedWriteOptions {
     return kind === 'nodeRef' || kind === 'componentRef' ? {} : { verify: 'serializer' };
@@ -105,8 +106,8 @@ export async function componentSet(client: DriverClient, spec: SetSpec): Promise
     const component = await findComponent(client, nodeUuid, spec.component);
     const descriptor = descriptorOf(component.dump, spec.property);
     if (!descriptor) {
-        throw new Error(`у компонента '${component.className}' нет свойства '${spec.property}' в живом дампе; есть: ${
-            propertyNames(component.dump).join(', ') || '(живой дамп недоступен)'}`);
+        throw new Error(`component '${component.className}' has no property '${spec.property}' in the live dump; it has: ${
+            propertyNames(component.dump).join(', ') || '(the live dump is unavailable)'}`);
     }
     const kind = resolveKind(descriptor);
     const target: WriteTarget = {
@@ -120,7 +121,7 @@ export async function componentSet(client: DriverClient, spec: SetSpec): Promise
 
     const value = isReferenceKind(kind) ? await resolveReferenceValue(client, kind, spec.value) : spec.value;
     if (!writerFor(target, value)) {
-        throw new Error(`свойство '${spec.property}' вида '${kind}' записывать нечем`);
+        throw new Error(`nothing can write property '${spec.property}' of kind '${kind}'`);
     }
 
     return {
@@ -157,7 +158,7 @@ async function resolveReferences(
                 if (label) index.set(uuid, label);
             }
         } catch (error) {
-            note = `ссылки на узлы напечатаны голыми uuid: сцену не удалось перечислить — ${
+            note = `node references print as bare uuids: the scene could not be enumerated — ${
                 error instanceof Error ? error.message : String(error)}`;
         }
     }
@@ -176,8 +177,8 @@ export async function componentGet(client: DriverClient, spec: GetSpec): Promise
     if (spec.property) {
         const reading = findProperty(component.dump, spec.property);
         if (!reading) {
-            throw new Error(`у компонента '${component.className}' нет свойства '${spec.property}'; есть: ${
-                propertyNames(component.dump).join(', ') || '(ни одного)'}`);
+            throw new Error(`component '${component.className}' has no property '${spec.property}'; it has: ${
+                propertyNames(component.dump).join(', ') || '(none)'}`);
         }
         const { index, note } = await resolveReferences(client, [reading]);
         return { kind: 'componentProperty', address, reading, references: index, note };
@@ -189,13 +190,13 @@ export async function componentGet(client: DriverClient, spec: GetSpec): Promise
 }
 
 export function registerComponent(program: Command, resolve: () => Promise<Resolved>): void {
-    const component = program.command('component').description('компоненты на узлах');
+    const component = program.command('component').description('components on nodes');
 
     component
         .command('get <path> <type>')
-        .description('прочитать свойства компонента такими, какими их держит инспектор')
-        .option('--prop <name>', 'только это свойство')
-        .option('--json', 'выдать структурную форму вместо текста')
+        .description('read the properties of a component as the inspector holds them')
+        .option('--prop <name>', 'this property only')
+        .option('--json', 'print the structural form instead of text')
         .action((target: string, type: string, options: { prop?: string; json?: boolean }) =>
             withClient(resolve, client => componentGet(client, {
                 node: target, component: type, property: options.prop
@@ -203,7 +204,7 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
 
     component
         .command('add <path> <type>')
-        .description('навесить компонент на узел, проверив, что он появился')
+        .description('add a component to a node, checking that it appeared')
         .action((target: string, type: string) => withClient(resolve, async client => {
             const uuid = await resolveNode(client, target);
             const outcome = await addComponent(client, uuid, type);
@@ -211,14 +212,14 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
                 kind: 'action',
                 verdict: 'ok',
                 summary: outcome.alreadyPresent
-                    ? `${outcome.type} уже на ${target}`
-                    : `${outcome.type} навешен на ${target}`
+                    ? `${outcome.type} already on ${target}`
+                    : `${outcome.type} added to ${target}`
             };
         }));
 
     component
         .command('rm <path> <type>')
-        .description('снять компонент с узла')
+        .description('remove a component from a node')
         .action((target: string, type: string) => withClient(resolve, async client => {
             const uuid = await resolveNode(client, target);
             const component = await findComponent(client, uuid, type);
@@ -228,22 +229,22 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
             const owner = owners.owners.find(entry => entry.nodeUuid === uuid);
             if (!owner) {
                 throw new Error(
-                    `компонент '${component.className}' виден на узле, но его uuid не нашёлся среди владельцев класса`);
+                    `component '${component.className}' is visible on the node, but its uuid is not among the owners of the class`);
             }
             await client.editor.scene.removeComponent({ uuid: owner.componentUuid });
             return {
-                kind: 'action', verdict: 'ok', summary: `${component.className} снят с ${target}`
+                kind: 'action', verdict: 'ok', summary: `${component.className} removed from ${target}`
             };
         }));
 
     component
         .command('set <path> <type>')
-        .description('записать свойство компонента и проверить, переживёт ли запись сохранение')
-        .requiredOption('--prop <name>', 'имя свойства')
-        .requiredOption('--value <json>', 'значение; JSON, либо строка как есть; ссылка — путь узла, '
-            + 'db://-путь ассета или uuid, null очищает')
-        .option('--target-component <type>', 'какой компонент целевого узла брать, когда поле '
-            + 'объявлено без типа')
+        .description('write a component property and check whether the write survives a save')
+        .requiredOption('--prop <name>', 'property name')
+        .requiredOption('--value <json>', 'the value; JSON, or a string as typed; a reference is a node '
+            + 'path, an asset db:// url or a uuid, and null clears it')
+        .option('--target-component <type>', 'which component of the target node to take when the '
+            + 'field is declared without a type')
         .action((target: string, type: string,
             options: { prop: string; value: string; targetComponent?: string }) =>
             withClient(resolve, async client => {

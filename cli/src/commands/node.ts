@@ -24,7 +24,7 @@ export async function resolveNode(client: DriverClient, pathOrUuid: string): Pro
     const resolved = await unwrap(client.scene.call('resolveNodePaths', [pathOrUuid]), 'resolveNodePaths');
     const resolution = resolved.resolutions[pathOrUuid];
     if (!resolution) {
-        throw new Error(`'${pathOrUuid}' не был разрешён сцена-скриптом`);
+        throw new Error(`the scene script did not resolve '${pathOrUuid}'`);
     }
     if ('error' in resolution) {
         throw new Error(resolution.error);
@@ -55,11 +55,11 @@ export interface CreateSpec {
 }
 
 /**
- * Скобка охватывает и структурный шаг, и настройку, чтобы созданный узел откатывался одним
- * Ctrl+Z. Провал любого шага снимает скобку: оставленная открытой запись пережила бы процесс.
+ * The bracket covers both the structural step and the setup, so a created node comes back on one
+ * Ctrl+Z. A failure at any step drops the bracket: a recording left open would outlive the process.
  *
- * `componentPollOptions` тюнингует только опрос `addComponent` после навешивания — тестовый
- * рычаг, боевой вызов его не передаёт и получает предустановленный таймаут `settle`.
+ * `componentPollOptions` tunes only the `addComponent` poll that follows the add — a test lever;
+ * the real call passes nothing and gets `settle`'s own timeout.
  */
 export async function nodeCreate(
     client: DriverClient, spec: CreateSpec, componentPollOptions?: { timeoutMs?: number; intervalMs?: number }
@@ -87,7 +87,7 @@ export async function nodeCreate(
     return {
         kind: 'action',
         verdict: 'ok',
-        summary: `создан ${spec.parent}/${spec.name}  ${result.createdUuid}`
+        summary: `created ${spec.parent}/${spec.name}  ${result.createdUuid}`
             + (result.registered.length ? `  [${result.registered.join(',')}]` : '')
             + (undoNote ? `  ${undoNote}` : '  undo=1')
     };
@@ -95,7 +95,7 @@ export async function nodeCreate(
 
 async function snapshotOf(client: DriverClient, uuid: string): Promise<NodeSnapshot> {
     const snapshot = nodeSnapshotOf(await client.editor.scene.queryNode(uuid), uuid);
-    if (!snapshot) throw new Error(`узла ${uuid} нет в открытой сцене`);
+    if (!snapshot) throw new Error(`node ${uuid} is not in the open scene`);
     return snapshot;
 }
 
@@ -109,9 +109,10 @@ export interface SetSpec {
 }
 
 /**
- * Скалярные свойства и трансформ пишутся одной скобкой: `--name` вместе с `--pos` должны отходить
- * одним Ctrl+Z, а не двумя. Каждая запись читается обратно, и первая же не дошедшая обрывает
- * остальные — дописывать поверх узла, который не принял предыдущее, значит копить расхождение.
+ * Scalar properties and the transform are written under one bracket: `--name` together with `--pos`
+ * has to come back on one Ctrl+Z rather than two. Every write is read back, and the first one that
+ * does not land cuts the rest short — writing further onto a node that refused the previous value
+ * only piles up drift.
  */
 export async function nodeSet(
     client: DriverClient, target: string, spec: SetSpec,
@@ -171,8 +172,8 @@ export async function nodeSet(
 }
 
 /**
- * Редактор применяет репарент асинхронно и часть из них молча игнорирует, поэтому новый родитель
- * опрашивается до тех пор, пока не встанет; не вставший называет того, кто у узла на самом деле.
+ * The editor applies a reparent asynchronously and silently ignores some of them, so the new parent
+ * is polled until it takes; one that never takes names the parent the node actually has.
  */
 export async function nodeMove(
     client: DriverClient, target: string, parent: string, keepWorldTransform: boolean,
@@ -180,7 +181,7 @@ export async function nodeMove(
 ): Promise<Report> {
     const uuid = await resolveNode(client, target);
     const parentUuid = await resolveNode(client, parent);
-    if (uuid === parentUuid) throw new Error(`${target} не может быть родителем самому себе`);
+    if (uuid === parentUuid) throw new Error(`${target} cannot be its own parent`);
 
     const { undoNote } = await withUndoBracket(client, uuid, () =>
         client.editor.scene.setParent({ parent: parentUuid, uuids: [uuid], keepWorldTransform }));
@@ -194,15 +195,15 @@ export async function nodeMove(
         return {
             kind: 'action',
             verdict: 'FAILED',
-            summary: `${target} не перенесён  родитель по-прежнему ${actual || 'неизвестен'}`
-                + `, ожидался ${parentUuid}`
+            summary: `${target} not moved  parent is still ${actual || 'unknown'}`
+                + `, expected ${parentUuid}`
         };
     }
     return {
         kind: 'action',
         verdict: 'ok',
-        summary: `${target} перенесён под ${parent}  ${uuid}`
-            + (keepWorldTransform ? '  мировой трансформ сохранён' : '')
+        summary: `${target} moved under ${parent}  ${uuid}`
+            + (keepWorldTransform ? '  world transform kept' : '')
             + (undoNote ? `  ${undoNote}` : '  undo=1')
     };
 }
@@ -216,7 +217,7 @@ export async function nodeDuplicate(
         client.editor.scene.duplicateNode(uuid));
     const created = Array.isArray(result) ? result[0] : result;
     if (typeof created !== 'string' || !created) {
-        throw new Error(`редактор не назвал uuid копии ${target}`);
+        throw new Error(`the editor named no uuid for the copy of ${target}`);
     }
 
     const appeared = await settle(
@@ -225,33 +226,33 @@ export async function nodeDuplicate(
         return {
             kind: 'action',
             verdict: 'FAILED',
-            summary: `${target} не скопирован  редактор ответил uuid ${created}, но такого узла в сцене нет`
+            summary: `${target} not duplicated  the editor answered uuid ${created}, but no such node is in the scene`
         };
     }
     const copy = await snapshotOf(client, created);
     return {
         kind: 'action',
         verdict: 'ok',
-        summary: `${target} скопирован как ${copy.name}  ${created}`
+        summary: `${target} duplicated as ${copy.name}  ${created}`
             + (undoNote ? `  ${undoNote}` : '  undo=1')
     };
 }
 
 export function registerNode(program: Command, resolve: () => Promise<Resolved>): void {
-    const node = program.command('node').description('узлы открытой сцены');
+    const node = program.command('node').description('nodes of the open scene');
 
     node
         .command('get <path>')
-        .description('имя, состояние и компоненты узла')
+        .description('name, state and components of a node')
         .action((target: string) => withClient(resolve, client => nodeGet(client, target)));
 
     node
         .command('create')
-        .description('создать узел, навесить компоненты и поставить позицию одним шагом undo')
-        .requiredOption('--parent <path>', 'родительский узел')
-        .requiredOption('--name <name>', 'имя нового узла')
-        .option('--component <type...>', 'компоненты, которые навесить', [])
-        .option('--pos <x,y,z>', 'позиция')
+        .description('create a node, add components and set its position in one undo step')
+        .requiredOption('--parent <path>', 'parent node')
+        .requiredOption('--name <name>', 'name of the new node')
+        .option('--component <type...>', 'components to add', [])
+        .option('--pos <x,y,z>', 'position')
         .action((options: { parent: string; name: string; component: string[]; pos?: string }) =>
             withClient(resolve, client => nodeCreate(client, {
                 parent: options.parent,
@@ -264,22 +265,22 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
 
     node
         .command('set <path>')
-        .description('записать свойства самого узла — имя, active, слой, трансформ — одним шагом undo')
-        .option('--name <name>', 'переименовать узел')
-        .option('--active <bool>', 'включить или выключить узел')
-        .option('--layer <n>', 'слой узла')
-        .option('--pos <x,y,z>', 'локальная позиция; пустая ось остаётся как была (1,,3)')
-        .option('--rot <x,y,z>', 'локальный поворот в углах Эйлера')
-        .option('--scale <x,y,z>', 'локальный масштаб')
+        .description('write properties of the node itself — name, active, layer, transform — in one undo step')
+        .option('--name <name>', 'rename the node')
+        .option('--active <bool>', 'switch the node on or off')
+        .option('--layer <n>', 'node layer')
+        .option('--pos <x,y,z>', 'local position; an empty axis keeps its value (1,,3)')
+        .option('--rot <x,y,z>', 'local rotation in Euler angles')
+        .option('--scale <x,y,z>', 'local scale')
         .action((target: string, options: {
             name?: string; active?: string; layer?: string; pos?: string; rot?: string; scale?: string
         }) => withClient(resolve, client => {
             if (options.active !== undefined && options.active !== 'true' && options.active !== 'false') {
-                throw new Error(`--active принимает true или false; получено ${JSON.stringify(options.active)}`);
+                throw new Error(`--active takes true or false; got ${JSON.stringify(options.active)}`);
             }
             const layer = options.layer === undefined ? undefined : Number(options.layer);
             if (layer !== undefined && !Number.isFinite(layer)) {
-                throw new Error(`--layer принимает число; получено ${JSON.stringify(options.layer)}`);
+                throw new Error(`--layer takes a number; got ${JSON.stringify(options.layer)}`);
             }
             return nodeSet(client, target, {
                 name: options.name,
@@ -293,25 +294,25 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
 
     node
         .command('mv <path>')
-        .description('перевесить узел под другого родителя')
-        .requiredOption('--parent <path>', 'новый родитель')
-        .option('--keep-world', 'сохранить мировой трансформ вместо локального')
+        .description('move a node under another parent')
+        .requiredOption('--parent <path>', 'new parent')
+        .option('--keep-world', 'keep the world transform instead of the local one')
         .action((target: string, options: { parent: string; keepWorld?: boolean }) =>
             withClient(resolve, client =>
                 nodeMove(client, target, options.parent, options.keepWorld === true)));
 
     node
         .command('dup <path>')
-        .description('скопировать узел вместе с поддеревом, соседом оригинала')
+        .description('duplicate a node with its subtree, as a sibling of the original')
         .action((target: string) =>
             withClient(resolve, client => nodeDuplicate(client, target)));
 
     node
         .command('rm <path>')
-        .description('удалить узел')
+        .description('remove a node')
         .action((target: string) => withClient(resolve, async client => {
             const uuid = await resolveNode(client, target);
             await client.editor.scene.removeNode({ uuid });
-            return { kind: 'action', verdict: 'ok', summary: `удалён ${target}` };
+            return { kind: 'action', verdict: 'ok', summary: `removed ${target}` };
         }));
 }

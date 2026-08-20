@@ -22,8 +22,8 @@ export function renderTree(nodes: DumpNode[], options: TreeOptions = {}): string
         children.set(node.parentUuid, list);
     }
 
-    // Печатается адрес, а не имя: `siblingLabels` — то же правило, по которому индексирует
-    // резолвер путей, поэтому строка, снятая с дерева, принимается как путь без правки.
+    // The address is printed rather than the name: `siblingLabels` is the same rule the path
+    // resolver indexes by, so a line lifted off the tree is accepted as a path unedited.
     const roots = nodes.filter(node => !known.has(node.parentUuid));
     const addressed = new Map<DumpNode, string>();
     const address = (siblings: DumpNode[]): void => {
@@ -43,8 +43,8 @@ export function renderTree(nodes: DumpNode[], options: TreeOptions = {}): string
             + (options.uuid ? `  ${node.uuid}` : '');
     };
 
-    // Список приходит плоским и может содержать цикл, если сцена читалась во время правки;
-    // посещённые узлы обрывают обход, чтобы рендер не ушёл в бесконечность.
+    // The list arrives flat and can hold a cycle when the scene was read while being edited;
+    // visited nodes cut the walk short so the render does not run forever.
     const seen = new Set<string>();
     const build = (node: DumpNode): archy.Data => {
         if (seen.has(node.uuid)) return { label: label(node), nodes: [] };

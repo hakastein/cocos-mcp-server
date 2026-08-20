@@ -46,8 +46,8 @@ test('a prefab that came back without a PrefabInfo is a failure, not a quiet cop
         linkageVerdict(linkage({ linked: false }), PREFAB_ASSET_TYPE, false).verdict, 'FAILED');
 });
 
-// Связь, которую сериализатор выбрасывает, — тот же исход, что и запись, которую уронит
-// сохранение, поэтому и слово у них одно.
+// A link the serializer drops is the same outcome as a write a save drops, so the two share one
+// word.
 test('a live link the serializer drops is UNPERSISTED — the save turns it into a flat copy', () => {
     assert.equal(
         linkageVerdict(linkage({ persisted: false }), PREFAB_ASSET_TYPE, false).verdict, 'UNPERSISTED');
@@ -55,10 +55,10 @@ test('a live link the serializer drops is UNPERSISTED — the save turns it into
 
 test('an unreached serializer leaves the question open rather than answering no', () => {
     const verdict = linkageVerdict(
-        linkage({ persistenceChecked: false, persisted: false, persistenceReason: 'сцена молчит' }),
+        linkage({ persistenceChecked: false, persisted: false, persistenceReason: 'the scene is silent' }),
         PREFAB_ASSET_TYPE, false);
     assert.equal(verdict.verdict, 'UNVERIFIED');
-    assert.match(verdict.detail, /сцена молчит/);
+    assert.match(verdict.detail, /the scene is silent/);
 });
 
 test('an unlinked copy that was asked for is not judged on a link it never wanted', () => {

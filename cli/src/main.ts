@@ -13,14 +13,14 @@ import { EXIT } from './exit';
 export function buildProgram(): Command {
     const program = new Command('cocos');
     program
-        .description('Драйвер открытых редакторов Cocos Creator')
-        .option('-p, --project <substring>', 'какой редактор, если открыто несколько')
+        .description('drives open Cocos Creator editors')
+        .option('-p, --project <substring>', 'which editor, when several are open')
         .exitOverride();
 
     program
         .command('instances')
-        .description('перечислить открытые редакторы')
-        .option('--json', 'выдать структурную форму вместо текста')
+        .description('list the open editors')
+        .option('--json', 'print the structural form instead of text')
         .action(async (options: { json?: boolean }) => {
             const found = await discover(probeAddress);
             emit(present({ kind: 'instances', instances: found }, { json: options.json }));

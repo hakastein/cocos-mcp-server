@@ -31,7 +31,7 @@ export type { DumpNode } from './tree';
 export interface CommandOutput {
     stdout?: string;
     stderr?: string;
-    /** Команда отработала, но её результат — не успех: см. `verdictFailed`. */
+    /** The command ran and its outcome is not a success: see `verdictFailed`. */
     failed?: boolean;
 }
 
@@ -39,7 +39,7 @@ export interface PresentOptions {
     json?: boolean;
 }
 
-/** Узел и компонент, о которых отчёт, в том виде, в каком их называет `--json`. */
+/** The node and component a report is about, spelled the way `--json` names them. */
 export interface ComponentAddress {
     nodePath: string;
     nodeUuid: string;
@@ -47,12 +47,12 @@ export interface ComponentAddress {
 }
 
 /**
- * Отчёт называет, что произошло; во что это превращается на двух потоках и в коде выхода, решает
- * `present`. Объединение размечено `kind`, поэтому новый вид отчёта не добавить, не назвав его
- * вердикт, — на это и заведено.
+ * A report names what happened; `present` decides what that becomes on the two streams and in the
+ * exit code. The union is tagged by `kind`, so a new report kind cannot be added without naming its
+ * verdict — which is what the union is for.
  */
 export type Report =
-    /** Исход, у которого нет структуры сверх одной строки: вердикт и свободный хвост. */
+    /** An outcome with no structure beyond one line: a verdict and a free-text tail. */
     | { kind: 'action'; verdict: Verdict; summary: string; note?: string }
     | {
         kind: 'propertyWrite'; component: string; property: string; value?: unknown;
@@ -81,7 +81,7 @@ export type Report =
 interface Rendered {
     verdict: Verdict;
     text: string;
-    /** Что печатает `--json`; отсутствие означает, что структурной формы у отчёта нет. */
+    /** What `--json` prints; its absence means the report has no structural form. */
     json?: unknown;
     note?: string;
 }
@@ -148,8 +148,8 @@ function render(report: Report): Rendered {
         case 'sceneTree':
             return {
                 verdict: 'ok',
-                text: report.nodes.length ? renderTree(report.nodes, report.options) : 'сцена пуста — нет узлов',
-                note: `узлов: ${report.nodes.length}`
+                text: report.nodes.length ? renderTree(report.nodes, report.options) : 'the scene is empty — no nodes',
+                note: `nodes: ${report.nodes.length}`
             };
 
         case 'sceneOwners':
@@ -174,7 +174,7 @@ function render(report: Report): Rendered {
                 verdict,
                 text: renderMissingScripts(report.missing),
                 json: report.missing,
-                note: `${verdict}  мёртвых компонентов: ${report.missing.entries.length}`
+                note: `${verdict}  dead components: ${report.missing.entries.length}`
             };
         }
 
@@ -187,9 +187,9 @@ function render(report: Report): Rendered {
                     ...addressJson(address), property: reading, references: referencesJson(references)
                 },
                 note: joined([
-                    `${address.choice.className}.${reading.name}  ${reading.type || 'тип не объявлен'}`,
-                    reading.differsFromDefault === true && 'отличается от умолчания',
-                    reading.hiddenInInspector && 'инспектор его не рисует, в файле оно есть',
+                    `${address.choice.className}.${reading.name}  ${reading.type || 'type not declared'}`,
+                    reading.differsFromDefault === true && 'differs from the default',
+                    reading.hiddenInInspector && 'the inspector does not draw it, the file holds it',
                     report.note
                 ])
             };
@@ -205,15 +205,15 @@ function render(report: Report): Rendered {
                     references: referencesJson(references)
                 },
                 note: joined([
-                    `${address.choice.className} на ${address.nodePath}  enabled=${
+                    `${address.choice.className} on ${address.nodePath}  enabled=${
                         address.choice.enabled === null ? 'unknown' : address.choice.enabled}`,
-                    `свойств: ${readings.length}`,
+                    `properties: ${readings.length}`,
                     hidden.length > 0
-                        && `скрыто: ${hidden.length} (служебные поля и дубли-хранилища, каждое читается через --prop)`,
+                        && `hidden: ${hidden.length} (internal fields and backing duplicates, each readable with --prop)`,
                     readings.some(reading => reading.differsFromDefault === true)
-                        && '* — отличается от умолчания',
+                        && '* — differs from the default',
                     address.choice.sameClassCount > 1
-                        && `на узле ${address.choice.sameClassCount} компонента этого класса, прочитан первый`,
+                        && `the node carries ${address.choice.sameClassCount} components of this class, the first was read`,
                     report.note
                 ])
             };

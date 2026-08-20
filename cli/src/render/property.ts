@@ -2,7 +2,7 @@ import type { PropertyKind } from '../property/kind';
 import type { PropertyReading } from '../property/component-dump';
 import type { ReferenceLookup } from '../property/reference-index';
 
-const EMPTY = '(пусто)';
+const EMPTY = '(empty)';
 const TYPE_COLUMN_LIMIT = 22;
 
 const AXIS_ORDER = ['x', 'y', 'z', 'w', 'width', 'height'];
@@ -12,7 +12,7 @@ function formatReference(uuid: unknown, lookup: ReferenceLookup): string {
     const label = lookup(uuid);
     if (!label) return uuid;
     const named = label.kind === 'component' && label.className
-        ? `${label.className} на ${label.path}`
+        ? `${label.className} on ${label.path}`
         : label.path;
     return `${named}  ${uuid}`;
 }
@@ -67,11 +67,11 @@ export function formatReading(reading: PropertyReading, lookup: ReferenceLookup)
 }
 
 /**
- * Одна строка на свойство: имя, объявленный тип, значение. Звёздочка отмечает значение, разошедшееся
- * с умолчанием, — именно оно теряется молча, когда свойство переносят между классами.
+ * One line per property: name, declared type, value. The star marks a value that drifted from the
+ * default — that is the one lost silently when a property is moved between classes.
  */
 export function renderComponentReading(readings: PropertyReading[], lookup: ReferenceLookup): string {
-    if (!readings.length) return 'у компонента нет свойств, которые можно прочитать';
+    if (!readings.length) return 'the component has no readable properties';
 
     const nameColumn = Math.max(...readings.map(reading => reading.name.length));
     const typeColumn = Math.min(

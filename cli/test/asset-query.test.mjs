@@ -57,7 +57,7 @@ test('isAssetUrl holds for db:// and for nothing else', () => {
 });
 
 test('requireAssetUrl names the argument a bare TypeError from the database would not', () => {
-    assert.throws(() => requireAssetUrl('assets/a.ts', 'папка обновления'), /папка обновления/);
+    assert.throws(() => requireAssetUrl('assets/a.ts', 'the folder to refresh'), /the folder to refresh/);
 });
 
 test('requireAssetUrl strips a trailing slash without eating the scheme', () => {

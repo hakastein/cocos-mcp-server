@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { present } from '../lib/render/present.js';
 import { verdictFailed } from '../lib/render/verdict.js';
 
-// Ради этой таблицы и заводится закрытый набор: код выхода решается один раз здесь, а не
-// пересобирается в каждом теле команды.
-test('нулём выходят ровно ok и UNVERIFIED', () => {
+// The closed set exists for this table: the exit code is decided once here instead of being
+// reassembled in every command body.
+test('exactly ok and UNVERIFIED exit zero', () => {
     assert.equal(verdictFailed('ok'), false);
     assert.equal(verdictFailed('UNVERIFIED'), false);
     assert.equal(verdictFailed('UNPERSISTED'), true);
@@ -14,14 +14,14 @@ test('нулём выходят ровно ok и UNVERIFIED', () => {
     assert.equal(verdictFailed('TIMEOUT'), true);
 });
 
-test('исход начинается со своего вердикта, а хвост остаётся свободным текстом', () => {
-    const output = present({ kind: 'action', verdict: 'FAILED', summary: 'Guard не перенесён' });
-    assert.equal(output.stdout, 'FAILED  Guard не перенесён');
+test('an outcome starts with its verdict and leaves the tail free text', () => {
+    const output = present({ kind: 'action', verdict: 'FAILED', summary: 'Guard not moved' });
+    assert.equal(output.stdout, 'FAILED  Guard not moved');
     assert.equal(output.failed, true);
 });
 
-test('пустая заметка не превращается в пустую строку на stderr', () => {
-    assert.equal(present({ kind: 'action', verdict: 'ok', summary: 'сцена сохранена' }).stderr, undefined);
+test('an empty note does not become an empty line on stderr', () => {
+    assert.equal(present({ kind: 'action', verdict: 'ok', summary: 'scene saved' }).stderr, undefined);
 });
 
 const writeReport = (over = {}) => ({
@@ -32,15 +32,15 @@ const writeReport = (over = {}) => ({
     report: { written: true, verified: true, persisted: true, channel: 'editor', ...over }
 });
 
-// Вердикт вычисляется из данных отчёта: команда его не передаёт и, значит, не может разойтись
-// с тем, что напечатано.
-test('запись, которую сохранение уронит, получает UNPERSISTED и единицу', () => {
+// The verdict is computed from the report's data: a command never passes it and so cannot drift
+// from what gets printed.
+test('a write a save will drop gets UNPERSISTED and a one', () => {
     const output = present(writeReport({ persisted: false }));
     assert.equal(output.stdout.split('  ')[0], 'UNPERSISTED');
     assert.equal(output.failed, true);
 });
 
-test('на канале live persisted=false остаётся ok', () => {
+test('on the live channel persisted=false stays ok', () => {
     const output = present(writeReport({ persisted: false, channel: 'live' }));
     assert.equal(output.stdout.split('  ')[0], 'ok');
     assert.equal(output.failed, false);
@@ -49,46 +49,46 @@ test('на канале live persisted=false остаётся ok', () => {
 const settle = (over = {}) => ({
     kind: 'assetSettle',
     settle: {
-        action: 'обновлено', target: 'db://assets/f', elapsedMs: 60000, settled: true,
+        action: 'refreshed', target: 'db://assets/f', elapsedMs: 60000, settled: true,
         assets: { added: [], removed: [], changed: [] }, classes: { added: [], removed: [] }, ...over
     },
     timeoutMs: 60000
 });
 
-test('база, не улёгшаяся за таймаут, — TIMEOUT с единицей', () => {
+test('a database that did not go quiet within the timeout is TIMEOUT with a one', () => {
     const output = present(settle({ settled: false }));
     assert.equal(output.stdout.split('  ')[0], 'TIMEOUT');
     assert.equal(output.failed, true);
-    assert.match(output.stderr, /60с/);
+    assert.match(output.stderr, /60s/);
 });
 
-test('заметка команды приезжает к заметке об ожидании, а не вместо неё', () => {
-    const output = present({ ...settle({ classes: null }), note: 'db://-пути внутри .meta не переезжают' });
-    assert.match(output.stderr, /дельта неизвестна/);
-    assert.match(output.stderr, /\.meta не переезжают/);
+test('the command note arrives alongside the settle note rather than instead of it', () => {
+    const output = present({ ...settle({ classes: null }), note: 'db:// paths inside a .meta do not move' });
+    assert.match(output.stderr, /delta is unknown/);
+    assert.match(output.stderr, /\.meta do not move/);
 });
 
 const ASSET = { name: 'rifle', type: 'cc.Prefab', uuid: 'u-1', url: 'db://assets/rifle.prefab' };
 
-test('--json печатает структурную форму вместо текста', () => {
+test('--json prints the structural form instead of text', () => {
     const output = present({ kind: 'assetInfo', asset: ASSET }, { json: true });
     assert.deepEqual(JSON.parse(output.stdout), ASSET);
 });
 
-// `--field` существует ради подстановки в переменную оболочки, и обёртка в JSON её ломает.
-test('--field перебивает --json и отдаёт голое значение', () => {
+// `--field` exists to be substituted into a shell variable, and a JSON wrapper breaks that.
+test('--field overrides --json and answers a bare value', () => {
     const output = present({ kind: 'assetInfo', asset: ASSET, field: 'uuid' }, { json: true });
     assert.equal(output.stdout, 'u-1');
 });
 
-test('--json на отчёте без структурной формы отдаёт тот же текст, а не пустоту', () => {
-    const output = present({ kind: 'action', verdict: 'ok', summary: 'удалён Canvas/Bg' }, { json: true });
-    assert.equal(output.stdout, 'ok  удалён Canvas/Bg');
+test('--json on a report with no structural form answers the same text, not emptiness', () => {
+    const output = present({ kind: 'action', verdict: 'ok', summary: 'removed Canvas/Bg' }, { json: true });
+    assert.equal(output.stdout, 'ok  removed Canvas/Bg');
 });
 
 const missing = (entries) => ({ kind: 'sceneMissing', missing: { entries } });
 
-test('мёртвый компонент в сцене — исход, а не спокойный отчёт', () => {
+test('a dead component in the scene is an outcome rather than a calm report', () => {
     const found = present(missing([{ nodePath: 'a', nodeUuid: 'u', componentUuid: 'c', cid: null }]));
     assert.equal(found.failed, true);
     assert.match(found.stderr, /^FAILED/);
@@ -105,7 +105,7 @@ const address = {
     choice: { index: 0, className: 'Npc', cid: null, enabled: true, sameClassCount: 1 }
 };
 
-test('ссылка печатается именем узла, а не голым uuid, когда индекс его знает', () => {
+test('a reference prints as the node name rather than a bare uuid when the index knows it', () => {
     const output = present({
         kind: 'componentProperty',
         address,
@@ -116,17 +116,17 @@ test('ссылка печатается именем узла, а не голы�
     assert.match(output.stderr, /Npc\.target {2}cc\.Node/);
 });
 
-test('свойство, разошедшееся с умолчанием, названо в пояснении', () => {
+test('a property that drifted from the default is named in the note', () => {
     const output = present({
         kind: 'componentProperty',
         address,
         reading: reading({ differsFromDefault: true }),
         references: new Map()
     });
-    assert.match(output.stderr, /отличается от умолчания/);
+    assert.match(output.stderr, /differs from the default/);
 });
 
-test('скрытые свойства и число прочитанных доезжают до пояснения', () => {
+test('the hidden properties and the read count reach the note', () => {
     const output = present({
         kind: 'componentProperties',
         address,
@@ -134,6 +134,6 @@ test('скрытые свойства и число прочитанных до�
         hidden: ['_id'],
         references: new Map()
     });
-    assert.match(output.stderr, /свойств: 2/);
-    assert.match(output.stderr, /скрыто: 1/);
+    assert.match(output.stderr, /properties: 2/);
+    assert.match(output.stderr, /hidden: 1/);
 });

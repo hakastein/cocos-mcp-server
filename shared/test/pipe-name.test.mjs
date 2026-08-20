@@ -3,20 +3,20 @@ import assert from 'node:assert/strict';
 
 import { PIPE_PREFIX, instanceKey, pipePath, pipeDirectory } from '../dist/pipe-name.js';
 
-test('один путь даёт один и тот же ключ при каждом вызове', () => {
+test('one path gives the same key on every call', () => {
     const a = instanceKey('D:/cocos/games/CyberCore', 'win32');
     const b = instanceKey('D:/cocos/games/CyberCore', 'win32');
     assert.equal(a, b);
     assert.equal(a.length, 12);
 });
 
-test('разные проекты дают разные ключи', () => {
+test('different projects give different keys', () => {
     assert.notEqual(
         instanceKey('D:/cocos/games/CyberCore', 'win32'),
         instanceKey('D:/cocos/games/tl_weedmanager1a', 'win32'));
 });
 
-test('на windows регистр пути не разводит проекты, на posix разводит', () => {
+test('on windows path case does not split projects, on posix it does', () => {
     assert.equal(
         instanceKey('D:/Cocos/Games/CyberCore', 'win32'),
         instanceKey('d:/cocos/games/cybercore', 'win32'));
@@ -25,7 +25,7 @@ test('на windows регистр пути не разводит проекты,
         instanceKey('/home/u/games/core', 'linux'));
 });
 
-test('на windows это канал в пространстве имён, на posix — сокет во временном каталоге', () => {
+test('on windows it is a named pipe, on posix a socket in the temp directory', () => {
     const key = instanceKey('D:/cocos/games/CyberCore', 'win32');
     assert.equal(pipePath('D:/cocos/games/CyberCore', 'win32'), `\\\\.\\pipe\\${PIPE_PREFIX}${key}`);
     const linuxKey = instanceKey('/home/u/game', 'linux');
@@ -34,18 +34,18 @@ test('на windows это канал в пространстве имён, на 
         `/tmp/cocos-cli/${PIPE_PREFIX}${linuxKey}.sock`);
 });
 
-test('каталог поиска — то место, которое CLI перечисляет', () => {
+test('the search directory is the place the CLI enumerates', () => {
     assert.equal(pipeDirectory('win32'), '\\\\.\\pipe\\');
     assert.equal(pipeDirectory('linux', '/tmp'), '/tmp/cocos-cli');
 });
 
-test('обратные и прямые слэши в одном пути дают один ключ', () => {
+test('back and forward slashes in one path give one key', () => {
     assert.equal(
         instanceKey('D:\\cocos\\games\\CyberCore', 'win32'),
         instanceKey('D:/cocos/games/CyberCore', 'win32'));
 });
 
-test('хвостовой слэш и повторяющиеся разделители ключ не меняют', () => {
+test('a trailing slash and repeated separators leave the key unchanged', () => {
     const base = instanceKey('D:/cocos/games/CyberCore', 'win32');
     assert.equal(
         instanceKey('D:/cocos/games/CyberCore/', 'win32'),
@@ -55,14 +55,14 @@ test('хвостовой слэш и повторяющиеся разделит
         base);
 });
 
-test('относительные сегменты схлопываются к одному ключу', () => {
+test('relative segments collapse to one key', () => {
     assert.equal(
         instanceKey('D:/cocos/games/Other/../CyberCore', 'win32'),
         instanceKey('D:/cocos/games/CyberCore', 'win32'));
 });
 
-test('POSIX-путь содержит префикс в имени файла', () => {
+test('a POSIX path carries the prefix in the file name', () => {
     const path = pipePath('/home/u/game', 'linux', '/tmp');
     const basename = path.split('/').pop();
-    assert(basename.startsWith(PIPE_PREFIX), `basename ${basename} должен начинаться с ${PIPE_PREFIX}`);
+    assert(basename.startsWith(PIPE_PREFIX), `basename ${basename} has to start with ${PIPE_PREFIX}`);
 });

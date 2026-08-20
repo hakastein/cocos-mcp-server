@@ -240,9 +240,9 @@ export const removePrefabOverride: SceneMethods['removePrefabOverride'] = (nodeU
 };
 
 /**
- * Ждём, пока движок сам десериализует .prefab. Разобрать файл руками нельзя не из брезгливости:
- * скриптовый компонент лежит в нём сжатым uuid, а не именем класса, так что поиск по имени в файле
- * всегда даёт ложное «нет».
+ * Waits for the engine to deserialize the .prefab itself. Parsing the file by hand does not work:
+ * a script component sits in it as a compressed uuid rather than a class name, so a search by name
+ * in the file always answers a false `no`.
  */
 function loadPrefabAsset(prefabUuid: string): Promise<any> {
     const cc = require('cc');
@@ -258,13 +258,14 @@ function loadPrefabAsset(prefabUuid: string): Promise<any> {
 }
 
 /**
- * Компонент, чей скрипт удалён, движок в редакторе оставляет как `cc.MissingScript`, а иногда и
- * дырой в массиве. Оба слота роняют превью на загрузке сцены обращением к `__prefab` — поэтому они
- * ЧИСЛЯТСЯ в выдаче, а не отфильтровываются: их и ищут, когда переименовывают `@ccclass`.
+ * A component whose script was deleted is left by the editor engine as `cc.MissingScript`, and
+ * sometimes as a hole in the array. Both slots crash preview on scene load by reaching for
+ * `__prefab` — so both are COUNTED in the output rather than filtered out: they are what gets
+ * looked for when an `@ccclass` is renamed.
  */
 function describePrefabComponent(component: any): PrefabAssetComponent {
     if (!component) {
-        return { className: '(пусто)', cid: null, fileId: null, enabled: false, missing: true };
+        return { className: '(empty)', cid: null, fileId: null, enabled: false, missing: true };
     }
     const cc = require('cc');
     const prefabInfo = component.__prefab || component._prefab;
@@ -279,9 +280,9 @@ function describePrefabComponent(component: any): PrefabAssetComponent {
 }
 
 /**
- * Содержимое .prefab: дерево узлов и компонент на каждом под ЗАРЕГИСТРИРОВАННЫМ именем класса.
- * Компоненты берутся из `_components` — сырого массива, где движок и оставляет мёртвые слоты;
- * геттер `components` их отсеивает и отвечает, что префаб чист.
+ * The contents of a .prefab: the node tree and the components on each node under their REGISTERED
+ * class names. Components come from `_components`, the raw array where the engine leaves the dead
+ * slots; the `components` getter filters them out and answers that the prefab is clean.
  */
 export const dumpPrefabAsset: SceneMethods['dumpPrefabAsset'] = async (prefabUuid) => {
     try {

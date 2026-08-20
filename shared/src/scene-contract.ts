@@ -245,22 +245,22 @@ export interface RemovedPrefabOverride extends OverrideValueDescription {
 }
 
 export interface PrefabAssetComponent {
-    /** Имя, под которым класс ЗАРЕГИСТРИРОВАН в движке, — `cc.MeshRenderer`, `CharacterAnimator`. */
+    /** The name the class is REGISTERED under in the engine — `cc.MeshRenderer`, `CharacterAnimator`. */
     className: string;
-    /** Сжатый uuid скрипта; для движкового компонента его нет. */
+    /** The compressed uuid of the script; an engine component has none. */
     cid: string | null;
-    /** Единственный идентификатор, переживающий переинстанцирование префаба. */
+    /** The only identifier that survives a prefab being re-instantiated. */
     fileId: string | null;
     enabled: boolean;
     /**
-     * Скрипта за компонентом больше нет. Такой слот роняет превью на загрузке сцены обращением к
-     * `__prefab` того, что движок положил вместо компонента.
+     * The component no longer has a script behind it. Such a slot crashes preview on scene load by
+     * reaching for the `__prefab` of whatever the engine put in the component's place.
      */
     missing: boolean;
 }
 
 export interface PrefabAssetNode {
-    /** Путь от корня префаба; одноимённые соседи несут `#N` так же, как в дереве сцены. */
+    /** The path from the prefab root; same-named siblings carry `#N` just as in the scene tree. */
     path: string;
     name: string;
     active: boolean;

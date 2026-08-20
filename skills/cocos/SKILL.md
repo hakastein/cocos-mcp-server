@@ -9,8 +9,6 @@ The open editor is the source of truth about the scene. The `cocos` binary asks 
 
 The bridge lives in the `hakastein/cocos-mcp-server` repository: `driver/` is the editor extension, `cli/` is the binary itself.
 
-The CLI prints its own text in Russian. Literal output is quoted verbatim below.
-
 ## Searching `.scene` answers false-negative
 
 Script components serialize under a compressed cid. Checked against the open `cc_action_1a.scene` (337 KB):
@@ -41,7 +39,7 @@ cocos prefab dump <db://path>       # what a .prefab asset holds — see Prefabs
 cocos asset get <db://path>         # uuid, type, importer — see Assets below
 ```
 
-`scene owners` is the check before deleting a script: it walks the open scene and names every node carrying the class, marking `(off)` for a node switched off itself and `(под выключенным)` for one killed by a parent. Checked live 2026-08-20 — `cc.MeshRenderer` answered 144 owners out of 391 nodes scanned.
+`scene owners` is the check before deleting a script: it walks the open scene and names every node carrying the class, marking `(off)` for a node switched off itself and `(under an off parent)` for one killed by a parent. Checked live 2026-08-20 — `cc.MeshRenderer` answered 169 owners out of 425 nodes scanned.
 
 `scene missing` exits 1 when it finds anything; a component whose script no longer resolves is the slot that crashes preview on scene load. `scene dirty` compares what the serializer would emit against the file, so it sees writes the editor's own dirty flag misses — it names the differing paths with both values.
 
@@ -52,11 +50,13 @@ Flags live in each group's `--help` (`cocos node --help`). The useful ones: `--u
 ### Reading a component's properties
 
 ```bash
-$ cocos component get "Game" GameBootstrap
-hero            cc.Node   *  Characters/cc_hero  255rIRyPxOX5xNSUYxZLLP
-prewarm         Number       8
-waypointRadius  Number       0.7
-GameBootstrap на Game  enabled=true  свойств: 8  скрыто: 8 …  * — отличается от умолчания
+$ cocos component get "Main Light" cc.DirectionalLight
+color                          cc.Color                   #ffcb5eff
+useColorTemperature            Boolean                    false
+colorTemperature               Number                     7100
+_illuminanceHDR                Number                  *  120000
+…
+cc.DirectionalLight on Main Light  enabled=true  properties: 26  hidden: 30 …  * — differs from the default
 ```
 
 **A star marks a value that diverges from the class default** — the authored one, the one a class-to-class move loses if nobody reads it first. No star and no verdict are different answers: a dump carrying no comparable default states none, the way `persisted=unknown` does.
@@ -76,8 +76,7 @@ cocos node get "Environment/cc_scene/scene/KB3D_FTW_PropBarrels_A_Main"
 A path runs from a scene root all the way down. A slice out of the middle of the tree (`cc_scene/scene`) fails with code 1 and names what sits nearby:
 
 ```
-path 'Nope/Nothing' does not resolve — not even its first segment 'Nope'.
-The scene roots are: Main Light, Main Camera, Environment, …
+path 'Nope/Nothing' does not resolve — not even its first segment 'Nope'. The scene roots are: Main Light, Main Camera, Environment, …
 ```
 
 **Same-named siblings carry a `#1`, `#2` suffix in child order, and `scene tree` prints them that way.** A path lifted off the tree is a path the resolver takes as it stands:
@@ -86,7 +85,7 @@ The scene roots are: Main Light, Main Camera, Environment, …
 $ cocos scene tree | grep IconController
   ├─┬ IconController#3
 $ cocos node get "Editor Scene Foreground/gizmoRoot/IconController#3"
-IconController  27kzz0ZGVPjp3Wf8wIw/Us
+ok  IconController  a0mQxjmDNBXoW0V8wc2eKc
 ```
 
 Every member of the group carries the suffix, the first one included; a name that stands alone stays bare. A bare name out of a group fails with code 1 and lists the exact spellings.
@@ -136,7 +135,7 @@ An array field takes a JSON array of the same spellings. A field declared withou
 
 Done editing — save the scene yourself with `cocos scene save`. Asking a human to press Ctrl+S is a wasted round trip.
 
-Engine components are registered under a prefix (`cc.MeshRenderer`), user ones under their own class name. Every subcommand — `get`, `add`, `rm`, `set`, and `node create --component` — takes either spelling and prints the **registered** one; where the two differ, trust the report. Checked live: `component add "X" UIOpacity` answers `cc.UIOpacity навешен`. A component that never appeared gives a code-1 failure listing what the node does carry, registered names and all.
+Engine components are registered under a prefix (`cc.MeshRenderer`), user ones under their own class name. Every subcommand — `get`, `add`, `rm`, `set`, and `node create --component` — takes either spelling and prints the **registered** one; where the two differ, trust the report. Checked live: `component add "Game" UIOpacity` answers `ok  cc.UIOpacity added to Game`. A component that never appeared gives a code-1 failure listing what the node does carry, registered names and all.
 
 ## The verdict vocabulary
 
@@ -181,14 +180,14 @@ cocos prefab apply <node>                # write the instance's state into the a
 cocos prefab revert <node>               # throw the instance's overrides away
 ```
 
-`prefab dump` prints one line per node — its path from the prefab root, then the components under their **registered** class names. A component whose script no longer resolves prints `!МЁРТВЫЙ <cid>`, and the summary counts them; that slot is what crashes preview on scene load. Checked live 2026-08-19 on `db://assets/weapon/prefab/rifle.prefab`:
+`prefab dump` prints one line per node — its path from the prefab root, then the components under their **registered** class names. A component whose script no longer resolves prints `!DEAD <cid>`, and the summary counts them; that slot is what crashes preview on scene load. Checked live 2026-08-20 on `db://assets/weapon/prefab/rifle.prefab`:
 
 ```
 rifle  [AimRig,Emitter,Engagement,Magazine]
 rifle/Yaw
 rifle/Yaw/Barrel  [cc.MeshRenderer]
 rifle/Yaw/Muzzle
-rifle  узлов: 4  компонентов: 5
+rifle  nodes: 4  components: 5
 ```
 
 ### Placing and making prefabs
@@ -196,8 +195,8 @@ rifle  узлов: 4  компонентов: 5
 `prefab instantiate` produces a **linked** instance — the node keeps a PrefabInfo, the saved scene carries its `_prefab` block, and later edits to the asset propagate to it. This is not automatic: `scene:create-node` needs to be told the asset's type or it hands back a flat copy that tracks nothing, and nothing about the node tree or the component list gives that away. The command reports the linkage instead of assuming it, from both the live node and the editor's serializer, which can disagree:
 
 ```
-ok  CliProbeInstance из db://assets/projectile/bullet.prefab  f5iNhJK09LSrN7haSBLjTm
-связан с 7c815697-…  fileId=d1Wq/c/N1He6HkIUsWJcmU  корень инстанса  persisted=true
+ok  CliProbeInstance from db://assets/projectile/bullet.prefab  1cS+28OANCo5zCwJgToHFC
+linked to 7c815697-e160-47da-9f87-27fc7d9ff250  fileId=d1Wq/c/N1He6HkIUsWJcmU  instance root  persisted=true
 ```
 
 The linkage takes the same five words: `ok` when both sides agree; `UNVERIFIED` when the serializer could not be reached, so the link is unproven rather than absent; `FAILED` when the node came back with no PrefabInfo; `UNPERSISTED` when the live node holds one and the serializer drops it, so the save turns the instance into a flat copy. `--unlink` asks for the flat copy on purpose and is judged accordingly. An FBX/glTF has no instantiable main asset — the command resolves its `gltf-scene` sub-asset and says it did.
@@ -206,7 +205,7 @@ The linkage takes the same five words: `ok` when both sides agree; `UNVERIFIED` 
 
 **Renaming an `@ccclass` does not touch a prefab.** The file stores the script's uuid, not the class name, so the engine keeps resolving the component and reports it under the new name. What breaks a prefab is the script's *uuid* going away — a deleted and re-added file. `prefab dump` is what tells the two apart.
 
-`component add` and `component rm` reach a prefab instance like any other node — checked live 2026-08-19 on `Characters/cc_hero`, which came back to its exact component list afterwards. A component the prefab itself provides is not deleted from the instance but recorded as removed, which `prefab overrides` counts on its summary line (`снятых компонентов: N`); `prefab apply` is what carries that into the asset.
+`component add` and `component rm` reach a prefab instance like any other node — checked live 2026-08-19 on `Characters/cc_hero`, which came back to its exact component list afterwards. A component the prefab itself provides is not deleted from the instance but recorded as removed, which `prefab overrides` counts on its summary line (`removed components: N`); `prefab apply` is what carries that into the asset.
 
 ## Assets
 
@@ -235,13 +234,13 @@ cocos asset refresh db://assets/framework && cocos component add "Characters/gua
 It reports what the editor actually did — the file delta and, on its own line, the registered component classes that came and went, which is the half that answers "did the editor notice my class":
 
 ```
-ok  db://assets/framework/targeting  обновлено за 1.7с
-ассеты: +1  -0  ~0
+ok  db://assets/framework/targeting  refreshed in 1.7s
+assets: +1  -0  ~0
   + db://assets/framework/targeting/CliProbeMarker.ts
-классы компонентов: +CliProbeMarker
+component classes: +CliProbeMarker
 ```
 
-`ok` means the database went quiet; `TIMEOUT` means it was still working when `--timeout` (60 s) ran out, and exits 1. `без изменений` on the head line is a real answer — the editor already knew everything under that folder. A refresh over the whole 254-script `framework` tree cost 1.7 s.
+`ok` means the database went quiet; `TIMEOUT` means it was still working when `--timeout` (60 s) ran out, and exits 1. `no changes` on the head line is a real answer — the editor already knew everything under that folder. A refresh over the whole 254-script `framework` tree cost 1.7 s.
 
 `--quiet-for <ms>` (1.5 s) is how long the database's fingerprint must hold still before the command believes it. Raise both flags for a large reimport.
 
@@ -253,7 +252,7 @@ ok  db://assets/framework/targeting  обновлено за 1.7с
 - **A taken target is renamed, not refused** — the default is rename-on-conflict. The report names where the asset actually landed, which is not always where it was sent:
 
 ```
-ok  db://assets/f/CliProbeCopy.md → db://assets/f/README-001.md  перенесено за 1.7с
+ok  db://assets/framework/targeting/CliProbeCopy.md → db://assets/framework/targeting/README-001.md  moved in 1.7s
 ```
 
 Read the arrow's right side, not the argument you typed. `--overwrite` replaces the target instead.

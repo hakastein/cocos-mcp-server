@@ -4,15 +4,15 @@ import assert from 'node:assert/strict';
 import { componentSet } from '../lib/commands/component.js';
 import { present } from '../lib/render/present.js';
 
-/** Команда отвечает отчётом; строки и код выхода из него делает presenter. */
+/** A command answers with a report; the presenter turns it into lines and an exit code. */
 const setOutput = async (...args) => present(await componentSet(...args));
 
 const HERO_UUID = 'aQ1wErTyUiOpAsDfGhJkL2';
 
 /**
- * Правка `set-property` в дампе узла — ровно то, что делает редактор, принимая запись. Без этого
- * дубль отвечает на чтение тем, что лежало до записи, и проверка read-back проваливается по вине
- * дубля, а не кода.
+ * `set-property` editing the node dump is exactly what the editor does when it accepts a write.
+ * Without it the double answers a read with what was there before the write, and the read-back
+ * check fails through the double's fault rather than the code's.
  */
 function applySetProperty(components, path, dump) {
     const parts = path.split('.');
@@ -22,13 +22,13 @@ function applySetProperty(components, path, dump) {
     holder[leaf] = { ...(holder[leaf] || {}), ...(dump.type ? { type: dump.type } : {}), value: dump.value };
 }
 
-/** Сериализатор, несущий всё: отдаёт то же, что живой дамп. Расхождение задаётся явно, где нужно. */
+/** A serializer that carries everything: it answers what the live dump does. A divergence is set explicitly where needed. */
 function mirrorSerializer(components) {
     return property => {
         const descriptor = components[0].value[property];
         return descriptor
             ? { found: true, value: descriptor.value }
-            : { found: false, reason: `сериализатор не отдаёт '${property}'` };
+            : { found: false, reason: `the serializer does not emit '${property}'` };
     };
 }
 
@@ -86,7 +86,7 @@ const sprite = () => [{
     value: { color: { type: 'cc.Color', value: { r: 255, g: 255, b: 255, a: 255 } } }
 }];
 
-test('запись обёрнута в скобку undo', async () => {
+test('a write is wrapped in an undo bracket', async () => {
     const driver = driverDouble({ components: sprite() });
     await componentSet(driver, { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ffffff' });
     const names = driver.calls.map(call => call[0]);
@@ -95,7 +95,7 @@ test('запись обёрнута в скобку undo', async () => {
     assert.ok(!names.includes('cancelRecording'));
 });
 
-test('результат приходит отчётом на stdout, а не сырым объектом', async () => {
+test('the result arrives on stdout as a report rather than as a raw object', async () => {
     const output = await setOutput(driverDouble({ components: sprite() }),
         { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ffffff' });
     assert.match(output.stdout, /^ok/);
@@ -104,20 +104,20 @@ test('результат приходит отчётом на stdout, а не с
     assert.equal(output.failed, false);
 });
 
-test('запись принимает приставочное написание и называет зарегистрированный класс', async () => {
+test('a write accepts the prefixed spelling and names the registered class', async () => {
     const output = await setOutput(driverDouble({ components: sprite() }),
         { node: 'Canvas/Bg', component: 'cc.Sprite', property: 'color', value: '#ffffff' });
     assert.match(output.stdout, /cc\.Sprite\.color/);
 });
 
-test('узел без запрошенного компонента — отказ, называющий, что там есть', async () => {
+test('a node without the requested component gives a refusal naming what it does carry', async () => {
     await assert.rejects(
         () => componentSet(driverDouble({ components: sprite() }),
             { node: 'Canvas/Bg', component: 'Label', property: 'string', value: 'hi' }),
         /Sprite/);
 });
 
-test('cc.Color получает подсказку типа, и значение доезжает разобранным', async () => {
+test('cc.Color gets the type hint and the value arrives parsed', async () => {
     const driver = driverDouble({ components: sprite() });
     await componentSet(driver, { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ff0000' });
     const call = driver.calls.find(entry => entry[0] === 'setProperty');
@@ -125,12 +125,12 @@ test('cc.Color получает подсказку типа, и значение
     assert.deepEqual(call[1].dump.value, { r: 255, g: 0, b: 0, a: 255 });
 });
 
-test('сериализатор отдаёт другое значение — persisted=false и ненулевой исход', async () => {
+test('the serializer emits a different value — persisted=false and a non-zero outcome', async () => {
     const output = await setOutput(
         driverDouble({
             components: sprite(),
-            // Форма, которую реально отдаёт сериализатор для cc.Color — объект каналов; здесь это
-            // ЧЁРНЫЙ при записанном БЕЛОМ, то есть настоящее расхождение.
+            // The shape the serializer really emits for cc.Color is a channel object; here it is
+            // BLACK against a written WHITE, that is, a genuine divergence.
             serializer: () => ({ found: true, value: { r: 0, g: 0, b: 0, a: 255 } })
         }),
         { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ffffff' });
@@ -139,33 +139,33 @@ test('сериализатор отдаёт другое значение — pe
     assert.equal(output.failed, true);
 });
 
-test('сериализатор знает свойство только под именем backing-поля — обе попытки, найдено', async () => {
+test('the serializer knows the property only under its backing-field name — both tries, found', async () => {
     const driver = driverDouble({
         components: [{ __type__: 'cc.UIOpacity', value: { opacity: { type: 'Number', value: 255 } } }],
         serializer: property => property === '_opacity'
             ? { found: true, value: 128 }
-            : { found: false, reason: `сериализатор не отдаёт '${property}'` }
+            : { found: false, reason: `the serializer does not emit '${property}'` }
     });
     const output = await setOutput(driver,
         { node: 'Canvas/Bg', component: 'UIOpacity', property: 'opacity', value: 128 });
     assert.match(output.stdout, /persisted=true/);
 });
 
-test('узел без запрошенного свойства — отказ, называющий, какие свойства есть', async () => {
+test('a node without the requested property gives a refusal naming the properties it has', async () => {
     await assert.rejects(
         () => componentSet(driverDouble({ components: sprite() }),
             { node: 'Canvas/Bg', component: 'Sprite', property: 'spriteFrame', value: 'x' }),
         /color/);
 });
 
-// ----- Ссылки ------------------------------------------------------------------------------
+// ----- References --------------------------------------------------------------------------
 
 const npc = () => [{
     __type__: 'Npc',
     value: { target: { type: 'cc.Node', value: { uuid: '' } } }
 }];
 
-/** Сцена-скрипт, отвечающий на ссылочную запись так же, как живой: сперва планом, потом исходом. */
+/** A scene script answering a reference write the way the live one does: first a plan, then an outcome. */
 function referenceScript(state) {
     return {
         resolveComponentReference: args => {
@@ -197,7 +197,7 @@ function referenceScript(state) {
     };
 }
 
-test('путь узла доезжает до сцены разрешённым uuid, а не строкой пути', async () => {
+test('a node path reaches the scene as a resolved uuid rather than as the path string', async () => {
     const components = npc();
     const driver = driverDouble({
         components,
@@ -213,7 +213,7 @@ test('путь узла доезжает до сцены разрешённым 
     assert.equal(output.failed, false);
 });
 
-test('ссылка уходит в редактор дампом с uuid, а не сырым значением --value', async () => {
+test('a reference goes to the editor as a dump carrying a uuid, not as the raw --value', async () => {
     const components = npc();
     const driver = driverDouble({
         components,
@@ -228,7 +228,7 @@ test('ссылка уходит в редактор дампом с uuid, а н�
     assert.equal(components[0].value.target.value.uuid, HERO_UUID);
 });
 
-test('uuid в --value принимается наравне с путём и по сцене не ищется', async () => {
+test('a uuid in --value is accepted like a path and is not looked up in the scene', async () => {
     const components = npc();
     const driver = driverDouble({ components, references: referenceScript(components) });
     await componentSet(driver,
@@ -238,7 +238,7 @@ test('uuid в --value принимается наравне с путём и п�
     assert.equal(components[0].value.target.value.uuid, HERO_UUID);
 });
 
-test('неразрешимый путь — отказ ДО записи: слот остаётся с прежним значением', async () => {
+test('an unresolvable path is refused BEFORE the write: the slot keeps its previous value', async () => {
     const components = npc();
     components[0].value.target.value.uuid = HERO_UUID;
     const driver = driverDouble({ components, references: referenceScript(components) });
@@ -251,7 +251,7 @@ test('неразрешимый путь — отказ ДО записи: сло
     assert.equal(components[0].value.target.value.uuid, HERO_UUID);
 });
 
-test('uuid, которого в сцене нет, — отказ сцены, слот не тронут', async () => {
+test('a uuid absent from the scene is refused by the scene, and the slot stays untouched', async () => {
     const components = npc();
     components[0].value.target.value.uuid = HERO_UUID;
     const driver = driverDouble({ components, references: referenceScript(components) });
@@ -264,7 +264,7 @@ test('uuid, которого в сцене нет, — отказ сцены, с
     assert.equal(components[0].value.target.value.uuid, HERO_UUID);
 });
 
-test('ассетная ссылка берётся db://-путём через базу ассетов', async () => {
+test('an asset reference is taken by db:// path through the asset database', async () => {
     const components = [{
         __type__: 'cc.Sprite',
         value: { spriteFrame: { type: 'cc.SpriteFrame', extends: ['cc.Asset'], value: { uuid: '' } } }
@@ -282,7 +282,7 @@ test('ассетная ссылка берётся db://-путём через �
     assert.deepEqual(write[1].dump, { type: 'cc.SpriteFrame', value: { uuid: 'a_icon' } });
 });
 
-test('ассет по имени узла не ищется — отказ до записи', async () => {
+test('an asset is not looked up by node name — refused before the write', async () => {
     const components = [{
         __type__: 'cc.Sprite',
         value: { spriteFrame: { type: 'cc.SpriteFrame', extends: ['cc.Asset'], value: { uuid: 'a_old' } } }

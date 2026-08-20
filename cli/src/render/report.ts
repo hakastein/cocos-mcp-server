@@ -10,9 +10,9 @@ export interface RenderedWrite {
 }
 
 /**
- * `persisted: false` значим только на канале editor: там сохранение действительно уронит значение,
- * а live ничего не сериализует по устройству канала. `persisted: null` — не проверено, а не
- * опровергнуто, поэтому оно судится обратным чтением, а не сохранением.
+ * `persisted: false` means something only on the editor channel: there a save really does drop the
+ * value, while live serializes nothing by construction. `persisted: null` is unchecked rather than
+ * disproven, so it is judged by the read-back instead of by the save.
  */
 export function writeVerdict(report: WriteReport): Verdict {
     if (!report.written) return 'FAILED';
@@ -34,9 +34,9 @@ export function renderWriteReport(write: RenderedWrite): string {
     ];
 
     if (report.persisted === false && report.channel === 'live') {
-        parts.push('(для live это ожидаемо: канал ничего не сериализует)');
+        parts.push('(expected on live: the channel serializes nothing)');
     }
-    if (report.prefabOverride) parts.push(`override на ${report.prefabOverride.targetPath}`);
+    if (report.prefabOverride) parts.push(`override on ${report.prefabOverride.targetPath}`);
     if (report.detail) parts.push(report.detail);
     if (write.undoNote) parts.push(write.undoNote);
 

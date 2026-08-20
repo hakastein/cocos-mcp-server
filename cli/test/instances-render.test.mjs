@@ -12,11 +12,11 @@ const stripAnsi = (text) => text.replace(/\x1b\[[0-9;]*m/g, '');
 function rowByPid(text, pid) {
     const lines = stripAnsi(text).split('\n');
     const matches = lines.filter(line => new RegExp(`\\b${pid}\\b`).test(line));
-    assert.equal(matches.length, 1, `ожидалась одна строка с pid ${pid}, найдено ${matches.length}`);
+    assert.equal(matches.length, 1, `expected one line carrying pid ${pid}, found ${matches.length}`);
     return matches[0];
 }
 
-test('строка на инстанс, с проектом, путём и pid, в одной и той же строке', () => {
+test('one line per instance, with project, path and pid on that same line', () => {
     const text = renderInstances([
         hello('CyberCore', 'D:/cocos/games/CyberCore', 111),
         hello('tl_weedmanager1a', 'D:/cocos/games/tl_weedmanager1a', 222)
@@ -31,11 +31,11 @@ test('строка на инстанс, с проектом, путём и pid, 
     assert.match(weedRow, /D:\/cocos\/games\/tl_weedmanager1a/);
 });
 
-test('пустой список говорит словами, а не пустой таблицей', () => {
-    assert.match(renderInstances([]), /ни одного/i);
+test('an empty list says so in words rather than as an empty table', () => {
+    assert.match(renderInstances([]), /no open/i);
 });
 
-test('одноимённые проекты различимы по пути в своей же строке', () => {
+test('same-named projects are told apart by the path on their own line', () => {
     const text = renderInstances([
         hello('Game', 'D:/a/Game', 1),
         hello('Game', 'D:/b/Game', 2)

@@ -10,28 +10,28 @@ const write = (report = {}, over = {}) => ({
     ...over
 });
 
-test('удачная проверенная запись — одна строка с ok', () => {
+test('a verified write that landed is one line starting with ok', () => {
     const text = renderWriteReport(write({}, { value: '#ffffff' }));
     assert.match(text, /^ok/);
     assert.match(text, /Sprite\.color/);
     assert.match(text, /persisted=true/);
 });
 
-test('persisted=null печатается как unknown, а не как false', () => {
+test('persisted=null prints as unknown rather than as false', () => {
     const text = renderWriteReport(write({ persisted: null }));
     assert.match(text, /persisted=unknown/);
     assert.doesNotMatch(text, /persisted=false/);
 });
 
-test('persisted=false на канале editor — это потеря значения при сохранении', () => {
+test('persisted=false on the editor channel means the value is lost on save', () => {
     const text = renderWriteReport(write({ persisted: false, channel: 'editor' }));
     assert.match(text, /persisted=false/);
     assert.match(text, /editor/);
 });
 
-// Первое слово читают все, хвост строки не читает никто: запись, которую сохранение уронит,
-// не имеет права начинаться с ok, даже когда read-back её подтвердил.
-test('проверенная запись, которую сохранение уронит, называется UNPERSISTED', () => {
+// Everyone reads the first word and nobody reads the tail: a write a save will drop has no right
+// to start with ok, even when the read-back confirmed it.
+test('a verified write a save will drop is called UNPERSISTED', () => {
     const text = renderWriteReport(write({ verified: true, persisted: false, channel: 'editor' }));
     assert.equal(text.split('  ')[0], 'UNPERSISTED');
     assert.equal(
@@ -39,55 +39,55 @@ test('проверенная запись, которую сохранение �
         'UNPERSISTED');
 });
 
-test('на канале live persisted=false исходом не считается — там нечему сериализоваться', () => {
+test('on the live channel persisted=false is no failure — nothing there serializes', () => {
     assert.equal(
         writeVerdict({ written: true, verified: true, persisted: false, channel: 'live' }), 'ok');
 });
 
-test('непроверенное сохранение исходом не считается: никто не смотрел', () => {
+test('unchecked persistence is no failure: nobody looked', () => {
     assert.equal(
         writeVerdict({ written: true, verified: true, persisted: null, channel: 'editor' }), 'ok');
 });
 
-test('незаписанное — FAILED в любом случае', () => {
+test('an unwritten value is FAILED either way', () => {
     assert.equal(writeVerdict({ written: false, verified: false, persisted: null }), 'FAILED');
 });
 
-test('запись, которую не подтвердило обратное чтение, — UNVERIFIED, а не ok и не FAILED', () => {
+test('a write the read-back did not confirm is UNVERIFIED, neither ok nor FAILED', () => {
     const report = { written: true, verified: false, persisted: null, channel: 'editor' };
     assert.equal(writeVerdict(report), 'UNVERIFIED');
     assert.equal(renderWriteReport(write(report)).split('  ')[0], 'UNVERIFIED');
 });
 
-test('persisted=false на канале live — ожидаемое состояние, а не дефект', () => {
+test('persisted=false on the live channel is the expected state, not a defect', () => {
     const text = renderWriteReport(write({ persisted: false, channel: 'live' }));
     assert.match(text, /live/);
-    assert.match(text, /ожид|норм/i);
+    assert.match(text, /expected/i);
 });
 
-test('канал, которого отчёт не назвал, печатается как unknown', () => {
+test('a channel the report did not name prints as unknown', () => {
     const text = renderWriteReport(write({ channel: undefined }));
     assert.match(text, /channel=unknown/);
 });
 
-test('незаписанное значение не выдаётся за ok', () => {
+test('an unwritten value is not passed off as ok', () => {
     const text = renderWriteReport(write({ written: false, verified: false, persisted: null }));
     assert.doesNotMatch(text, /^ok/);
 });
 
-test('записанное, но не проверенное — не то же самое, что не записанное', () => {
+test('written but unverified is not the same as never written', () => {
     const written = renderWriteReport(write({ written: true, verified: false, persisted: null }));
     const notWritten = renderWriteReport(write({ written: false, verified: false, persisted: null }));
     assert.equal(written.split('  ')[0], 'UNVERIFIED');
     assert.equal(notWritten.split('  ')[0], 'FAILED');
 });
 
-test('detail из отчёта доезжает до строки', () => {
-    const text = renderWriteReport(write({ detail: 'сериализатор не отдаёт это свойство' }));
-    assert.match(text, /сериализатор не отдаёт/);
+test('the report detail reaches the line', () => {
+    const text = renderWriteReport(write({ detail: 'the serializer does not emit this property' }));
+    assert.match(text, /the serializer does not emit/);
 });
 
-test('отметка про undo попадает в строку, когда редактор не записал шаг', () => {
-    const text = renderWriteReport(write({}, { undoNote: 'редактор оставил скобку открытой' }));
-    assert.match(text, /скобку открытой/);
+test('the undo note reaches the line when the editor did not record the step', () => {
+    const text = renderWriteReport(write({}, { undoNote: 'the editor left the bracket open' }));
+    assert.match(text, /left the bracket open/);
 });

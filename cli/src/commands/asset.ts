@@ -48,14 +48,14 @@ async function queryOne(client: DriverClient, urlOrUuid: string): Promise<AssetR
 
 async function requireOne(client: DriverClient, urlOrUuid: string): Promise<AssetRecord> {
     const info = await queryOne(client, urlOrUuid);
-    if (!info) throw new Error(`база ассетов не знает '${urlOrUuid}'`);
+    if (!info) throw new Error(`the asset database does not know '${urlOrUuid}'`);
     return info;
 }
 
 /**
- * Классы, под которыми редактор сейчас регистрирует компоненты. Это и есть ответ на «заметил ли
- * редактор новый `@ccclass`» — ради него запускают `refresh`, а отчёт по одним файлам говорит про
- * диск, тогда как спрашивали про класс.
+ * The classes the editor currently registers components under. This is the answer to `did the editor
+ * notice the new @ccclass` — the question a `refresh` is run for, while a files-only report talks
+ * about the disk when the class was what was asked about.
  */
 async function registeredClasses(client: DriverClient): Promise<string[] | null> {
     const components = await client.editor.scene.queryComponents().catch(() => null);
@@ -66,8 +66,9 @@ async function registeredClasses(client: DriverClient): Promise<string[] | null>
 }
 
 /**
- * Отпечаток снимается и по самому адресу, и по дереву под ним, поэтому папка, которой база ещё не
- * знает, ожиданию не мешает: до `refresh` её просто нет ни в одной половине.
+ * The fingerprint is taken both of the address itself and of the tree under it, so a folder the
+ * database does not know yet does not disturb the wait: before the `refresh` it is simply absent
+ * from both halves.
  */
 async function snapshot(client: DriverClient, url: string): Promise<DbSnapshot> {
     const under = await queryAssets(client, assetQuery(url, 'all'));
@@ -87,8 +88,8 @@ export interface SettleOutcome {
 }
 
 /**
- * `refresh-asset` и `reimport-asset` возвращают управление до конца импорта — на этом проекте
- * порядка восьми секунд до конца, — поэтому ожидание живёт здесь, а не у вызывающего.
+ * `refresh-asset` and `reimport-asset` return before the import finishes — on this project some
+ * eight seconds before it — so the waiting lives here rather than in the caller.
  */
 async function settleAssetDb(
     client: DriverClient, url: string, options: WaitOptions
@@ -127,9 +128,10 @@ function outputOf(report: SettleReport, options: WaitOptions, extraNote?: string
 }
 
 /**
- * `move-asset`, `copy-asset`, `create-asset` и `delete-asset` отвечают пустотой и на удавшейся
- * операции — проверено живьём: перенос сложился, файл переехал, uuid уцелел, а ответ был `null`.
- * Поэтому их ответ не читается: где ассет оказался, спрашивают у базы по его uuid.
+ * `move-asset`, `copy-asset`, `create-asset` and `delete-asset` answer with nothing on a successful
+ * operation too — checked live: the move went through, the file landed in its new folder, the uuid
+ * survived, and the answer was `null`. So their answer is never read: where the asset ended up is
+ * asked of the database by its uuid.
  */
 async function whereIs(client: DriverClient, uuid: string): Promise<string | null> {
     const url = await client.editor.assetDb.queryUrl(uuid).catch(() => null);
@@ -139,32 +141,32 @@ async function whereIs(client: DriverClient, uuid: string): Promise<string | nul
 export async function assetRefresh(
     client: DriverClient, target: string, options: WaitOptions
 ): Promise<Report> {
-    const url = requireAssetUrl(target, 'папка обновления');
+    const url = requireAssetUrl(target, 'the folder to refresh');
     const before = await snapshot(client, url);
     await client.editor.assetDb.refreshAsset(url);
-    return outputOf(await settleAndDiff(client, 'обновлено', url, url, before, options), options);
+    return outputOf(await settleAndDiff(client, 'refreshed', url, url, before, options), options);
 }
 
 export async function assetReimport(
     client: DriverClient, target: string, options: WaitOptions
 ): Promise<Report> {
-    const url = requireAssetUrl(target, 'переимпортируемый ассет');
+    const url = requireAssetUrl(target, 'the asset to reimport');
     if (!await queryOne(client, url)) {
-        throw new Error(`база ассетов не знает '${url}'; если файл появился на диске мимо редактора, `
-            + `сначала 'cocos asset refresh <папка>'`);
+        throw new Error(`the asset database does not know '${url}'; if the file appeared on disk past the `
+            + `editor, run 'cocos asset refresh <folder>' first`);
     }
     const before = await snapshot(client, url);
     await client.editor.assetDb.reimportAsset(url);
     return outputOf(
-        await settleAndDiff(client, 'переимпортировано', url, url, before, options), options);
+        await settleAndDiff(client, 'reimported', url, url, before, options), options);
 }
 
 export async function assetMove(
     client: DriverClient, source: string, target: string,
     options: WaitOptions & { overwrite?: boolean }
 ): Promise<Report> {
-    const from = requireAssetUrl(source, 'исходный ассет');
-    const to = requireAssetUrl(target, 'целевой адрес');
+    const from = requireAssetUrl(source, 'the source asset');
+    const to = requireAssetUrl(target, 'the target address');
     const moving = await requireOne(client, from);
 
     const scope = commonAssetFolder(from, to);
@@ -173,19 +175,19 @@ export async function assetMove(
         overwrite: options.overwrite === true, rename: options.overwrite !== true
     });
 
-    const report = await settleAndDiff(client, 'перенесено', `${from} → ${to}`, scope, before, options);
+    const report = await settleAndDiff(client, 'moved', `${from} → ${to}`, scope, before, options);
     const landed = await whereIs(client, moving.uuid);
     if (landed === null) {
-        report.failure = `${from} после переноса не найден в базе ни по одному адресу`;
+        report.failure = `${from} is at no address in the database after the move`;
     } else if (landed !== to) {
         report.target = `${from} → ${landed}`;
         report.failure = landed === from
-            ? `${from} остался на месте — ${to} занят, а --overwrite не задан`
+            ? `${from} stayed where it was — ${to} is taken and --overwrite was not passed`
             : undefined;
     }
     return outputOf(report, options,
-        'uuid переезд переживает, а абсолютные db://-пути внутри .meta импортёра — нет: '
-            + 'materialDumpDir у модели с выгруженными материалами продолжает называть старую папку');
+        'a uuid survives the move, and absolute db:// paths inside an importer .meta do not: '
+            + 'materialDumpDir on a model with dumped materials keeps naming the old folder');
 }
 
 export async function assetGet(
@@ -198,10 +200,10 @@ export async function assetList(
     client: DriverClient, folder: string,
     options: { type?: string; name?: string; exact?: boolean; max?: string }
 ): Promise<Report> {
-    const root = requireAssetUrl(folder, 'папка поиска');
+    const root = requireAssetUrl(folder, 'the folder to search');
     const type = (options.type || 'all') as AssetType;
     if (ASSET_TYPES.indexOf(type) === -1) {
-        throw new Error(`тип ассета '${type}' не известен; есть: ${ASSET_TYPES.join(', ')}`);
+        throw new Error(`asset type '${type}' is not known; the known ones: ${ASSET_TYPES.join(', ')}`);
     }
     const maxResults = options.max === undefined ? DEFAULT_MAX_RESULTS : Number(options.max);
     const selection = selectAssets(await queryAssets(client, assetQuery(root, type)), {
@@ -211,31 +213,31 @@ export async function assetList(
 }
 
 export function registerAsset(program: Command, resolve: () => Promise<Resolved>): void {
-    const asset = program.command('asset').description('база ассетов проекта');
+    const asset = program.command('asset').description('the asset database of the project');
 
     const waitFlags = (command: Command): Command => command
         .option('--timeout <seconds>',
-            `сколько ждать, пока база уляжется (по умолчанию ${WAIT.timeoutMs / 1000})`)
+            `how long to wait for the database to go quiet (default ${WAIT.timeoutMs / 1000})`)
         .option('--quiet-for <ms>',
-            `сколько отпечаток базы должен не меняться (по умолчанию ${WAIT.quietForMs})`);
+            `how long the database fingerprint must hold unchanged (default ${WAIT.quietForMs})`);
 
     asset
         .command('get <path>')
-        .description('uuid, тип, url и импортёр ассета по db://-пути или uuid')
-        .option('--field <name>', 'выдать одно поле голым значением')
-        .option('--json', 'выдать структурную форму вместо текста')
+        .description('uuid, type, url and importer of an asset, by db:// url or uuid')
+        .option('--field <name>', 'print one field as a bare value')
+        .option('--json', 'print the structural form instead of text')
         .action((target: string, options: { field?: string; json?: boolean }) =>
             withClient(resolve, client => assetGet(client, target, options), { json: options.json }));
 
     asset
         .command('ls [folder]')
-        .description('перечислить ассеты под папкой')
-        .option('--type <type>', `сузить по типу: ${ASSET_TYPES.join(', ')}`)
-        .option('--name <substring>', 'сузить по имени')
-        .option('--exact', 'сравнивать имя точно, а не как подстроку')
+        .description('list the assets under a folder')
+        .option('--type <type>', `narrow by type: ${ASSET_TYPES.join(', ')}`)
+        .option('--name <substring>', 'narrow by name')
+        .option('--exact', 'match the name exactly instead of as a substring')
         .option('--max <n>',
-            `предел выдачи (по умолчанию ${DEFAULT_MAX_RESULTS}); итог всё равно называет полное число`)
-        .option('--json', 'выдать структурную форму вместо текста')
+            `cap on the listing (default ${DEFAULT_MAX_RESULTS}); the summary still names the full count`)
+        .option('--json', 'print the structural form instead of text')
         .action((folder: string | undefined, options: {
             type?: string; name?: string; exact?: boolean; max?: string; json?: boolean
         }) => withClient(
@@ -244,21 +246,21 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
 
     waitFlags(asset
         .command('refresh <folder>')
-        .description('пересканировать папку и дождаться конца импорта — правка, сделанная мимо '
-            + 'редактора, доходит до проекта этим'))
+        .description('rescan a folder and wait for the import to finish — this is what carries an edit '
+            + 'made past the editor into the project'))
         .action((folder: string, options: { timeout?: string; quietFor?: string }) =>
             withClient(resolve, client => assetRefresh(client, folder, waitOptions(options))));
 
     waitFlags(asset
         .command('reimport <path>')
-        .description('перезапустить импортёр на одном ассете и дождаться, пока он закончит'))
+        .description('rerun the importer on one asset and wait for it to finish'))
         .action((target: string, options: { timeout?: string; quietFor?: string }) =>
             withClient(resolve, client => assetReimport(client, target, waitOptions(options))));
 
     waitFlags(asset
         .command('mv <source> <target>')
-        .description('перенести или переименовать ассет; uuid переезд переживает, ссылки не рвутся')
-        .option('--overwrite', 'заменить занятый адрес вместо переименования'))
+        .description('move or rename an asset; the uuid survives and references stay intact')
+        .option('--overwrite', 'replace a taken address instead of renaming'))
         .action((source: string, target: string, options: {
             overwrite?: boolean; timeout?: string; quietFor?: string
         }) => withClient(resolve, client => assetMove(
@@ -266,12 +268,12 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
 
     asset
         .command('cp <source> <target>')
-        .description('скопировать ассет; копия — новый ассет с новым uuid, на неё никто не ссылается')
-        .option('--overwrite', 'заменить занятый адрес вместо переименования')
+        .description('copy an asset; the copy is a new asset with a new uuid that nothing references')
+        .option('--overwrite', 'replace a taken address instead of renaming')
         .action((source: string, target: string, options: { overwrite?: boolean }) =>
             withClient(resolve, async client => {
-                const from = requireAssetUrl(source, 'исходный ассет');
-                const to = requireAssetUrl(target, 'целевой адрес');
+                const from = requireAssetUrl(source, 'the source asset');
+                const to = requireAssetUrl(target, 'the target address');
                 const original = await requireOne(client, from);
                 await client.editor.assetDb.copyAsset(from, to, {
                     overwrite: options.overwrite === true, rename: options.overwrite !== true
@@ -281,28 +283,28 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
                     return {
                         kind: 'action',
                         verdict: 'FAILED',
-                        summary: `${to} не появился в базе после копирования`
+                        summary: `${to} did not appear in the database after the copy`
                     };
                 }
                 if (landed.uuid === original.uuid) {
                     return {
                         kind: 'action',
                         verdict: 'FAILED',
-                        summary: `по ${to} лежит сам ${from}, копии нет`
+                        summary: `${to} holds ${from} itself, and there is no copy`
                     };
                 }
                 return {
                     kind: 'action',
                     verdict: 'ok',
-                    summary: `скопировано в ${landed.url}  ${landed.uuid}`
+                    summary: `copied to ${landed.url}  ${landed.uuid}`
                 };
             }));
 
     asset
         .command('rm <path>')
-        .description('удалить ассет или папку целиком')
+        .description('delete an asset or a whole folder')
         .action((target: string) => withClient(resolve, async client => {
-            const url = requireAssetUrl(target, 'удаляемый ассет');
+            const url = requireAssetUrl(target, 'the asset to delete');
             const existing = await requireOne(client, url);
             await client.editor.assetDb.deleteAsset(url);
             const stillThere = await whereIs(client, existing.uuid);
@@ -310,39 +312,39 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
                 return {
                     kind: 'action',
                     verdict: 'FAILED',
-                    summary: `${existing.uuid} всё ещё лежит по ${stillThere}`
+                    summary: `${existing.uuid} is still at ${stillThere}`
                 };
             }
             return {
-                kind: 'action', verdict: 'ok', summary: `удалён ${url}  ${existing.uuid}`
+                kind: 'action', verdict: 'ok', summary: `deleted ${url}  ${existing.uuid}`
             };
         }));
 
     asset
         .command('mkdir <folder>')
-        .description('создать папку в базе ассетов')
+        .description('create a folder in the asset database')
         .action((folder: string) => withClient(resolve, async client => {
-            const url = requireAssetUrl(folder, 'создаваемая папка');
+            const url = requireAssetUrl(folder, 'the folder to create');
             await client.editor.assetDb.createAsset(url, null);
             const created = await queryOne(client, url);
             if (!created) {
-                return { kind: 'action', verdict: 'FAILED', summary: `${url} не появилась в базе` };
+                return { kind: 'action', verdict: 'FAILED', summary: `${url} did not appear in the database` };
             }
             return {
                 kind: 'action',
                 verdict: 'ok',
-                summary: `создана ${created.url}  ${created.uuid}`,
-                note: created.isDirectory === true ? undefined : `${url} — не папка`
+                summary: `created ${created.url}  ${created.uuid}`,
+                note: created.isDirectory === true ? undefined : `${url} is not a folder`
             };
         }));
 
     asset
         .command('ready')
-        .description('закончила ли база ассетов запуск — всё, прочитанное до этого, о недоимпортированном проекте')
+        .description('whether the asset database finished starting up — anything read before that is about a half-imported project')
         .action(() => withClient(resolve, async client => {
             const ready = await client.editor.assetDb.queryReady();
             return ready === true
-                ? { kind: 'action', verdict: 'ok', summary: 'база ассетов готова' }
-                : { kind: 'action', verdict: 'FAILED', summary: 'база ассетов ещё не готова' };
+                ? { kind: 'action', verdict: 'ok', summary: 'the asset database is ready' }
+                : { kind: 'action', verdict: 'FAILED', summary: 'the asset database is not ready yet' };
         }));
 }

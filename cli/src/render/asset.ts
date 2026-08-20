@@ -9,7 +9,7 @@ export const ASSET_FIELDS = [
 
 export type AssetField = typeof ASSET_FIELDS[number];
 
-/** Одно значение на stdout — то, что уходит в переменную оболочки. */
+/** One value on stdout — what a shell variable takes. */
 export function assetField(asset: AssetRecord, field: string): string {
     switch (field) {
         case 'name': return asset.name;
@@ -23,7 +23,7 @@ export function assetField(asset: AssetRecord, field: string): string {
         case 'file': return asset.file ?? '';
         case 'subAssets': return String(Object.keys(asset.subAssets || {}).length);
         default:
-            throw new Error(`у ассета нет поля '${field}'; есть: ${ASSET_FIELDS.join(', ')}`);
+            throw new Error(`asset has no field '${field}'; it has: ${ASSET_FIELDS.join(', ')}`);
     }
 }
 
@@ -51,11 +51,11 @@ export function renderAssetInfo(asset: AssetRecord): string {
 }
 
 /**
- * Столбцы выравниваются пробелами, а не рамкой: список ассетов читают грепом, и рамка попадает в
- * каждую вытащенную строку.
+ * Columns are padded with spaces rather than boxed: an asset listing is read with grep, and a box
+ * border lands in every line pulled out of it.
  */
 export function renderAssetList(assets: readonly AssetRecord[]): string {
-    if (!assets.length) return 'ни одного ассета не подошло';
+    if (!assets.length) return 'no asset matched';
     const typeWidth = assets.reduce((widest, asset) => Math.max(widest, (asset.type || '').length), 0);
     return assets
         .map(asset => `${padRight(asset.type || '', typeWidth)}  ${
@@ -65,17 +65,17 @@ export function renderAssetList(assets: readonly AssetRecord[]): string {
 
 export function assetListSummary(shown: number, total: number): string {
     return shown === total
-        ? `ассетов: ${shown}`
-        : `ассетов: ${total}, показано ${shown} — подними --max или сузь поиск`;
+        ? `assets: ${shown}`
+        : `assets: ${total}, showing ${shown} — raise --max or narrow the search`;
 }
 
 export interface SettleReport {
-    /** Что редактору велели сделать, в прошедшем времени: «обновлено», «переимпортировано». */
+    /** What the editor was told to do, in the past tense: `refreshed`, `reimported`. */
     action: string;
     target: string;
     elapsedMs: number;
     settled: boolean;
-    /** Провал самой операции, отдельный от «база не улеглась»: обещанного не произошло. */
+    /** The operation's own failure, apart from `did not go quiet`: what was promised did not happen. */
     failure?: string;
     assets: AssetDiff;
     classes: ClassDiff | null;
@@ -85,13 +85,13 @@ const DEFAULT_LIST_CAP = 40;
 
 function listed(urls: readonly string[], mark: string, cap: number): string[] {
     const shown = urls.slice(0, cap).map(url => `  ${mark} ${url}`);
-    if (urls.length > cap) shown.push(`  ${mark} … и ещё ${urls.length - cap}`);
+    if (urls.length > cap) shown.push(`  ${mark} … and ${urls.length - cap} more`);
     return shown;
 }
 
 /**
- * `refresh` и `reimport` возвращают управление до конца импорта, поэтому «команда отработала» и
- * «база доимпортировала» — разные новости, и вторая решает вердикт.
+ * `refresh` and `reimport` return before the import finishes, so `the command ran` and `the database
+ * finished importing` are two different pieces of news, and the second decides the verdict.
  */
 export function settleVerdict(report: SettleReport): Verdict {
     if (report.failure) return 'FAILED';
@@ -105,10 +105,10 @@ export function renderSettleReport(report: SettleReport, cap: number = DEFAULT_L
     const quiet = assetDiffEmpty(report.assets);
 
     const lines = [
-        `${head}  ${report.target}  ${report.action} за ${seconds}с${quiet ? '  без изменений' : ''}`
+        `${head}  ${report.target}  ${report.action} in ${seconds}s${quiet ? '  no changes' : ''}`
     ];
     if (!quiet) {
-        lines.push(`ассеты: +${added.length}  -${removed.length}  ~${changed.length}`);
+        lines.push(`assets: +${added.length}  -${removed.length}  ~${changed.length}`);
         lines.push(...listed(added, '+', cap));
         lines.push(...listed(removed, '-', cap));
         lines.push(...listed(changed, '~', cap));
@@ -117,20 +117,21 @@ export function renderSettleReport(report: SettleReport, cap: number = DEFAULT_L
     if (report.classes && (report.classes.added.length || report.classes.removed.length)) {
         const marks = report.classes.added.map(name => `+${name}`)
             .concat(report.classes.removed.map(name => `-${name}`));
-        lines.push(`классы компонентов: ${marks.join('  ')}`);
+        lines.push(`component classes: ${marks.join('  ')}`);
     }
     return lines.join('\n');
 }
 
 /**
- * `null` у классов значит, что сцена не ответила: молчание о дельте классов и пустая дельта — разные
- * ответы, и первый надо назвать, иначе «класс не появился» прочтут как «класс не изменился».
+ * `null` for classes means the scene did not answer: silence about the class delta and an empty
+ * delta are different answers, and the first has to be named — otherwise `the class never showed up`
+ * reads as `the class did not change`.
  */
 export function settleNote(report: SettleReport, timeoutMs: number): string {
     if (!report.settled && !report.failure) {
-        return `база ассетов не улеглась за ${(timeoutMs / 1000).toFixed(0)}с — импорт мог не закончиться`;
+        return `asset database did not go quiet in ${(timeoutMs / 1000).toFixed(0)}s — the import may still be running`;
     }
     return report.classes === null
-        ? 'сцена не ответила о зарегистрированных классах — их дельта неизвестна'
+        ? 'the scene did not answer about registered classes — their delta is unknown'
         : '';
 }

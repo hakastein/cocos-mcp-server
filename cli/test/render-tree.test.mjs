@@ -1,7 +1,7 @@
 /**
- * Дерево — форма, в которой сцена попадает в контекст агента. Вложенность заменяет parentUuid,
- * path и childCount, поэтому проверяется, что структура восстанавливается из плоского списка
- * в любом порядке, а неактивный узел помечен.
+ * The tree is the shape a scene reaches an agent's context in. Nesting replaces parentUuid, path
+ * and childCount, so what is checked is that the structure rebuilds from a flat list in any order
+ * and that an inactive node is marked.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,37 +18,37 @@ const scene = [
     node('u_label', 'Label', 'u_btn', ['Label'])
 ];
 
-test('корнем становится узел, чьего родителя нет в списке', () => {
+test('a node whose parent is absent from the list becomes a root', () => {
     const text = renderTree(scene);
     assert.match(text.split('\n')[0], /^Canvas/);
 });
 
-test('типы компонентов идут в скобках через запятую', () => {
+test('component types go in brackets, comma-separated', () => {
     assert.match(renderTree(scene), /Canvas {2}\[UITransform,Canvas\]/);
 });
 
-test('неактивный узел помечен, активный — нет', () => {
+test('an inactive node is marked and an active one is not', () => {
     const text = renderTree(scene);
     assert.match(text, /Btn.*\(off\)/);
     assert.doesNotMatch(text.split('\n').find(l => l.includes('Bg')), /\(off\)/);
 });
 
-test('вложенность восстанавливается независимо от порядка в списке', () => {
+test('nesting rebuilds regardless of the order in the list', () => {
     const shuffled = [scene[3], scene[1], scene[0], scene[2]];
     assert.equal(renderTree(shuffled).split('\n').length, renderTree(scene).split('\n').length);
     assert.match(renderTree(shuffled).split('\n')[0], /^Canvas/);
 });
 
-test('узел без компонентов идёт без скобок', () => {
+test('a node with no components goes without brackets', () => {
     assert.match(renderTree([node('u_a', 'Empty', 'u_root')]), /^Empty$/m);
 });
 
-test('uuid показывается только когда его попросили', () => {
+test('a uuid shows only when it was asked for', () => {
     assert.doesNotMatch(renderTree(scene), /u_canvas/);
     assert.match(renderTree(scene, { uuid: true }), /u_canvas/);
 });
 
-test('цикл в родителях не вешает рендер', () => {
+test('a cycle in the parents does not hang the render', () => {
     const cyclic = [
         node('r', 'R', 'missing'),
         node('a', 'A', 'r'),
@@ -58,7 +58,7 @@ test('цикл в родителях не вешает рендер', () => {
     assert.equal(typeof renderTree(cyclic), 'string');
 });
 
-test('многокорневое дерево рендерится с правильным порядком', () => {
+test('a multi-root tree renders in the right order', () => {
     const multiRoot = [
         node('root1', 'Light', 'none1'),
         node('child1', 'SomeNode', 'root1'),
@@ -74,7 +74,7 @@ test('многокорневое дерево рендерится с прави
     assert.match(lines[3], /AnotherNode/);
 });
 
-test('одноимённые соседи подписаны #1, #2 — путь из дерева резолвер принимает', () => {
+test('same-named siblings are labelled #1, #2 — the resolver accepts a path off the tree', () => {
     const crowd = [
         node('u_root', 'gizmoRoot', 'u_scene'),
         node('u_i1', 'IconController', 'u_root'),
@@ -87,7 +87,7 @@ test('одноимённые соседи подписаны #1, #2 — путь
     assert.match(lines[3], /Grid$/);
 });
 
-test('счёт соседей идёт по каждому списку детей отдельно', () => {
+test('siblings are counted per child list, separately', () => {
     const twoParents = [
         node('u_root', 'Root', 'u_scene'),
         node('u_a', 'A', 'u_root'),
@@ -102,7 +102,7 @@ test('счёт соседей идёт по каждому списку дете
     assert.match(lines[5], /Pad$/);
 });
 
-test('одноимённые корни считаются одним списком соседей', () => {
+test('same-named roots count as one sibling list', () => {
     const roots = [
         node('u_1', 'Canvas', 'u_scene'),
         node('u_2', 'Canvas', 'u_scene')
@@ -110,6 +110,6 @@ test('одноимённые корни считаются одним списк
     assert.deepEqual(renderTree(roots).split('\n'), ['Canvas#1', 'Canvas#2']);
 });
 
-test('пустой список узлов даёт пустую строку', () => {
+test('an empty node list gives an empty string', () => {
     assert.equal(renderTree([]), '');
 });

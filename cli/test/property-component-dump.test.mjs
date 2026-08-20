@@ -48,93 +48,93 @@ const bootstrap = () => ({
     }
 });
 
-test('движковый компонент отвечает на голое написание, а зовётся зарегистрированным именем', () => {
+test('an engine component answers the bare spelling and is called by its registered name', () => {
     const choice = selectComponent([camera()], 'Camera');
     assert.equal(choice.className, 'cc.Camera');
     assert.equal(choice.index, 0);
     assert.equal(choice.enabled, true);
 });
 
-test('точное написание выигрывает у приставочного: cc.Sprite и свой Sprite различимы', () => {
+test('an exact spelling beats the prefixed one: cc.Sprite and a local Sprite stay distinct', () => {
     const comps = [{ type: 'cc.Sprite', value: {} }, { type: 'Sprite', value: {} }];
     assert.equal(selectComponent(comps, 'Sprite').index, 1);
     assert.equal(selectComponent(comps, 'cc.Sprite').index, 0);
 });
 
-test('несколько компонентов одного класса: читается первый, счётчик называет остальных', () => {
+test('several components of one class: the first is read and the counter names the rest', () => {
     const choice = selectComponent([bootstrap(), camera(), bootstrap()], 'GameBootstrap');
     assert.equal(choice.index, 0);
     assert.equal(choice.sameClassCount, 2);
 });
 
-test('класс, названный дампом только через __type__, отвечает на оба написания', () => {
+test('a class the dump names only through __type__ answers both spellings', () => {
     const comps = [{ __type__: 'cc.Sprite', value: {} }];
     assert.equal(selectComponent(comps, 'Sprite').className, 'cc.Sprite');
     assert.equal(selectComponent(comps, 'cc.Sprite').className, 'cc.Sprite');
 });
 
-test('cid для сериализатора берётся в своём порядке, а печатается имя класса', () => {
+test('the cid for the serializer is taken in its own order while the class name is printed', () => {
     const component = { type: 'GameBootstrap', cid: '646dcEg/PRLbZWLiQkjf9IA', value: {} };
     assert.equal(componentCid(component), '646dcEg/PRLbZWLiQkjf9IA');
-    assert.equal(componentCid({ __type__: 'cc.Sprite', cid: 'иной', value: {} }), 'cc.Sprite');
+    assert.equal(componentCid({ __type__: 'cc.Sprite', cid: 'other', value: {} }), 'cc.Sprite');
     assert.equal(componentCid({ value: {} }), null);
     assert.equal(selectComponent([component], 'GameBootstrap').className, 'GameBootstrap');
 });
 
-test('запись ищет дескриптор ровно по названному имени: пишется тот же путь', () => {
+test('a write looks the descriptor up by exactly the name given: the same path is written', () => {
     assert.equal(descriptorOf(camera(), '_fov').value, 45);
     assert.equal(descriptorOf(camera(), 'color'), null);
     assert.equal(findProperty(camera(), 'color').name, '_color');
 });
 
-test('класса на узле нет — выбора нет, а список имён для отказа собран', () => {
+test('the class is absent from the node — no choice, and the name list for the refusal is gathered', () => {
     const comps = [camera(), bootstrap()];
     assert.equal(selectComponent(comps, 'cc.MeshRenderer'), null);
     assert.deepEqual(componentClassNames(comps), ['cc.Camera', 'GameBootstrap']);
 });
 
-test('служебные поля редактора в список не идут, но названы среди скрытых', () => {
+test('the editor internal fields stay out of the list and are named among the hidden ones', () => {
     const { readings, hidden } = readComponentProperties(bootstrap());
     assert.deepEqual(readings.map(reading => reading.name), ['prewarm', 'waypointRadius', 'hero']);
     assert.deepEqual(hidden, ['enabled']);
 });
 
-test('поле-хранилище схлопывается в аксессор только при равном значении', () => {
+test('a backing field collapses into its accessor only when the values are equal', () => {
     const { readings, hidden } = readComponentProperties(camera());
     const names = readings.map(reading => reading.name);
-    assert.ok(!names.includes('_fov'), 'равная пара _fov/fov должна схлопнуться');
+    assert.ok(!names.includes('_fov'), 'an equal _fov/fov pair has to collapse');
     assert.ok(hidden.includes('_fov'));
-    assert.ok(names.includes('_near'), 'разошедшуюся пару _near/near схлопывать нельзя');
+    assert.ok(names.includes('_near'), 'a diverging _near/near pair must not collapse');
     assert.ok(names.includes('near'));
 });
 
-test('поле-хранилище без аксессора остаётся: _color читается как цвет', () => {
+test('a backing field with no accessor stays: _color reads as a color', () => {
     const { readings } = readComponentProperties(camera());
     const color = readings.find(reading => reading.name === '_color');
     assert.deepEqual(color.value, { r: 255, g: 255, b: 255, a: 255 });
     assert.equal(color.kind, 'color');
 });
 
-test('свойство, которого инспектор не рисует, из чтения не выпадает', () => {
+test('a property the inspector does not draw does not fall out of the reading', () => {
     const { readings } = readComponentProperties(camera());
     const ortho = readings.find(reading => reading.name === 'orthoHeight');
     assert.equal(ortho.value, 10);
     assert.equal(ortho.hiddenInInspector, true);
 });
 
-test('enum назван по члену, битовая маска — по выставленным флагам', () => {
+test('an enum is named by its member and a bitmask by the flags that are set', () => {
     const { readings } = readComponentProperties(camera());
     assert.equal(readings.find(reading => reading.name === 'projection').label, 'PERSPECTIVE');
     assert.equal(readings.find(reading => reading.name === 'clearFlags').label, 'DEPTH|STENCIL');
 });
 
-test('значение, разошедшееся с умолчанием, отмечено, совпавшее — нет', () => {
+test('a value that drifted from the default is marked and a matching one is not', () => {
     const { readings } = readComponentProperties(bootstrap());
     assert.equal(readings.find(reading => reading.name === 'waypointRadius').differsFromDefault, true);
     assert.equal(readings.find(reading => reading.name === 'prewarm').differsFromDefault, false);
 });
 
-test('ссылка при пустом умолчании: выставленная разошлась, невыставленная — нет', () => {
+test('a reference against an empty default: a set one drifted, an unset one did not', () => {
     const empty = bootstrap();
     empty.value.hero.value = { uuid: '' };
     assert.equal(readComponentProperties(bootstrap())
@@ -143,30 +143,30 @@ test('ссылка при пустом умолчании: выставленн�
         .readings.find(reading => reading.name === 'hero').differsFromDefault, false);
 });
 
-test('умолчание, пришедшее деревом дескрипторов, вердикта не даёт', () => {
+test('a default that arrived as a descriptor tree yields no verdict', () => {
     const component = camera();
     component.value.fov.default = { type: 'cc.Color', value: { r: { value: 51 } } };
     const { readings } = readComponentProperties(component);
     assert.equal(readings.find(reading => reading.name === 'fov').differsFromDefault, null);
 });
 
-test('умолчания в дампе нет — вердикта тоже нет', () => {
+test('no default in the dump means no verdict either', () => {
     const { readings } = readComponentProperties(camera());
     assert.equal(readings.find(reading => reading.name === 'projection').differsFromDefault, null);
 });
 
-test('по имени достаётся и служебное поле, и поле-хранилище', () => {
+test('by name both an internal field and a backing field are reachable', () => {
     assert.equal(findProperty(camera(), '_fov').value, 45);
     assert.equal(findProperty(bootstrap(), 'enabled').value, false);
 });
 
-test('имя аксессора отвечает из поля-хранилища, когда самого аксессора нет', () => {
+test('an accessor name answers from the backing field when the accessor itself is absent', () => {
     const reading = findProperty(camera(), 'color');
     assert.equal(reading.name, '_color');
     assert.deepEqual(reading.value, { r: 255, g: 255, b: 255, a: 255 });
 });
 
-test('имени нет ни в одном написании — null, а список имён для отказа полон', () => {
+test('a name absent in every spelling gives null, and the name list for the refusal is complete', () => {
     assert.equal(findProperty(bootstrap(), 'nope'), null);
     assert.deepEqual(propertyNames(bootstrap()), ['enabled', 'prewarm', 'waypointRadius', 'hero']);
 });

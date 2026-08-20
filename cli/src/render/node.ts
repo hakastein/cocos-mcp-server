@@ -30,12 +30,12 @@ export function renderNodeWrite(report: NodeWriteReport): string {
     if (report.unapplied) {
         const { property, expected, observed } = report.unapplied;
         return `${head}  ${report.target}.${property} = ${JSON.stringify(expected)}`
-            + `  узел по-прежнему отвечает ${JSON.stringify(observed)}`
+            + `  node still answers ${JSON.stringify(observed)}`
             + (report.applied.length
-                ? `  (успело лечь: ${report.applied.map(write => write.property).join(', ')})`
+                ? `  (already landed: ${report.applied.map(write => write.property).join(', ')})`
                 : '');
     }
-    if (!report.applied.length) return `${head}  ${report.target}  нечего писать`;
+    if (!report.applied.length) return `${head}  ${report.target}  nothing to write`;
 
     const written = report.applied
         .map(write => `${write.property}=${JSON.stringify(write.value)}`)

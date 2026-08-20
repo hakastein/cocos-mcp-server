@@ -17,7 +17,7 @@ export function selectInstance(candidates: Hello[], wanted?: string): Selection 
     if (!candidates.length) {
         return {
             ok: false,
-            message: `ни одного открытого редактора Cocos с этим расширением не найдено в ${pipeDirectory()}`
+            message: `no open Cocos editor with this extension found in ${pipeDirectory()}`
         };
     }
 
@@ -25,7 +25,7 @@ export function selectInstance(candidates: Hello[], wanted?: string): Selection 
         if (candidates.length === 1) return { ok: true, chosen: candidates[0] };
         return {
             ok: false,
-            message: 'открыто несколько редакторов, укажите --project:\n'
+            message: 'several editors are open, name one with --project:\n'
                 + candidates.map(h => `  ${label(h)}`).join('\n')
         };
     }
@@ -39,13 +39,13 @@ export function selectInstance(candidates: Hello[], wanted?: string): Selection 
     if (!matched.length) {
         return {
             ok: false,
-            message: `'${wanted}' не подходит ни одному открытому редактору:\n`
+            message: `'${wanted}' matches no open editor:\n`
                 + candidates.map(h => `  ${label(h)}`).join('\n')
         };
     }
     return {
         ok: false,
-        message: `несколько редакторов соответствуют '${wanted}', уточните:\n`
+        message: `several editors match '${wanted}', narrow it down:\n`
             + matched.map(h => `  ${label(h)}`).join('\n')
     };
 }
@@ -77,8 +77,8 @@ function listAddresses(): string[] {
 }
 
 /**
- * Сокет на POSIX переживает падение редактора, а канал на Windows нет. Неотвечающий адрес
- * отбрасывается по таймауту, чтобы протухший файл не задерживал поиск.
+ * A POSIX socket outlives the editor that crashed; a Windows pipe does not. An address that does
+ * not answer is dropped on a timeout, so a stale file does not hold up discovery.
  */
 export function probeAddress(address: string, timeoutMs = 500): Promise<Hello | null> {
     return new Promise(resolve => {

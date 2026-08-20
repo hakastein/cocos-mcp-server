@@ -189,7 +189,7 @@ established live rather than read out of the typings:
   rename-on-conflict is not always the one that was asked for.
 
 The component-class delta is in the report for one reason: a refresh is run because the editor is
-serving a stale `@ccclass`, so `классы компонентов: +TargetPolicy -Npc` is the answer to the
+serving a stale `@ccclass`, so `component classes: +TargetPolicy -Npc` is the answer to the
 question actually being asked, and a file-only report answers a different one. When the scene does
 not answer, the delta is `null` and the note says so — silence is not the same answer as "nothing
 changed".

@@ -37,9 +37,9 @@ function vec3Of(value: unknown, fallback: Vec3): Vec3 {
 }
 
 /**
- * Дамп узла у редактора — не сам узел, а карта дескрипторов `{value}`, и каждое поле в ней
- * необязательно. Проекция сводит её к тому, что читают команды записи, подставляя движковые
- * умолчания там, где дескриптора нет.
+ * The editor's node dump is a map of `{value}` descriptors rather than the node itself, and every
+ * field in it is optional. The projection reduces it to what the write commands read, substituting
+ * engine defaults where a descriptor is absent.
  */
 export function nodeSnapshotOf(raw: unknown, uuid: string): NodeSnapshot | null {
     if (!raw || typeof raw !== 'object') return null;

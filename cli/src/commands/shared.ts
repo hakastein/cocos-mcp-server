@@ -9,9 +9,10 @@ import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
 /**
- * `client.scene.call` типизирован контрактом `SceneMethods`, поэтому метод, его аргументы и форма
- * ответа проверяются компилятором. Здесь остаётся одно: развернуть `SceneResult` в значение или
- * в отказ. Своих интерфейсов для ответа сцены не заводи и `as` не пиши — контракт уже есть.
+ * `client.scene.call` is typed by the `SceneMethods` contract, so the method, its arguments and the
+ * shape of its answer are compiler-checked. One thing is left here: unwrap a `SceneResult` into a
+ * value or a refusal. Do not declare your own interface for a scene answer and do not write `as` —
+ * the contract already exists.
  */
 export async function unwrap<T>(
     answer: SceneResult<T> | Promise<SceneResult<T>>, method: string
@@ -19,12 +20,12 @@ export async function unwrap<T>(
     const settled = await answer;
     if (!settled || settled.success !== true || settled.data === undefined) {
         throw new Error(
-            (settled && settled.success === false && settled.error) || `scene-скрипт не ответил на ${method}`);
+            (settled && settled.success === false && settled.error) || `the scene script did not answer ${method}`);
     }
     return settled.data;
 }
 
-/** Единственное место, которое пишет вывод команды в потоки процесса. */
+/** The only place a command's output reaches the process streams. */
 export function emit(output: CommandOutput): void {
     if (output.stdout !== undefined) process.stdout.write(output.stdout + '\n');
     if (output.stderr !== undefined) process.stderr.write(output.stderr + '\n');
@@ -148,6 +149,6 @@ export async function addComponent(
 
     const after = await componentNamesNow(client, nodeUuid);
     throw new Error(
-        `компонент '${type}' не появился на узле ${nodeUuid} после добавления; есть: ${
-            after.join(', ') || '(ни одного)'}`);
+        `component '${type}' did not appear on node ${nodeUuid} after the add; the node carries: ${
+            after.join(', ') || '(none)'}`);
 }

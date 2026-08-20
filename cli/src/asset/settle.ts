@@ -18,13 +18,13 @@ export function fingerprintOf(asset: AssetRecord): AssetFingerprint {
 
 export interface DbSnapshot {
     assets: AssetFingerprint[];
-    /** `null` — сцена не ответила, и дельту зарегистрированных классов сравнивать не с чем. */
+    /** `null` means the scene did not answer, and there is nothing to compare the registered-class delta against. */
     classes: string[] | null;
 }
 
 /**
- * Порядок, в котором база перечисляет ассеты, её собственное дело и между двумя опросами меняется
- * сам по себе; ключ сортируется, чтобы перестановка не читалась как продолжающийся импорт.
+ * The order the database lists assets in is its own business and shifts by itself between two polls;
+ * the key is sorted so a reshuffle does not read as an import still running.
  */
 export function snapshotKey(snapshot: DbSnapshot): string {
     const assets = snapshot.assets
@@ -42,10 +42,10 @@ export interface Sample {
 }
 
 /**
- * `refresh-asset` и `reimport-asset` отвечают до того, как импорт закончится, поэтому одного их
- * ответа мало, а одного `query-ready` мало тоже: между двумя фазами импорта база успевает отчитаться
- * готовой. Улеглось — это готовность плюс неизменный отпечаток, продержавшийся `quietForMs`;
- * не-готовая проба рвёт полосу тишины, а не просто откладывает вердикт.
+ * `refresh-asset` and `reimport-asset` answer before the import finishes, so their answer alone is
+ * not enough — and neither is `query-ready` alone: between two phases of one import the database
+ * reports itself ready. Settled means ready plus a fingerprint that held unchanged for `quietForMs`;
+ * a not-ready sample breaks the quiet run rather than merely postponing the verdict.
  */
 export function settled(samples: readonly Sample[], quietForMs: number): boolean {
     if (!samples.length) return false;
@@ -72,8 +72,8 @@ export function assetDiffEmpty(diff: AssetDiff): boolean {
 }
 
 /**
- * Сравнение по uuid, а не по url: переименование и перенос uuid переживают, и такой ассет — тот же
- * самый, изменившийся, а не пара «удалён и добавлен».
+ * Compared by uuid rather than by url: a uuid survives a rename and a move, so such an asset is the
+ * same one, changed, instead of a `removed` and an `added` pair.
  */
 export function diffAssets(
     before: readonly AssetFingerprint[], after: readonly AssetFingerprint[]
@@ -102,7 +102,7 @@ export interface ClassDiff {
     removed: string[];
 }
 
-/** `null` с любой стороны — вопрос «зарегистрировался ли класс» остался незаданным. */
+/** `null` on either side means the question `did the class register` was never asked. */
 export function diffClasses(
     before: readonly string[] | null, after: readonly string[] | null
 ): ClassDiff | null {

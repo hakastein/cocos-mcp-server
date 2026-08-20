@@ -40,7 +40,7 @@ export class DriverClient {
             const socket = net.connect(address);
             const rpc = new JSONRPCClient(request => {
                 if (socket.destroyed) {
-                    return Promise.reject(new Error('соединение с редактором закрыто'));
+                    return Promise.reject(new Error('the connection to the editor is closed'));
                 }
                 socket.write(JSON.stringify(request) + '\n');
                 return Promise.resolve();
@@ -51,7 +51,7 @@ export class DriverClient {
             });
             socket.once('error', reject);
             socket.on('close', () =>
-                rpc.rejectAllPendingRequests('соединение с редактором закрылось'));
+                rpc.rejectAllPendingRequests('the connection to the editor closed'));
             socket.once('connect', () => resolve(new DriverClient(socket, rpc)));
         });
     }
