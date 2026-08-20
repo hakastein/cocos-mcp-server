@@ -1,16 +1,17 @@
 import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
-import { settle } from '../settle.ts';
 import { withClient } from './shared.ts';
 import { numberFlag } from './flags.ts';
 import {
     ASSET_TYPES, assetQuery, commonAssetFolder, requireAssetUrl, selectAssets
 } from '../asset/query.ts';
-import type { AssetQuery, AssetRecord, AssetType } from '../asset/query.ts';
+import type { AssetType } from '../asset/query.ts';
 import {
-    copiedAddress, diffAssets, diffClasses, fingerprintOf, settled, snapshotKey
-} from '../asset/settle.ts';
-import type { AssetReport, DbSnapshot, Sample } from '../asset/settle.ts';
+    addressOf, queryAssets, queryOne, requireOne, settleAssetDb, snapshot, whereIs
+} from '../asset/db.ts';
+import type { WaitOptions } from '../asset/db.ts';
+import { copiedAddress, diffAssets, diffClasses } from '../asset/settle.ts';
+import type { AssetReport, DbSnapshot } from '../asset/settle.ts';
 import type { Report } from '../render/present.ts';
 import type { Resolved } from '../resolve.ts';
 
@@ -23,13 +24,6 @@ const WAIT = {
     intervalMs: 400
 };
 
-export interface WaitOptions {
-    timeoutMs: number;
-    quietForMs: number;
-    intervalMs: number;
-    now: () => number;
-}
-
 /** `--timeout` is in seconds because a wait a human types is in seconds; everything below is in ms. */
 export function waitOptions(options: { timeout?: string; quietFor?: string }): WaitOptions {
     const timeoutSeconds = numberFlag('--timeout', options.timeout);
@@ -40,78 +34,6 @@ export function waitOptions(options: { timeout?: string; quietFor?: string }): W
         intervalMs: WAIT.intervalMs,
         now: () => Date.now()
     };
-}
-
-async function queryAssets(client: Driver, query: AssetQuery): Promise<AssetRecord[]> {
-    const found = await client.editor.assetDb.queryAssets(query).catch(() => []);
-    return Array.isArray(found) ? found as AssetRecord[] : [];
-}
-
-async function queryOne(client: Driver, urlOrUuid: string): Promise<AssetRecord | null> {
-    const info = await client.editor.assetDb.queryAssetInfo(urlOrUuid).catch(() => null);
-    return info ? info as AssetRecord : null;
-}
-
-async function requireOne(client: Driver, urlOrUuid: string): Promise<AssetRecord> {
-    const info = await queryOne(client, urlOrUuid);
-    if (!info) throw new Error(`the asset database does not know '${urlOrUuid}'`);
-    return info;
-}
-
-/**
- * The classes the editor currently registers components under. This is the answer to `did the editor
- * notice the new @ccclass` — the question a `refresh` is run for, while a files-only report talks
- * about the disk when the class was what was asked about.
- */
-async function registeredClasses(client: Driver): Promise<string[] | null> {
-    const components = await client.editor.scene.queryComponents().catch(() => null);
-    if (!Array.isArray(components)) return null;
-    return (components as Array<{ name?: string }>)
-        .map(component => component.name || '')
-        .filter(name => name !== '');
-}
-
-/**
- * The fingerprint is taken both of the address itself and of the tree under it, so a folder the
- * database does not know yet does not disturb the wait: before the `refresh` it is simply absent
- * from both halves.
- */
-async function snapshot(client: Driver, url: string): Promise<DbSnapshot> {
-    const under = await queryAssets(client, assetQuery(url, 'all'));
-    const self = await queryOne(client, url);
-    const byUuid = new Map<string, AssetRecord>();
-    for (const asset of self ? [self, ...under] : under) byUuid.set(asset.uuid, asset);
-    return {
-        assets: Array.from(byUuid.values()).map(fingerprintOf),
-        classes: await registeredClasses(client)
-    };
-}
-
-export interface SettleOutcome {
-    settled: boolean;
-    elapsedMs: number;
-    final: DbSnapshot;
-}
-
-/**
- * `refresh-asset` and `reimport-asset` return before the import finishes — on this project some
- * eight seconds before it — so the waiting lives here rather than in the caller.
- */
-async function settleAssetDb(
-    client: Driver, url: string, options: WaitOptions
-): Promise<SettleOutcome> {
-    const started = options.now();
-    const samples: Sample[] = [];
-    let final = await snapshot(client, url);
-
-    const reached = await settle(async () => {
-        const ready = await client.editor.assetDb.queryReady().catch(() => false);
-        final = await snapshot(client, url);
-        samples.push({ key: snapshotKey(final), ready: ready === true, at: options.now() });
-        return settled(samples, options.quietForMs);
-    }, { timeoutMs: options.timeoutMs, intervalMs: options.intervalMs });
-
-    return { settled: reached, elapsedMs: options.now() - started, final };
 }
 
 interface Operation {
@@ -150,17 +72,6 @@ function outputOf(report: AssetReport, options: WaitOptions, extraNote?: string)
     return { kind: 'asset', asset: report, timeoutMs: options.timeoutMs, note: extraNote };
 }
 
-/**
- * `move-asset`, `copy-asset`, `create-asset` and `delete-asset` answer with nothing on a successful
- * operation too — checked live: the move went through, the file landed in its new folder, the uuid
- * survived, and the answer was `null`. So their answer is never read: where the asset ended up is
- * asked of the database by its uuid.
- */
-async function whereIs(client: Driver, uuid: string): Promise<string | null> {
-    const url = await client.editor.assetDb.queryUrl(uuid).catch(() => null);
-    return typeof url === 'string' && url ? url : null;
-}
-
 export async function assetRefresh(
     client: Driver, spec: { target: string } & WaitOptions
 ): Promise<Report> {
@@ -170,12 +81,6 @@ export async function assetRefresh(
     return outputOf(await afterOperation(client, {
         action: 'refreshed', target: url, scope: url, landing: () => addressOf(client, url)
     }, before, spec), spec);
-}
-
-/** The address itself, when the database still knows it; a folder that vanished answers `null`. */
-async function addressOf(client: Driver, url: string): Promise<string | null> {
-    const found = await queryOne(client, url);
-    return found ? found.url : null;
 }
 
 export async function assetReimport(

@@ -5,10 +5,10 @@ import type {
     DeclaredProperty, PrefabLinkageReport, SceneMethods, SceneResult, SerializedValue
 } from '@cocos-cli/shared';
 import {
-    ctorIsA, findNodeByUuid, plainSerialized, requireActiveScene
+    ctorIsA, enclosingPrefabInstance, findNodeByUuid, plainSerialized, requireActiveScene
 } from './engine.ts';
 import type { SerializedNodeNaming } from './engine.ts';
-import { overlaidReferenceValue } from './property-write.ts';
+import { overlaidReferenceValue } from './reference-write.ts';
 
 /**
  * Whether a SyntaxError out of `eval(code)` came from parsing the script rather than from running
@@ -300,7 +300,7 @@ export const serializedNodeValue: SceneMethods['serializedNodeValue'] = (nodeUui
         const at = nodeObject ? valueAtPath(file, nodeObject, property) : { found: false, value: undefined };
         if (at.found) return foundValue(file, at.value);
 
-        const instance = prefabInstanceAncestor(node);
+        const instance = enclosingPrefabInstance(node);
         if (!instance) return { success: true, data: { found: false, value: undefined } };
         return carriedByOverrideInstead(instance === node
             ? `'${node.name}' is the root of a prefab instance`
@@ -314,13 +314,6 @@ export const serializedNodeValue: SceneMethods['serializedNodeValue'] = (nodeUui
 function pairedNodeObject(file: SerializedScene, nodeUuid: string): any {
     for (const [index, live] of file.naming.nodes) {
         if (live.uuid === nodeUuid) return file.objects[index];
-    }
-    return null;
-}
-
-function prefabInstanceAncestor(node: any): any {
-    for (let current = node; current; current = current.parent) {
-        if (current._prefab && current._prefab.instance) return current;
     }
     return null;
 }

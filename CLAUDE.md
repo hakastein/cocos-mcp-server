@@ -101,7 +101,7 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `driver/src/method-table.ts` | resolves a dotted method name to a callable, refusing anything `isKnownMethod` does not know |
 | `driver/src/editor-api.ts` | every `Editor.Message` call, typed over `EditorMessageMaps`; `implements EditorMethods`, so a drift from the shared contract is a compile error |
 | `driver/src/scene-script-client.ts` | `SceneScriptClient` — wraps `editor.scene.executeSceneScript`, typed by `SceneMethods`; what `method-table.ts` calls for every `scene.*` request |
-| `driver/src/scene/` | the scene script; `index.ts` assembles `SceneMethods` from `dump`/`node-ops`/`component-ops`/`property-write`/`prefab-ops`/`query`, with `engine.ts` holding the helpers they share |
+| `driver/src/scene/` | the scene script; `index.ts` assembles `SceneMethods` from `dump`/`node-ops`/`component-ops`/`reference-write`/`prefab-override`/`prefab-ops`/`query`, with `engine.ts` holding the helpers they share, the prefab fileId index among them |
 | `driver/src/panels/default/index.ts` | the Vue settings panel — status and `enableDebugLog`, over the IPC `main.ts` answers, not over the pipe |
 | `cli/src/main.ts` | the command tree (`buildProgram`), the entry point `bin/cocos.js` runs |
 | `cli/src/discovery.ts` | enumerates channels, probes each with `hello`, `selectInstance` narrows by `--project` |
@@ -111,21 +111,24 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/driver/memory-assets.ts` | `MemoryAssetDb` — the asset half of that seam, a database held as data: the `db://` glob, and the move/copy/create/delete that rename on conflict the way the editor does |
 | `cli/src/commands/shared.ts` | `withClient` (resolve → run → present → close) and `emit`, the one place command output touches `stdout`/`stderr`; plus `unwrap` (`SceneResult<T>` → value or thrown error) |
 | `cli/src/commands/flags.ts` | the coercions an `.action()` body applies to the text Commander hands through — `booleanFlag`, `numberFlag`, `vec3Flag` (all three axes, for a node being created), `vec3PartsFlag` (an empty axis keeps its value), `jsonFlag` |
+| `cli/src/component-add.ts` | the add cascade `component add` and `node create --component` share: both spellings of a type tried in turn, then polled for, because neither add path is trusted on its own word; plus `queryComponents`, the live component list it polls |
 | `cli/src/undo-bracket.ts` | `withUndoBracket` — one write wrapped in one undo step, `undoNote` when the editor refused or left it open |
 | `cli/src/node-snapshot.ts` | the editor's descriptor-wrapped node dump projected to what a write reads back |
 | `cli/src/node-transform.ts` | `parseVec3` (an empty axis keeps its value), and the 2D-node clamp that zeroes `position.z` / `rotation.x,y` and says which value it destroyed |
 | `cli/src/node-write.ts` | `NODE_STORAGE` (a node property → the name the serializer emits it under) and `withNodePersistence` — whether a save carries a write to a node's own property, including the prefab-override route |
 | `cli/src/prefab-linkage.ts` | the `type: 'cc.Prefab'` that separates a linked instance from a flat copy, and the two-sided linkage verdict (live node vs serializer) |
-| `cli/src/asset/` | the asset-database decisions: the `db://` glob and the name/limit cut a listing takes (`query.ts`), and the quiescence verdict every asset command waits on — snapshot fingerprint, `settled`, the asset and component-class deltas, `AssetReport` and `copiedAddress` (`settle.ts`) |
+| `cli/src/asset/` | the asset database, whole: the `db://` glob and the name/limit cut a listing takes (`query.ts`), the quiescence verdict every asset command waits on — snapshot fingerprint, `settled`, the asset and component-class deltas, `AssetReport` and `copiedAddress` (`settle.ts`), and the half that asks the editor — the reads, the tree snapshot and the `settleAssetDb` poll built on them (`db.ts`) |
 | `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`), the read side of a component dump — class selection, property rows, default comparison (`component-dump.ts`), uuid → scene name (`reference-index.ts`) and the spelling a reference value is written in — path, `db://` url or uuid (`reference-target.ts`) |
 | `cli/src/render/` | `verdict.ts` (the five head words, their exit codes and `worstVerdict`) and `present.ts` (the `Report` union and `present`) over seven formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `scene.ts`, `instances.ts`. Only `present.ts` is imported from outside `render/` |
 
 Everything a command decides that does not need a live editor lives in a pure module beside
-`commands/`: `property/`, `render/`, `asset/`, `node-type.ts`, `node-snapshot.ts`, `node-transform.ts`,
-`prefab-linkage.ts`, `settle.ts`, `discovery.ts`'s `selectInstance`.
-Those and the command bodies are what the test suite covers — a command runs against
-`cli/src/driver/memory.ts`, which answers as the seam does. `driver/client.ts`, `resolve.ts` and
-`main.ts` talk to a socket or to Commander's own wiring, and are verified live.
+`commands/`: `property/`, `render/`, `asset/query.ts`, `asset/settle.ts`, `node-type.ts`,
+`node-snapshot.ts`, `node-transform.ts`, `prefab-linkage.ts`, `settle.ts`, `discovery.ts`'s
+`selectInstance`. Those and the command bodies are what the test suite covers — a command runs against
+`cli/src/driver/memory.ts`, which answers as the seam does. What drives the editor without being a
+command sits beside those modules under its own name — `asset/db.ts`, `component-add.ts`,
+`undo-bracket.ts`, `node-write.ts` — and is covered the same way. `driver/client.ts`, `resolve.ts`
+and `main.ts` talk to a socket or to Commander's own wiring, and are verified live.
 
 ## Write Honesty and Undo Brackets
 
@@ -334,8 +337,8 @@ own `tsup` entry, loaded by the scene worker), and these places must agree:
 
 1. Declare the signature in `SceneMethods` (`shared/src/scene-contract.ts`).
 2. Implement it in the `driver/src/scene/<concern>.ts` that owns that concern (`dump`, `node-ops`,
-   `component-ops`, `property-write`, `prefab-ops`, `query`) — `engine.ts` holds helpers the others
-   share, not methods of its own.
+   `component-ops`, `reference-write`, `prefab-override`, `prefab-ops`, `query`) — `engine.ts` holds
+   helpers the others share, not methods of its own.
 3. Export it from the `methods` object in `driver/src/scene/index.ts` — dispatch there is by name on
    that object, and that export alone makes the method callable.
 4. Add its bare name to `SCENE_METHODS` in `shared/src/protocol.ts`.

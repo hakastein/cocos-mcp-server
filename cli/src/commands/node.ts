@@ -1,13 +1,14 @@
 import type { Driver, WriteReport } from '@cocos-cli/shared';
 import { Command } from 'commander';
-import { addComponent, unwrap, withClient } from './shared.ts';
+import { unwrap, withClient } from './shared.ts';
+import { addComponent } from '../component-add.ts';
 import { booleanFlag, numberFlag, vec3Flag, vec3PartsFlag } from './flags.ts';
 import { withUndoBracket } from '../undo-bracket.ts';
 import { settle } from '../settle.ts';
 import { classifyNode } from '../node-type.ts';
 import { nodePropertyOf, nodeSnapshotOf } from '../node-snapshot.ts';
 import { TRANSFORM_KINDS, normalizedTransform, sameVec3 } from '../node-transform.ts';
-import type { PollOptions } from './shared.ts';
+import type { PollOptions } from '../component-add.ts';
 import type { NodeProperty, NodeSnapshot } from '../node-snapshot.ts';
 import type { TransformKind, Vec3, Vec3Parts } from '../node-transform.ts';
 import { withNodePersistence } from '../node-write.ts';

@@ -1,6 +1,7 @@
 import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
-import { addComponent, queryComponents, unwrap, withClient } from './shared.ts';
+import { unwrap, withClient } from './shared.ts';
+import { addComponent, queryComponents } from '../component-add.ts';
 import { jsonFlag } from './flags.ts';
 import { verifiedWrite } from '../property/verified-write.ts';
 import { writerFor } from '../property/writers.ts';
@@ -12,7 +13,7 @@ import { buildReferenceIndex, referencedUuids } from '../property/reference-inde
 import { isReferenceKind, referenceRequest } from '../property/reference-target.ts';
 import { resolveKind } from '../property/kind.ts';
 import { resolveNode } from './node.ts';
-import type { PollOptions } from './shared.ts';
+import type { PollOptions } from '../component-add.ts';
 import type { ComponentAddress, Report } from '../render/present.ts';
 import type { Resolved } from '../resolve.ts';
 import type { PropertyKind } from '../property/kind.ts';

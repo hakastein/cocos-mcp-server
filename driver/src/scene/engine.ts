@@ -148,3 +148,56 @@ export function componentClassName(comp: any): string {
     }
     return comp.constructor ? comp.constructor.name : 'Unknown';
 }
+
+/** The fileId a prefab stamps on a node or a component — the only id that survives re-instantiation. */
+export function prefabFileId(entity: any): string | null {
+    const info = entity && (entity.__prefab || entity._prefab);
+    return (info && info.fileId) || null;
+}
+
+/** fileId -> node or component, over a whole tree. Both the asset's copy and the instance index this way. */
+export function fileIdIndex(root: any): Record<string, any> {
+    const index: Record<string, any> = {};
+    const walk = (node: any) => {
+        const nodeId = prefabFileId(node);
+        if (nodeId) index[nodeId] = node;
+        for (const comp of node.components || []) {
+            const compId = prefabFileId(comp);
+            if (compId) index[compId] = comp;
+        }
+        for (const child of node.children || []) walk(child);
+    };
+    if (root) walk(root);
+    return index;
+}
+
+/** Nearest ancestor-or-self carrying a PrefabInstance. */
+export function enclosingPrefabInstance(node: any): any {
+    let current = node;
+    while (current) {
+        if (current._prefab && current._prefab.instance) return current;
+        current = current.parent;
+    }
+    return null;
+}
+
+/**
+ * The property overrides the instance records against one component's field, as the recorded path
+ * plus its value. An override names its target by a localID resolved through the instance's own
+ * targetMap, so a path alone answers for every component of the instance rather than for this one.
+ */
+export function instanceOverridesFor(
+    instance: any, owner: any, property: string
+): Array<{ path: string[]; value: any }> {
+    const cc = require('cc');
+    const utils = cc.Prefab && (cc.Prefab as any)._utils;
+    const found: Array<{ path: string[]; value: any }> = [];
+    for (const override of instance.propertyOverrides || []) {
+        const path = override.propertyPath;
+        if (!override.targetInfo || !Array.isArray(path) || path[0] !== property) continue;
+        if (!utils || typeof utils.getTarget !== 'function' || !instance.targetMap) continue;
+        if (utils.getTarget(override.targetInfo.localID, instance.targetMap) !== owner) continue;
+        found.push({ path: path.slice(), value: override.value });
+    }
+    return found;
+}

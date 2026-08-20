@@ -6,9 +6,10 @@ import {
     removeSkeletalSocket, setParticleCurve, setParticleGradient
 } from './component-ops.ts';
 import {
-    applyComponentReference, componentReferenceOutcome, prefabInstancePropertyOutcome,
-    pruneComponentReferenceOverrides, resolveComponentReference
-} from './property-write.ts';
+    applyComponentReference, componentReferenceOutcome, pruneComponentReferenceOverrides,
+    resolveComponentReference
+} from './reference-write.ts';
+import { prefabInstancePropertyOutcome } from './prefab-override.ts';
 import {
     applyPrefabToAsset, createPrefabFromNode2, dumpPrefabAsset, listPrefabOverrides,
     removePrefabOverride, revertPrefabInstance
