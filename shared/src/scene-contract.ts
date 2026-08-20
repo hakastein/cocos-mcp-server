@@ -244,6 +244,39 @@ export interface RemovedPrefabOverride extends OverrideValueDescription {
     target: PrefabTargetInfo | null;
 }
 
+export interface PrefabAssetComponent {
+    /** Имя, под которым класс ЗАРЕГИСТРИРОВАН в движке, — `cc.MeshRenderer`, `CharacterAnimator`. */
+    className: string;
+    /** Сжатый uuid скрипта; для движкового компонента его нет. */
+    cid: string | null;
+    /** Единственный идентификатор, переживающий переинстанцирование префаба. */
+    fileId: string | null;
+    enabled: boolean;
+    /**
+     * Скрипта за компонентом больше нет. Такой слот роняет превью на загрузке сцены обращением к
+     * `__prefab` того, что движок положил вместо компонента.
+     */
+    missing: boolean;
+}
+
+export interface PrefabAssetNode {
+    /** Путь от корня префаба; одноимённые соседи несут `#N` так же, как в дереве сцены. */
+    path: string;
+    name: string;
+    active: boolean;
+    fileId: string | null;
+    components: PrefabAssetComponent[];
+}
+
+export interface PrefabAssetDump {
+    prefabUuid: string;
+    rootName: string;
+    nodeCount: number;
+    componentCount: number;
+    missingCount: number;
+    nodes: PrefabAssetNode[];
+}
+
 export interface PrefabSyncReport {
     nodeUuid: string;
     nodeName: string;
@@ -397,6 +430,7 @@ export interface SceneMethods {
     removeSkeletalSocket(nodeUuid: string, bonePath: string): SceneResult<RemovedSkeletalSocket>;
     applyPrefabToAsset(nodeUuid: string): Promise<SceneResult<PrefabSyncReport>>;
     revertPrefabInstance(nodeUuid: string): Promise<SceneResult<PrefabSyncReport>>;
+    dumpPrefabAsset(prefabUuid: string): Promise<SceneResult<PrefabAssetDump>>;
     listPrefabOverrides(nodeUuid: string): SceneResult<PrefabOverrideReport>;
     removePrefabOverride(
         nodeUuid: string,

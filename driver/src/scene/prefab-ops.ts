@@ -1,7 +1,9 @@
+import { siblingLabels } from '@cocos-cli/shared';
 import type {
-    OverrideValueDescription, PrefabSyncReport, PrefabTargetInfo, SceneMethods, SceneResult
+    OverrideValueDescription, PrefabAssetComponent, PrefabAssetNode, PrefabSyncReport,
+    PrefabTargetInfo, SceneMethods, SceneResult
 } from '@cocos-cli/shared';
-import { findNodeByUuid, requireActiveScene } from './engine';
+import { componentClassName, findNodeByUuid, requireActiveScene } from './engine';
 
 declare const cce: any;
 
@@ -234,5 +236,90 @@ export const removePrefabOverride: SceneMethods['removePrefabOverride'] = (nodeU
         return { success: true, data: { nodeUuid: node.uuid, removed, remaining: instance.propertyOverrides.length } };
     } catch (error: any) {
         return { success: false, error: error.message };
+    }
+};
+
+/**
+ * Ждём, пока движок сам десериализует .prefab. Разобрать файл руками нельзя не из брезгливости:
+ * скриптовый компонент лежит в нём сжатым uuid, а не именем класса, так что поиск по имени в файле
+ * всегда даёт ложное «нет».
+ */
+function loadPrefabAsset(prefabUuid: string): Promise<any> {
+    const cc = require('cc');
+    const cached = cc.assetManager.assets && cc.assetManager.assets.get(prefabUuid);
+    if (cached) return Promise.resolve(cached);
+    return new Promise((resolve, reject) => {
+        cc.assetManager.loadAny({ uuid: prefabUuid }, (error: any, asset: any) => {
+            if (error) return reject(error instanceof Error ? error : new Error(String(error)));
+            if (!asset) return reject(new Error(`asset ${prefabUuid} loaded as nothing`));
+            resolve(asset);
+        });
+    });
+}
+
+/**
+ * Компонент, чей скрипт удалён, движок в редакторе оставляет как `cc.MissingScript`, а иногда и
+ * дырой в массиве. Оба слота роняют превью на загрузке сцены обращением к `__prefab` — поэтому они
+ * ЧИСЛЯТСЯ в выдаче, а не отфильтровываются: их и ищут, когда переименовывают `@ccclass`.
+ */
+function describePrefabComponent(component: any): PrefabAssetComponent {
+    if (!component) {
+        return { className: '(пусто)', cid: null, fileId: null, enabled: false, missing: true };
+    }
+    const cc = require('cc');
+    const prefabInfo = component.__prefab || component._prefab;
+    const serialized = component._$erialized;
+    return {
+        className: componentClassName(component),
+        cid: (serialized && typeof serialized.__type__ === 'string') ? serialized.__type__ : null,
+        fileId: (prefabInfo && prefabInfo.fileId) || null,
+        enabled: component._enabled !== false,
+        missing: component instanceof cc.MissingScript
+    };
+}
+
+/**
+ * Содержимое .prefab: дерево узлов и компонент на каждом под ЗАРЕГИСТРИРОВАННЫМ именем класса.
+ * Компоненты берутся из `_components` — сырого массива, где движок и оставляет мёртвые слоты;
+ * геттер `components` их отсеивает и отвечает, что префаб чист.
+ */
+export const dumpPrefabAsset: SceneMethods['dumpPrefabAsset'] = async (prefabUuid) => {
+    try {
+        const prefab = await loadPrefabAsset(prefabUuid);
+        const root = prefab && prefab.data;
+        if (!root) {
+            return { success: false, error: `asset ${prefabUuid} carries no prefab data — is it a .prefab?` };
+        }
+        const nodes: PrefabAssetNode[] = [];
+        let missingCount = 0;
+        const describe = (node: any, path: string) => {
+            const components = (node._components || []).map(describePrefabComponent);
+            missingCount += components.filter((component: PrefabAssetComponent) => component.missing).length;
+            const prefabInfo = node._prefab;
+            nodes.push({
+                path,
+                name: node.name,
+                active: node.active !== false,
+                fileId: (prefabInfo && prefabInfo.fileId) || null,
+                components
+            });
+            const children = (node.children || []).filter(Boolean);
+            const labels = siblingLabels(children);
+            children.forEach((child: any, index: number) => describe(child, `${path}/${labels[index]}`));
+        };
+        describe(root, root.name);
+        return {
+            success: true,
+            data: {
+                prefabUuid,
+                rootName: root.name,
+                nodeCount: nodes.length,
+                componentCount: nodes.reduce((count, node) => count + node.components.length, 0),
+                missingCount,
+                nodes
+            }
+        };
+    } catch (error: any) {
+        return { success: false, error: error.message || String(error) };
     }
 };

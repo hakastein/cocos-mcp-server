@@ -10,8 +10,8 @@ import {
     pruneComponentReferenceOverrides, resolveComponentReference
 } from './property-write';
 import {
-    applyPrefabToAsset, createPrefabFromNode2, listPrefabOverrides, removePrefabOverride,
-    revertPrefabInstance
+    applyPrefabToAsset, createPrefabFromNode2, dumpPrefabAsset, listPrefabOverrides,
+    removePrefabOverride, revertPrefabInstance
 } from './prefab-ops';
 import {
     declaredComponentProperty, dumpMissingScripts, evalInScene, nodePrefabLinkage, resolveNodePaths,
@@ -34,6 +34,7 @@ export const methods: SceneMethods = {
     removeSkeletalSocket,
     applyPrefabToAsset,
     revertPrefabInstance,
+    dumpPrefabAsset,
     listPrefabOverrides,
     removePrefabOverride,
     serializedComponentValue,

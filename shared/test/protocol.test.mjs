@@ -13,9 +13,9 @@ test('пространство editor держит ровно 58 методов,
     assert.equal(new Set(EDITOR_METHODS).size, 58);
 });
 
-test('пространство scene держит ровно 29 методов, без дублей', () => {
-    assert.equal(SCENE_METHODS.length, 29);
-    assert.equal(new Set(SCENE_METHODS).size, 29);
+test('пространство scene держит ровно 30 методов, без дублей', () => {
+    assert.equal(SCENE_METHODS.length, 30);
+    assert.equal(new Set(SCENE_METHODS).size, 30);
 });
 
 test('каждое имя editor несёт группу через точку, имена scene — плоские', () => {
@@ -26,7 +26,7 @@ test('каждое имя editor несёт группу через точку, 
 });
 
 test('общий список — объединение обоих с префиксами пространств', () => {
-    assert.equal(ALL_METHODS.length, 87);
+    assert.equal(ALL_METHODS.length, 88);
     assert.ok(ALL_METHODS.includes('editor.scene.createNode'));
     assert.ok(ALL_METHODS.includes('scene.dumpSceneNodes'));
 });

@@ -22,7 +22,7 @@ export const SCENE_METHODS = [
     'declaredComponentProperty', 'addComponentToNode', 'getNodeInfo', 'getCurrentSceneInfo',
     'setNodeProperty', 'evalInScene', 'setParticleGradient', 'setParticleCurve',
     'createPrefabFromNode2', 'previewPlay', 'addSkeletalSocket', 'listSkeletalSockets',
-    'removeSkeletalSocket', 'applyPrefabToAsset', 'revertPrefabInstance', 'listPrefabOverrides',
+    'removeSkeletalSocket', 'applyPrefabToAsset', 'revertPrefabInstance', 'listPrefabOverrides', 'dumpPrefabAsset',
     'removePrefabOverride', 'serializedComponentValue', 'prefabInstancePropertyOutcome',
     'nodePrefabLinkage', 'resolveComponentReference', 'applyComponentReference',
     'componentReferenceOutcome', 'pruneComponentReferenceOverrides', 'resolveNodePaths',

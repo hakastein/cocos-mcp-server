@@ -81,6 +81,7 @@
         "removeSkeletalSocket",
         "applyPrefabToAsset",
         "revertPrefabInstance",
+        "dumpPrefabAsset",
         "listPrefabOverrides",
         "removePrefabOverride",
         "serializedComponentValue",
