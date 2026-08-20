@@ -1,7 +1,7 @@
-import type { AssetRecord } from '../asset/query';
-import type { AssetDiff, ClassDiff } from '../asset/settle';
-import { assetDiffEmpty } from '../asset/settle';
-import type { Verdict } from './verdict';
+import type { AssetRecord } from '../asset/query.ts';
+import type { AssetDiff, ClassDiff } from '../asset/settle.ts';
+import { assetDiffEmpty } from '../asset/settle.ts';
+import type { Verdict } from './verdict.ts';
 
 export const ASSET_FIELDS = [
     'name', 'type', 'uuid', 'url', 'importer', 'imported', 'invalid', 'isDirectory', 'file', 'subAssets'

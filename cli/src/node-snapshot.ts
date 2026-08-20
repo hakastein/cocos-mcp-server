@@ -1,6 +1,6 @@
-import { componentClassNames } from './property/component-dump';
-import type { ComponentDump } from './property/component-dump';
-import type { Vec3 } from './node-transform';
+import { componentClassNames } from './property/component-dump.ts';
+import type { ComponentDump } from './property/component-dump.ts';
+import type { Vec3 } from './node-transform.ts';
 
 /** 1 << 30, the value of cc.Layers.Enum.DEFAULT. */
 export const LAYER_DEFAULT = 1073741824;

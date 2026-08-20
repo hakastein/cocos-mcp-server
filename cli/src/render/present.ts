@@ -2,31 +2,31 @@ import type {
     ComponentOwnerReport, Hello, MissingScriptDump, PrefabAssetDump, PrefabOverrideReport,
     SceneDirtyReport, WriteReport
 } from '@cocos-cli/shared';
-import { verdictFailed } from './verdict';
+import { verdictFailed } from './verdict.ts';
 import {
     assetField, assetListSummary, renderAssetInfo, renderAssetList, renderSettleReport, settleNote,
     settleVerdict
-} from './asset';
-import { nodeWriteNote, nodeWriteVerdict, renderNodeWrite } from './node';
-import { renderWriteReport, writeVerdict } from './report';
-import { renderTree } from './tree';
-import { renderInstances } from './instances';
-import { formatReading, renderComponentReading } from './property';
-import { prefabDumpSummary, prefabOverridesSummary, renderPrefabDump, renderPrefabOverrides } from './prefab';
+} from './asset.ts';
+import { nodeWriteNote, nodeWriteVerdict, renderNodeWrite } from './node.ts';
+import { renderWriteReport, writeVerdict } from './report.ts';
+import { renderTree } from './tree.ts';
+import { renderInstances } from './instances.ts';
+import { formatReading, renderComponentReading } from './property.ts';
+import { prefabDumpSummary, prefabOverridesSummary, renderPrefabDump, renderPrefabOverrides } from './prefab.ts';
 import {
     componentOwnersSummary, renderComponentOwners, renderMissingScripts, renderSceneDirty, sceneDirtyNote
-} from './scene';
-import type { Verdict } from './verdict';
-import type { SettleReport } from './asset';
-import type { NodeWriteReport } from './node';
-import type { DumpNode, TreeOptions } from './tree';
-import type { AssetRecord } from '../asset/query';
-import type { ComponentChoice, PropertyReading } from '../property/component-dump';
-import type { ReferenceLabel } from '../property/reference-index';
+} from './scene.ts';
+import type { Verdict } from './verdict.ts';
+import type { SettleReport } from './asset.ts';
+import type { NodeWriteReport } from './node.ts';
+import type { DumpNode, TreeOptions } from './tree.ts';
+import type { AssetRecord } from '../asset/query.ts';
+import type { ComponentChoice, PropertyReading } from '../property/component-dump.ts';
+import type { ReferenceLabel } from '../property/reference-index.ts';
 
-export type { SettleReport } from './asset';
-export type { AppliedWrite, NodeWriteReport, UnappliedWrite } from './node';
-export type { DumpNode } from './tree';
+export type { SettleReport } from './asset.ts';
+export type { AppliedWrite, NodeWriteReport, UnappliedWrite } from './node.ts';
+export type { DumpNode } from './tree.ts';
 
 export interface CommandOutput {
     stdout?: string;

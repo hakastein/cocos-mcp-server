@@ -1,6 +1,6 @@
-import type { PropertyKind } from '../property/kind';
-import type { PropertyReading } from '../property/component-dump';
-import type { ReferenceLookup } from '../property/reference-index';
+import type { PropertyKind } from '../property/kind.ts';
+import type { PropertyReading } from '../property/component-dump.ts';
+import type { ReferenceLookup } from '../property/reference-index.ts';
 
 const EMPTY = '(empty)';
 const TYPE_COLUMN_LIMIT = 22;

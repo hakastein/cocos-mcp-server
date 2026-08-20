@@ -1,4 +1,4 @@
-import type { AssetRecord } from './query';
+import type { AssetRecord } from './query.ts';
 
 export interface AssetFingerprint {
     uuid: string;

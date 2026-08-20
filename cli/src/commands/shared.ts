@@ -1,12 +1,11 @@
-import type { SceneResult } from '@cocos-cli/shared';
-import { EXIT } from '../exit';
-import { present } from '../render/present';
-import { settle } from '../settle';
-import { componentClassNames, selectComponent } from '../property/component-dump';
-import type { ComponentDump } from '../property/component-dump';
-import type { CommandOutput, PresentOptions, Report } from '../render/present';
-import type { DriverClient } from '../driver-client';
-import type { Resolved } from '../resolve';
+import type { Driver, SceneResult } from '@cocos-cli/shared';
+import { EXIT } from '../exit.ts';
+import { present } from '../render/present.ts';
+import { settle } from '../settle.ts';
+import { componentClassNames, selectComponent } from '../property/component-dump.ts';
+import type { ComponentDump } from '../property/component-dump.ts';
+import type { CommandOutput, PresentOptions, Report } from '../render/present.ts';
+import type { Resolved } from '../resolve.ts';
 
 /**
  * `client.scene.call` is typed by the `SceneMethods` contract, so the method, its arguments and the
@@ -38,7 +37,7 @@ export function emit(output: CommandOutput): void {
  * branch, success or thrown.
  */
 export async function withClient(
-    resolve: () => Promise<Resolved>, run: (client: DriverClient) => Promise<Report>,
+    resolve: () => Promise<Resolved>, run: (client: Driver) => Promise<Report>,
     options?: PresentOptions
 ): Promise<void> {
     const resolved = await resolve();
@@ -76,14 +75,14 @@ function spellingCandidates(type: string): string[] {
     return type === bare ? [bare, prefixed] : [prefixed, bare];
 }
 
-export async function queryComponents(client: DriverClient, nodeUuid: string): Promise<ComponentDump[]> {
+export async function queryComponents(client: Driver, nodeUuid: string): Promise<ComponentDump[]> {
     const node = await client.editor.scene.queryNode(nodeUuid);
     return ((node && node.__comps__) as ComponentDump[] | undefined) || [];
 }
 
 /** Registered class names — `cc.MeshRenderer`, `GameBootstrap` — the way every other subcommand
  * names a component. `getNodeInfo` would answer the bare JS class instead. */
-async function componentNamesNow(client: DriverClient, nodeUuid: string): Promise<string[]> {
+async function componentNamesNow(client: Driver, nodeUuid: string): Promise<string[]> {
     return componentClassNames(await queryComponents(client, nodeUuid));
 }
 
@@ -109,7 +108,7 @@ interface PollOptions {
 }
 
 async function pollForNewComponent(
-    client: DriverClient, nodeUuid: string, before: string[], pollOptions?: PollOptions
+    client: Driver, nodeUuid: string, before: string[], pollOptions?: PollOptions
 ): Promise<string | null> {
     let found: string | null = null;
     await settle(async () => {
@@ -128,7 +127,7 @@ export interface ComponentAddOutcome {
 /** Neither add path is trusted on its own word — each spelling is tried, then polled for. Shared by
  * `component add` and `node create --component` so success and failure both take one shape. */
 export async function addComponent(
-    client: DriverClient, nodeUuid: string, type: string, pollOptions?: PollOptions
+    client: Driver, nodeUuid: string, type: string, pollOptions?: PollOptions
 ): Promise<ComponentAddOutcome> {
     const components = await queryComponents(client, nodeUuid);
     const present = selectComponent(components, type);

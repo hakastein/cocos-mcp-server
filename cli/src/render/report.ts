@@ -1,5 +1,5 @@
 import type { WriteReport } from '@cocos-cli/shared';
-import type { Verdict } from './verdict';
+import type { Verdict } from './verdict.ts';
 
 export interface RenderedWrite {
     component: string;

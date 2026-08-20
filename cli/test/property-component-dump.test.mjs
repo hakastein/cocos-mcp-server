@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
     componentCid, componentClassNames, descriptorOf, findProperty, propertyNames,
     readComponentProperties, selectComponent
-} from '../lib/property/component-dump.js';
+} from '../src/property/component-dump.ts';
 
 const number = (name, value, declared) => ({
     name, value, type: 'Number', visible: true, extends: [], ...(declared === undefined ? {} : { default: declared })

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import r from '../lib/render/node.js';
+import * as r from '../src/render/node.ts';
 
 const { renderNodeWrite, nodeWriteVerdict, nodeWriteNote } = r;
 

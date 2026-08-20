@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { renderWriteReport, writeVerdict } from '../lib/render/report.js';
+import { renderWriteReport, writeVerdict } from '../src/render/report.ts';
 
 const write = (report = {}, over = {}) => ({
     component: 'Sprite',

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import s from '../lib/node-snapshot.js';
+import * as s from '../src/node-snapshot.ts';
 
 const { nodeSnapshotOf, nodePropertyOf, LAYER_DEFAULT } = s;
 

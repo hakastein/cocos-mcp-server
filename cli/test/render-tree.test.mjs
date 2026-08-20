@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { renderTree } from '../lib/render/tree.js';
+import { renderTree } from '../src/render/tree.ts';
 
 const node = (uuid, name, parentUuid, components = [], active = true) =>
     ({ uuid, name, parentUuid, active, components: components.map(type => ({ type })) });

@@ -31,6 +31,7 @@ Three npm workspaces, one repo:
 npm install                       # dependencies for all three workspaces
 npm run build                     # tsc (+ tsup where a package has one) for shared, driver, cli, in that order
 npm test                          # the same build, then `node --test` inside each workspace
+npm run test:only --workspace cli # cli's own tests, no cli build — they import `src/`; needs shared/dist
 npm run build --workspace cli     # rebuild only cli — fine once shared/dist is already current
 npm run build --workspace driver  # rebuild only driver, likewise
 npm link --workspace cli          # put the `cocos` binary (cli/bin/cocos.js) on PATH
@@ -38,9 +39,14 @@ npm link --workspace cli          # put the `cocos` binary (cli/bin/cocos.js) on
 
 `shared` must build before `driver` and `cli` type-check: both import straight from
 `@cocos-cli/shared/dist/...`, and the root `workspaces` array (`shared`, `driver`, `cli`) is what
-gives `npm run build`/`npm test` that order. Each package's own tests live under its own `test/`
-and run against its `tsc` output (`lib/` in `driver` and `cli`, `dist/` in `shared`, which has no
-bundling step) — not against the `tsup` bundle.
+gives `npm run build`/`npm test` that order.
+
+`driver` and `cli` tests import `../src/*.ts` directly — Node strips the types, so a red-green loop
+costs no build. That is what `allowImportingTsExtensions` and the `.ts` suffix on every relative
+import inside `driver/src` and `cli/src` are for, and `erasableSyntaxOnly` keeps the sources
+strippable (an `enum`, a `namespace` or a constructor parameter property would stop compiling).
+`shared`'s own tests stay on `../dist/*.js`: `shared/dist` is what the other two import anyway, so it
+is built before anything else runs.
 
 ## Architecture
 
@@ -62,8 +68,10 @@ scene script           driver/src/scene/   the only place `cc.*` exists
 `WriteReport` and `SceneResult`, the list of all 88 methods and the check that gates them
 (`protocol.ts`), the handshake shape (`Hello`), the channel address (`pipe-name.ts`), node-path
 parsing, and serialized-value comparison (`serialized-diff.ts`, `reference-projection.ts`).
-Two adapters satisfy `Driver`: `driver/src/editor-api.ts` over `Editor.Message`, and
-`cli/src/driver-client.ts` over JSON-RPC.
+Three adapters satisfy `Driver`: `driver/src/editor-api.ts` over `Editor.Message`,
+`cli/src/driver/client.ts` over JSON-RPC, and `cli/src/driver/memory.ts` over a scene held as data.
+Everything in `cli/src` that takes a driver takes `Driver`, never the concrete `DriverClient` —
+that is what lets the memory adapter drive a command body.
 
 **Key constraint:** engine APIs (`cc.*`) exist only in the scene script context. Anything that needs
 them goes through `scene.*`, never through `editor.*`.
@@ -98,7 +106,8 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/main.ts` | the command tree (`buildProgram`), the entry point `bin/cocos.js` runs |
 | `cli/src/discovery.ts` | enumerates channels, probes each with `hello`, `selectInstance` narrows by `--project` |
 | `cli/src/resolve.ts` | `resolveClient` — discovery, selection and connect, in the shape every command's `resolve` thunk needs |
-| `cli/src/driver-client.ts` | `DriverClient implements Driver` — the `editor.*`/`scene.*` facades over JSON-RPC; `editor` is generated from `EDITOR_METHODS` and typed by `EditorMethods`, `scene.call` by `SceneMethods` |
+| `cli/src/driver/client.ts` | `DriverClient implements Driver` — the `editor.*`/`scene.*` facades over JSON-RPC; `editor` is generated from `EDITOR_METHODS` and typed by `EditorMethods`, `scene.call` by `SceneMethods` |
+| `cli/src/driver/memory.ts` | `MemoryDriver implements Driver` — the same seam over a scene held as data, so a command's writes read back. The scene is the test's own input: nodes with components, descriptors in the editor's dump shape, `classes` for what the engine registers, `refuses` for a message that says no, and a node's `prefab` block for what the next load rebuilds. A primitive it does not model refuses by name |
 | `cli/src/commands/shared.ts` | `withClient` (resolve → run → present → close) and `emit`, the one place command output touches `stdout`/`stderr`; plus `unwrap` (`SceneResult<T>` → value or thrown error) |
 | `cli/src/undo-bracket.ts` | `withUndoBracket` — one write wrapped in one undo step, `undoNote` when the editor refused or left it open |
 | `cli/src/node-snapshot.ts` | the editor's descriptor-wrapped node dump projected to what a write reads back |
@@ -111,8 +120,9 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 Everything a command decides that does not need a live editor lives in a pure module beside
 `commands/`: `property/`, `render/`, `asset/`, `node-type.ts`, `node-snapshot.ts`, `node-transform.ts`,
 `prefab-linkage.ts`, `settle.ts`, `discovery.ts`'s `selectInstance`.
-These are what the test suite covers. `commands/*.ts`, `driver-client.ts`, `resolve.ts` and `main.ts`
-talk to a live editor or to Commander's own wiring, and are verified live.
+Those and the command bodies are what the test suite covers — a command runs against
+`cli/src/driver/memory.ts`, which answers as the seam does. `driver/client.ts`, `resolve.ts` and
+`main.ts` talk to a socket or to Commander's own wiring, and are verified live.
 
 ## Write Honesty and Undo Brackets
 
@@ -259,7 +269,7 @@ suite reaches.
 Both kinds are gated by the same list: `shared/src/protocol.ts`'s `EDITOR_METHODS`/`SCENE_METHODS`.
 `driver/src/pipe-server.ts` registers a JSON-RPC method for every entry in `ALL_METHODS`, and
 `driver/src/method-table.ts`'s `resolveMethod` refuses anything `isKnownMethod` does not recognize —
-a primitive implemented but left off this list is unreachable from the CLI. `cli/src/driver-client.ts`'s
+a primitive implemented but left off this list is unreachable from the CLI. `cli/src/driver/client.ts`'s
 `editor` facade is generated by iterating `EDITOR_METHODS`, so `client.editor.<group>.<method>` exists
 on the CLI side as soon as the name is listed and declared, with no further CLI-side code required.
 
@@ -304,9 +314,8 @@ there is untidiness, not a defect.
 
 A change in `cli/`:
 
-1. `npm test` (builds `shared` → `driver` → `cli`, then runs every package's tests), or, for a
-   faster loop when `shared/` did not change, `npm run build --workspace cli` followed by
-   `npm run test:only --workspace cli`.
+1. `npm run test:only --workspace cli` for the red-green loop — it needs no build. `npx tsc -p
+   cli/tsconfig.json` type-checks, and `npm test` runs the whole thing before a commit.
 2. Run the affected command(s) against a real open editor and read the answer — don't assume it.
 
 A change in `driver/` (this includes a change to `shared/`, since `driver`'s `tsup` build inlines
@@ -318,17 +327,19 @@ A write-path change is only checked once the scene has been saved and Ctrl+Z tri
 
 ## Conventions
 
-- **Tests only on pure functions.** No wiring, editor-state or UI tests. Load the `writing-unit-tests`
+- **Tests on pure functions and on command bodies through one in-memory adapter**
+  (`cli/src/driver/memory.ts`). No Commander-wiring and no UI tests. A command's own double does not
+  get written: a fifth hand-rolled fake is what this rule replaced. Load the `writing-unit-tests`
   skill before writing one. A case earns its place only if a mutation of production code fails it.
 - **Comments are the exception, not the default.** Load `writing-code-comments` before writing one.
   What is visible from the code and the names does not get restated.
 - One command group per `cli/src/commands/<group>.ts`; one concern per `driver/src/scene/<concern>.ts`.
-- Each of `shared/`, `driver/`, `cli/` carries its own `tsconfig.json` — `strict: true`,
-  `target: ES2017`, `module: CommonJS` in all three. There is no config file above the package
-  level: `npm run build` over the three workspaces is the whole type-check. `driver` and `cli` also build a
-  bundle with `tsup` — `driver` into `dist/` (the extension's actual `main`), `cli` into `bin/cocos.js`
-  (the actual `cocos` binary) — alongside the modular `tsc` output the tests import (`lib/` in both,
-  `dist/` in `shared`, which has no bundle step of its own).
+- Each of `shared/`, `driver/`, `cli/` carries its own `tsconfig.json` and `strict: true`; there is
+  no config file above the package level, so `npm run build` over the three workspaces is the whole
+  type-check. `shared` emits `dist/`, which the other two import. `driver` and `cli` emit nothing
+  from `tsc` (`noEmit`) — it is their type-check — and ship a `tsup` bundle instead: `driver` into
+  `dist/` (the extension's actual `main`), `cli` into `bin/cocos.js` (the actual `cocos` binary),
+  both built from `src/` directly.
 
 ## Settings
 

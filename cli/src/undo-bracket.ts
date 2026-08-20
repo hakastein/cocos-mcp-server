@@ -1,4 +1,4 @@
-import type { DriverClient } from './driver-client';
+import type { Driver } from '@cocos-cli/shared';
 
 interface OpenBracket {
     id: string | null;
@@ -11,7 +11,7 @@ export interface Bracketed<T> {
 }
 
 export async function withUndoBracket<T>(
-    ctx: DriverClient, nodeUuid: string, write: () => Promise<T>
+    ctx: Driver, nodeUuid: string, write: () => Promise<T>
 ): Promise<Bracketed<T>> {
     const bracket = await beginRecording(nodeUuid, ctx);
     let result: T;
@@ -35,7 +35,7 @@ function undoNoteFor(bracket: OpenBracket, leftOpen: string | null): string | nu
     return null;
 }
 
-async function beginRecording(nodeUuid: string, ctx: DriverClient): Promise<OpenBracket> {
+async function beginRecording(nodeUuid: string, ctx: Driver): Promise<OpenBracket> {
     try {
         const id = await ctx.editor.scene.beginRecording(nodeUuid);
         return typeof id === 'string'
@@ -46,7 +46,7 @@ async function beginRecording(nodeUuid: string, ctx: DriverClient): Promise<Open
     }
 }
 
-async function endRecording(bracket: OpenBracket, ctx: DriverClient): Promise<string | null> {
+async function endRecording(bracket: OpenBracket, ctx: Driver): Promise<string | null> {
     if (bracket.id === null) return null;
     try {
         await ctx.editor.scene.endRecording(bracket.id);
@@ -56,7 +56,7 @@ async function endRecording(bracket: OpenBracket, ctx: DriverClient): Promise<st
     }
 }
 
-async function cancelRecording(bracket: OpenBracket, ctx: DriverClient): Promise<void> {
+async function cancelRecording(bracket: OpenBracket, ctx: Driver): Promise<void> {
     if (bracket.id === null) return;
     try {
         await ctx.editor.scene.cancelRecording(bracket.id);

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { present } from '../lib/render/present.js';
-import { verdictFailed } from '../lib/render/verdict.js';
+import { present } from '../src/render/present.ts';
+import { verdictFailed } from '../src/render/verdict.ts';
 
 // The closed set exists for this table: the exit code is decided once here instead of being
 // reassembled in every command body.

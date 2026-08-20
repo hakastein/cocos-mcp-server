@@ -1,24 +1,24 @@
+import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
-import { addComponent, queryComponents, unwrap, withClient } from './shared';
-import { verifiedWrite } from '../property/verified-write';
-import { writerFor } from '../property/writers';
+import { addComponent, queryComponents, unwrap, withClient } from './shared.ts';
+import { verifiedWrite } from '../property/verified-write.ts';
+import { writerFor } from '../property/writers.ts';
 import {
     componentClassNames, descriptorOf, findProperty, propertyNames, readComponentProperties,
     selectComponent
-} from '../property/component-dump';
-import { buildReferenceIndex, referencedUuids } from '../property/reference-index';
-import { isReferenceKind, referenceRequest } from '../property/reference-target';
-import { resolveKind } from '../property/kind';
-import { resolveNode } from './node';
-import type { ComponentAddress, Report } from '../render/present';
-import type { DriverClient } from '../driver-client';
-import type { Resolved } from '../resolve';
-import type { PropertyKind } from '../property/kind';
-import type { WriteTarget } from '../property/writers';
-import type { VerifiedWriteOptions } from '../property/verified-write';
-import type { TargetSpelling } from '../property/reference-target';
-import type { ComponentChoice, ComponentDump, PropertyReading } from '../property/component-dump';
-import type { ReferenceLabel } from '../property/reference-index';
+} from '../property/component-dump.ts';
+import { buildReferenceIndex, referencedUuids } from '../property/reference-index.ts';
+import { isReferenceKind, referenceRequest } from '../property/reference-target.ts';
+import { resolveKind } from '../property/kind.ts';
+import { resolveNode } from './node.ts';
+import type { ComponentAddress, Report } from '../render/present.ts';
+import type { Resolved } from '../resolve.ts';
+import type { PropertyKind } from '../property/kind.ts';
+import type { WriteTarget } from '../property/writers.ts';
+import type { VerifiedWriteOptions } from '../property/verified-write.ts';
+import type { TargetSpelling } from '../property/reference-target.ts';
+import type { ComponentChoice, ComponentDump, PropertyReading } from '../property/component-dump.ts';
+import type { ReferenceLabel } from '../property/reference-index.ts';
 
 export interface SetSpec {
     node: string;
@@ -45,7 +45,7 @@ interface ComponentMatch extends ComponentChoice {
  * the bare `Camera` a caller may type. One query and one selection rule serve every subcommand, so
  * a spelling a read accepts is a spelling a write accepts.
  */
-async function findComponent(client: DriverClient, nodeUuid: string, type: string): Promise<ComponentMatch> {
+async function findComponent(client: Driver, nodeUuid: string, type: string): Promise<ComponentMatch> {
     const components = await queryComponents(client, nodeUuid);
     const choice = selectComponent(components, type);
     if (!choice) {
@@ -62,7 +62,7 @@ async function findComponent(client: DriverClient, nodeUuid: string, type: strin
  * null.
  */
 async function targetUuid(
-    client: DriverClient, kind: PropertyKind, target: TargetSpelling
+    client: Driver, kind: PropertyKind, target: TargetSpelling
 ): Promise<string> {
     if (target.kind === 'uuid') return target.uuid;
     if (target.kind === 'assetUrl') {
@@ -81,7 +81,7 @@ async function targetUuid(
 }
 
 async function resolveReferenceValue(
-    client: DriverClient, kind: PropertyKind, value: unknown
+    client: Driver, kind: PropertyKind, value: unknown
 ): Promise<unknown> {
     const request = referenceRequest(value);
     if ('error' in request) throw new Error(request.error);
@@ -101,7 +101,7 @@ function verificationFor(kind: PropertyKind): VerifiedWriteOptions {
     return kind === 'nodeRef' || kind === 'componentRef' ? {} : { verify: 'serializer' };
 }
 
-export async function componentSet(client: DriverClient, spec: SetSpec): Promise<Report> {
+export async function componentSet(client: Driver, spec: SetSpec): Promise<Report> {
     const nodeUuid = await resolveNode(client, spec.node);
     const component = await findComponent(client, nodeUuid, spec.component);
     const descriptor = descriptorOf(component.dump, spec.property);
@@ -143,7 +143,7 @@ interface ResolvedReferences {
  * A lookup that fails leaves the uuid bare and says so on stderr.
  */
 async function resolveReferences(
-    client: DriverClient, readings: PropertyReading[]
+    client: Driver, readings: PropertyReading[]
 ): Promise<ResolvedReferences> {
     const wanted = referencedUuids(readings);
     const index = new Map<string, ReferenceLabel>();
@@ -169,7 +169,7 @@ async function resolveReferences(
     return { index, note };
 }
 
-export async function componentGet(client: DriverClient, spec: GetSpec): Promise<Report> {
+export async function componentGet(client: Driver, spec: GetSpec): Promise<Report> {
     const nodeUuid = await resolveNode(client, spec.node);
     const component = await findComponent(client, nodeUuid, spec.component);
     const address: ComponentAddress = { nodePath: spec.node, nodeUuid, choice: component };

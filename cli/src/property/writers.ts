@@ -1,10 +1,8 @@
-import { settle } from '../settle';
-import {
-    PropertyDescriptor, PropertyKind, isArrayDescriptor, isDumpDescriptor, resolveKind
-} from './kind';
-import { projectDescriptor, projectValue } from './readers';
-import type { DriverClient } from '../driver-client';
-import type { PropertyDump, WriteReport } from '@cocos-cli/shared';
+import { settle } from '../settle.ts';
+import { isArrayDescriptor, isDumpDescriptor, resolveKind } from './kind.ts';
+import type { PropertyDescriptor, PropertyKind } from './kind.ts';
+import { projectDescriptor, projectValue } from './readers.ts';
+import type { Driver, PropertyDump, WriteReport } from '@cocos-cli/shared';
 
 export interface ReferenceOptions {
     targetComponentType?: string;
@@ -26,7 +24,7 @@ export interface PropertyWriter {
     readonly name: string;
     readonly kind: PropertyKind;
     claims(target: WriteTarget, value: unknown): boolean;
-    write(target: WriteTarget, value: unknown, ctx: DriverClient): Promise<WriteReport>;
+    write(target: WriteTarget, value: unknown, ctx: Driver): Promise<WriteReport>;
 }
 
 export interface ReferenceStep {
@@ -141,7 +139,7 @@ function show(value: unknown): string {
 
 // ----- Read-back through the editor dump ---------------------------------------------------
 
-async function componentOf(target: WriteTarget, ctx: DriverClient): Promise<unknown> {
+async function componentOf(target: WriteTarget, ctx: Driver): Promise<unknown> {
     const node = await ctx.editor.scene.queryNode(target.nodeUuid);
     const components = node && node.__comps__;
     return components ? components[target.componentIndex] : undefined;
@@ -152,7 +150,7 @@ function dumpMember(holder: unknown, key: string): unknown {
     return wrapped && typeof wrapped === 'object' ? (wrapped as Record<string, unknown>)[key] : undefined;
 }
 
-export async function readBack(target: WriteTarget, ctx: DriverClient, property?: string): Promise<unknown> {
+export async function readBack(target: WriteTarget, ctx: Driver, property?: string): Promise<unknown> {
     const component = await componentOf(target, ctx);
     const segments = (property === undefined ? target.propertyPath : property).split('.');
     let current = dumpMember(component, segments[0]);
@@ -163,7 +161,7 @@ export async function readBack(target: WriteTarget, ctx: DriverClient, property?
     return isDumpDescriptor(current) ? projectDescriptor(current) : projectValue(kindOf(target), current);
 }
 
-export async function componentCid(target: WriteTarget, ctx: DriverClient): Promise<string | undefined> {
+export async function componentCid(target: WriteTarget, ctx: Driver): Promise<string | undefined> {
     const component = await componentOf(target, ctx) as
         { __type__?: unknown; cid?: unknown; type?: unknown } | undefined;
     if (!component) return undefined;
@@ -173,7 +171,7 @@ export async function componentCid(target: WriteTarget, ctx: DriverClient): Prom
 
 // ----- The channels ------------------------------------------------------------------------
 
-async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: DriverClient): Promise<WriteReport> {
+async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: Driver): Promise<WriteReport> {
     const refused: string[] = [];
     let landed = 0;
     for (const step of plan.steps) {
@@ -200,14 +198,14 @@ async function throughEditor(target: WriteTarget, plan: ChannelPlan, ctx: Driver
     return report;
 }
 
-async function readsMatch(target: WriteTarget, reads: ReadCheck[], ctx: DriverClient): Promise<boolean> {
+async function readsMatch(target: WriteTarget, reads: ReadCheck[], ctx: Driver): Promise<boolean> {
     for (const read of reads) {
         if (!readBackMatches(read.expected, await readBack(target, ctx, read.property))) return false;
     }
     return true;
 }
 
-async function readBackComplaint(target: WriteTarget, reads: ReadCheck[], ctx: DriverClient): Promise<string> {
+async function readBackComplaint(target: WriteTarget, reads: ReadCheck[], ctx: Driver): Promise<string> {
     const mismatches: string[] = [];
     for (const read of reads) {
         let actual: unknown;
@@ -681,7 +679,7 @@ const assetWriter: PropertyWriter = {
  * the editor records a cc.TargetOverrideInfo replayed after the load. A live assignment records
  * none, so the field reads back perfectly and is empty the next time the scene is opened.
  */
-async function writeReference(target: WriteTarget, value: unknown, ctx: DriverClient): Promise<WriteReport> {
+async function writeReference(target: WriteTarget, value: unknown, ctx: Driver): Promise<WriteReport> {
     const options = target.refOptions || {};
     const args: Record<string, unknown> = {
         nodeUuid: target.nodeUuid, componentType: target.componentType, property: target.propertyPath

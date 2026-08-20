@@ -1,5 +1,5 @@
 import Table from 'cli-table3';
-import { Hello } from '@cocos-cli/shared';
+import type { Hello } from '@cocos-cli/shared';
 
 export function renderInstances(instances: Hello[]): string {
     if (!instances.length) return 'no open Cocos editor found';

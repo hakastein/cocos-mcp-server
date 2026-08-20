@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatReading, renderComponentReading } from '../lib/render/property.js';
+import { formatReading, renderComponentReading } from '../src/render/property.ts';
 
 const LABELS = {
     'node-hero': { kind: 'node', path: 'Characters/cc_hero' },

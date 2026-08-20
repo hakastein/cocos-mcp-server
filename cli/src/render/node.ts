@@ -1,5 +1,5 @@
-import type { NodeType } from '../node-type';
-import type { Verdict } from './verdict';
+import type { NodeType } from '../node-type.ts';
+import type { Verdict } from './verdict.ts';
 
 export interface AppliedWrite {
     property: string;

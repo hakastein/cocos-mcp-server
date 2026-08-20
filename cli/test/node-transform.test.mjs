@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import t from '../lib/node-transform.js';
+import * as t from '../src/node-transform.ts';
 
 const { parseVec3, normalizedTransform, sameVec3 } = t;
 

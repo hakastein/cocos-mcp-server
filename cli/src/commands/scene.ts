@@ -1,10 +1,9 @@
 import { Command } from 'commander';
-import type { SceneNodeEntry } from '@cocos-cli/shared';
-import { unwrap, withClient } from './shared';
-import { resolveNode } from './node';
-import type { DumpNode, Report } from '../render/present';
-import type { DriverClient } from '../driver-client';
-import type { Resolved } from '../resolve';
+import type { Driver, SceneNodeEntry } from '@cocos-cli/shared';
+import { unwrap, withClient } from './shared.ts';
+import { resolveNode } from './node.ts';
+import type { DumpNode, Report } from '../render/present.ts';
+import type { Resolved } from '../resolve.ts';
 
 /** `parentUuid` is really `null` only for the scene root itself, which never reaches the dump; the
  * contract type allows it anyway, and `renderTree` compares parentUuid as an ordinary Map/Set key. */
@@ -19,7 +18,7 @@ function toDumpNode(node: SceneNodeEntry): DumpNode {
 }
 
 export async function sceneTree(
-    client: DriverClient, options: { uuid?: boolean }
+    client: Driver, options: { uuid?: boolean }
 ): Promise<Report> {
     const dump = await unwrap(client.scene.call('dumpSceneNodes'), 'dumpSceneNodes');
     return {
@@ -29,7 +28,7 @@ export async function sceneTree(
     };
 }
 
-export async function sceneInfo(client: DriverClient): Promise<Report> {
+export async function sceneInfo(client: Driver): Promise<Report> {
     const info = await unwrap(client.scene.call('getCurrentSceneInfo'), 'getCurrentSceneInfo');
     return {
         kind: 'action',

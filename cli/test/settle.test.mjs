@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import s from '../lib/settle.js';
+import * as s from '../src/settle.ts';
 
 const { settle } = s;
 

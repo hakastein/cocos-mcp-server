@@ -3,7 +3,7 @@ import type {
     OverrideValueDescription, PrefabAssetComponent, PrefabAssetNode, PrefabSyncReport,
     PrefabTargetInfo, SceneMethods, SceneResult
 } from '@cocos-cli/shared';
-import { componentClassName, findNodeByUuid, requireActiveScene } from './engine';
+import { componentClassName, findNodeByUuid, requireActiveScene } from './engine.ts';
 
 declare const cce: any;
 

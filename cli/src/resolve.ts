@@ -1,6 +1,7 @@
-import { Hello, pipePath } from '@cocos-cli/shared';
-import { discover, probeAddress, selectInstance } from './discovery';
-import { DriverClient } from './driver-client';
+import { pipePath } from '@cocos-cli/shared';
+import type { Driver, Hello } from '@cocos-cli/shared';
+import { discover, probeAddress, selectInstance } from './discovery.ts';
+import { DriverClient } from './driver/client.ts';
 
 export type Resolved =
     | { ok: true; client: DriverClient; hello: Hello }

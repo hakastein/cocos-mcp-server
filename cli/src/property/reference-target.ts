@@ -1,4 +1,4 @@
-import type { PropertyKind } from './kind';
+import type { PropertyKind } from './kind.ts';
 
 /**
  * Cocos compresses a node or component uuid to exactly 22 chars of standard base64 (`A-Za-z0-9+/`),

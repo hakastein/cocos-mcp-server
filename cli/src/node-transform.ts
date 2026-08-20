@@ -1,4 +1,4 @@
-import type { NodeType } from './node-type';
+import type { NodeType } from './node-type.ts';
 
 export interface Vec3 {
     x: number;

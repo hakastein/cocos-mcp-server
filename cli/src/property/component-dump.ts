@@ -1,6 +1,7 @@
-import { PropertyDescriptor, PropertyKind, isDumpDescriptor, resolveKind } from './kind';
-import { projectValue } from './readers';
-import { readBackMatches } from './writers';
+import { isDumpDescriptor, resolveKind } from './kind.ts';
+import type { PropertyDescriptor, PropertyKind } from './kind.ts';
+import { projectValue } from './readers.ts';
+import { readBackMatches } from './writers.ts';
 
 /** One `__comps__` entry of the editor's node dump: the component shell plus its property map. */
 export interface ComponentDump {

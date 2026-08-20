@@ -1,5 +1,5 @@
 import type { SceneMethods } from '@cocos-cli/shared';
-import { findComponentClass, findNodeByUuid, requireActiveScene } from './engine';
+import { findComponentClass, findNodeByUuid, requireActiveScene } from './engine.ts';
 
 export const addComponentToNode: SceneMethods['addComponentToNode'] = (nodeUuid, componentType) => {
     try {

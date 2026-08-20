@@ -11,10 +11,12 @@ export class DriverClient implements Driver {
     readonly scene: SceneFacade;
     private isClosed = false;
 
-    private constructor(
-        private readonly socket: net.Socket,
-        private readonly rpc: JSONRPCClient
-    ) {
+    private readonly socket: net.Socket;
+    private readonly rpc: JSONRPCClient;
+
+    private constructor(socket: net.Socket, rpc: JSONRPCClient) {
+        this.socket = socket;
+        this.rpc = rpc;
         const groups: Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>> = {};
         for (const name of EDITOR_METHODS) {
             const [group, method] = name.split('.');

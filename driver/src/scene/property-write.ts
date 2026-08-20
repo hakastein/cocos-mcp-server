@@ -1,11 +1,12 @@
 import {
-    ReferenceOverride, projectAfterReload, contradictedOverrides, liveNodesBySerializedIndex
+    projectAfterReload, contradictedOverrides, liveNodesBySerializedIndex
 } from '@cocos-cli/shared';
+import type { ReferenceOverride } from '@cocos-cli/shared';
 import type { SceneMethods } from '@cocos-cli/shared';
 import {
     componentClassName, ctorIsA, declaredPropertyCtor, findComponentByUuid,
     findNodeByUuid, findNodeByUuidOrNull, requireActiveScene, serializedEntityUuid
-} from './engine';
+} from './engine.ts';
 
 /**
  * Every `cc.TargetOverrideInfo` in the scene, with the object holding it. They sit on the scene's

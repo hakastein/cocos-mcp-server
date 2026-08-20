@@ -5,11 +5,12 @@ import { createHash } from 'crypto';
 import split2 from 'split2';
 import PQueue from 'p-queue';
 import { JSONRPCServer } from 'json-rpc-2.0';
-import { ALL_METHODS, Hello, pipePath } from '@cocos-cli/shared';
-import { resolveMethod } from './method-table';
-import type { EditorApi } from './editor-api';
-import type { SceneScriptClient } from './scene-script-client';
-import type { DriverSettings, DriverStatus } from './types';
+import { ALL_METHODS, pipePath } from '@cocos-cli/shared';
+import type { Hello } from '@cocos-cli/shared';
+import { resolveMethod } from './method-table.ts';
+import type { EditorApi } from './editor-api.ts';
+import type { SceneScriptClient } from './scene-script-client.ts';
+import type { DriverSettings, DriverStatus } from './types/index.ts';
 
 const VERSION = '2.0.0';
 
@@ -34,11 +35,14 @@ export class PipeServer {
     private bracketGate: Promise<void> = Promise.resolve();
     private releaseBracketGate: (() => void) | null = null;
 
-    constructor(
-        private readonly editor: EditorApi,
-        private readonly scene: SceneScriptClient,
-        private readonly settings: DriverSettings
-    ) {
+    private readonly editor: EditorApi;
+    private readonly scene: SceneScriptClient;
+    private readonly settings: DriverSettings;
+
+    constructor(editor: EditorApi, scene: SceneScriptClient, settings: DriverSettings) {
+        this.editor = editor;
+        this.scene = scene;
+        this.settings = settings;
         this.rpc.addMethod('hello', async (): Promise<Hello> => ({
             project: path.basename(Editor.Project.path),
             projectPath: Editor.Project.path,

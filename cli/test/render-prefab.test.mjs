@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     prefabDumpSummary, prefabOverridesSummary, renderPrefabDump, renderPrefabOverrides
-} from '../lib/render/prefab.js';
+} from '../src/render/prefab.ts';
 
 const component = (over = {}) => ({
     className: 'CharacterAnimator', cid: null, fileId: 'f1', enabled: true, missing: false, ...over

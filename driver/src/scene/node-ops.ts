@@ -1,5 +1,5 @@
 import type { SceneMethods } from '@cocos-cli/shared';
-import { findNodeByUuid, requireActiveScene } from './engine';
+import { findNodeByUuid, requireActiveScene } from './engine.ts';
 
 // `cce` is the editor-side engine facade available in the scene process (it exposes
 // Prefab / PreviewPlay helpers the public `cc` module does not). Declared here so this

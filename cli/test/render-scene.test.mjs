@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import r from '../lib/render/scene.js';
+import * as r from '../src/render/scene.ts';
 
 const {
     renderComponentOwners, componentOwnersSummary, renderSceneDirty, sceneDirtyNote,

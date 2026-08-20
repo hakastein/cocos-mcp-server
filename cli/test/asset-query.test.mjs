@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import q from '../lib/asset/query.js';
+import * as q from '../src/asset/query.ts';
 
 const { assetQuery, selectAssets, matchesAssetName, requireAssetUrl, isAssetUrl, commonAssetFolder } = q;
 

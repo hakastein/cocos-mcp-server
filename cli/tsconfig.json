@@ -1,15 +1,16 @@
 {
   "compilerOptions": {
     "target": "ES2017",
-    "module": "CommonJS",
-    "moduleResolution": "node",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
     "strict": true,
-    "declaration": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "./lib",
-    "rootDir": "./src",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
     "types": ["node", "@cocos/creator-types/editor"]
   },
   "include": ["src/**/*.ts"]

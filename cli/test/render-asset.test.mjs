@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import r from '../lib/render/asset.js';
+import * as r from '../src/render/asset.ts';
 
 const {
     assetField, renderAssetInfo, renderAssetList, assetListSummary, renderSettleReport, settleNote,

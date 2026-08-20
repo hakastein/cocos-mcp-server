@@ -3,9 +3,10 @@ import {
 } from '@cocos-cli/shared';
 import type { DeclaredProperty, PrefabLinkageReport, SceneMethods, SceneResult } from '@cocos-cli/shared';
 import {
-    ctorIsA, findNodeByUuid, plainSerialized, requireActiveScene, SerializedNodeNaming
-} from './engine';
-import { overlaidReferenceValue } from './property-write';
+    ctorIsA, findNodeByUuid, plainSerialized, requireActiveScene
+} from './engine.ts';
+import type { SerializedNodeNaming } from './engine.ts';
+import { overlaidReferenceValue } from './property-write.ts';
 
 /**
  * Whether a SyntaxError out of `eval(code)` came from parsing the script rather than from running

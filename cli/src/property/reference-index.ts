@@ -1,6 +1,6 @@
 import type { SceneNodeEntry } from '@cocos-cli/shared';
-import type { PropertyKind } from './kind';
-import type { PropertyReading } from './component-dump';
+import type { PropertyKind } from './kind.ts';
+import type { PropertyReading } from './component-dump.ts';
 
 export interface ReferenceLabel {
     kind: 'node' | 'component' | 'asset';

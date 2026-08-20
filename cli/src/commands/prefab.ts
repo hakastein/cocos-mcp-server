@@ -1,23 +1,23 @@
+import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
-import { unwrap, withClient } from './shared';
-import { spellingOf } from '../property/reference-target';
+import { unwrap, withClient } from './shared.ts';
+import { spellingOf } from '../property/reference-target.ts';
 import {
     applyLinkageOptions, establishedLinkage, linkageVerdict, prefabSavePath
-} from '../prefab-linkage';
-import { requireAssetUrl } from '../asset/query';
-import { resolveNode } from './node';
-import type { AssetRecord } from '../asset/query';
-import type { CreateNodeOptions } from '../prefab-linkage';
-import type { Report } from '../render/present';
-import type { DriverClient } from '../driver-client';
-import type { Resolved } from '../resolve';
+} from '../prefab-linkage.ts';
+import { requireAssetUrl } from '../asset/query.ts';
+import { resolveNode } from './node.ts';
+import type { AssetRecord } from '../asset/query.ts';
+import type { CreateNodeOptions } from '../prefab-linkage.ts';
+import type { Report } from '../render/present.ts';
+import type { Resolved } from '../resolve.ts';
 
 /**
  * A prefab is addressed the way the editor names it: a `db://` url or a uuid. A node path does not
  * work here, and a spelling that looks like one is refused here rather than turned into an asset
  * query by node name.
  */
-async function resolvePrefabUuid(client: DriverClient, asset: string): Promise<string> {
+async function resolvePrefabUuid(client: Driver, asset: string): Promise<string> {
     const spelling = spellingOf(asset);
     if (spelling.kind === 'uuid') return spelling.uuid;
     if (spelling.kind === 'nodePath') {
@@ -30,7 +30,7 @@ async function resolvePrefabUuid(client: DriverClient, asset: string): Promise<s
     return uuid;
 }
 
-export async function prefabDump(client: DriverClient, asset: string): Promise<Report> {
+export async function prefabDump(client: Driver, asset: string): Promise<Report> {
     const uuid = await resolvePrefabUuid(client, asset);
     return {
         kind: 'prefabDump',
@@ -38,7 +38,7 @@ export async function prefabDump(client: DriverClient, asset: string): Promise<R
     };
 }
 
-export async function prefabOverrides(client: DriverClient, target: string): Promise<Report> {
+export async function prefabOverrides(client: Driver, target: string): Promise<Report> {
     const nodeUuid = await resolveNode(client, target);
     return {
         kind: 'prefabOverrides',
@@ -52,7 +52,7 @@ export async function prefabOverrides(client: DriverClient, target: string): Pro
  * also answers `cc.Prefab`, so it links the same way an ordinary `.prefab` does.
  */
 async function instantiableAsset(
-    client: DriverClient, url: string
+    client: Driver, url: string
 ): Promise<{ uuid: string; type: string | null; name: string; fromModel: boolean }> {
     const info = await client.editor.assetDb.queryAssetInfo(url).catch(() => null) as AssetRecord | null;
     if (!info) throw new Error(`the asset database does not know '${url}'`);
@@ -71,7 +71,7 @@ async function instantiableAsset(
 }
 
 export async function prefabInstantiate(
-    client: DriverClient, asset: string,
+    client: Driver, asset: string,
     options: { parent?: string; name?: string; pos?: string; unlink?: boolean }
 ): Promise<Report> {
     const url = requireAssetUrl(asset, 'the prefab');
@@ -111,7 +111,7 @@ export async function prefabInstantiate(
  * material references and produced prefabs that rendered empty.
  */
 export async function prefabCreate(
-    client: DriverClient, target: string, savePath: string, name?: string
+    client: Driver, target: string, savePath: string, name?: string
 ): Promise<Report> {
     const nodeUuid = await resolveNode(client, target);
     const generated = await unwrap(

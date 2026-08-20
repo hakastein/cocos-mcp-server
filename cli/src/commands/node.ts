@@ -1,24 +1,24 @@
+import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
-import { addComponent, unwrap, withClient } from './shared';
-import { withUndoBracket } from '../undo-bracket';
-import { settle } from '../settle';
-import { classifyNode } from '../node-type';
-import { nodePropertyOf, nodeSnapshotOf } from '../node-snapshot';
+import { addComponent, unwrap, withClient } from './shared.ts';
+import { withUndoBracket } from '../undo-bracket.ts';
+import { settle } from '../settle.ts';
+import { classifyNode } from '../node-type.ts';
+import { nodePropertyOf, nodeSnapshotOf } from '../node-snapshot.ts';
 import {
     TRANSFORM_KINDS, normalizedTransform, parseVec3, sameVec3
-} from '../node-transform';
-import type { NodeProperty, NodeSnapshot } from '../node-snapshot';
-import type { TransformKind, Vec3Parts } from '../node-transform';
-import type { NodeWriteReport, Report } from '../render/present';
-import type { DriverClient } from '../driver-client';
-import type { Resolved } from '../resolve';
+} from '../node-transform.ts';
+import type { NodeProperty, NodeSnapshot } from '../node-snapshot.ts';
+import type { TransformKind, Vec3Parts } from '../node-transform.ts';
+import type { NodeWriteReport, Report } from '../render/present.ts';
+import type { Resolved } from '../resolve.ts';
 
 // Cocos compresses a node/component uuid to exactly 22 chars of standard base64
 // (`A-Za-z0-9+/`, no `-`/`_`) — see shared/test/reference-projection.test.mjs's fixture uuids.
 // A node NAME can land in this same alphabet and length, so both constraints matter.
 const UUID_LIKE = /^[A-Za-z0-9+/]{22}$/;
 
-export async function resolveNode(client: DriverClient, pathOrUuid: string): Promise<string> {
+export async function resolveNode(client: Driver, pathOrUuid: string): Promise<string> {
     if (UUID_LIKE.test(pathOrUuid) && !pathOrUuid.includes('/')) return pathOrUuid;
 
     const resolved = await unwrap(client.scene.call('resolveNodePaths', [pathOrUuid]), 'resolveNodePaths');
@@ -32,7 +32,7 @@ export async function resolveNode(client: DriverClient, pathOrUuid: string): Pro
     return resolution.uuid;
 }
 
-export async function nodeGet(client: DriverClient, pathOrUuid: string): Promise<Report> {
+export async function nodeGet(client: Driver, pathOrUuid: string): Promise<Report> {
     const uuid = await resolveNode(client, pathOrUuid);
     const info = await unwrap(client.scene.call('getNodeInfo', uuid), 'getNodeInfo');
     const components = (info.components || [])
@@ -62,7 +62,7 @@ export interface CreateSpec {
  * the real call passes nothing and gets `settle`'s own timeout.
  */
 export async function nodeCreate(
-    client: DriverClient, spec: CreateSpec, componentPollOptions?: { timeoutMs?: number; intervalMs?: number }
+    client: Driver, spec: CreateSpec, componentPollOptions?: { timeoutMs?: number; intervalMs?: number }
 ): Promise<Report> {
     const parentUuid = await resolveNode(client, spec.parent);
 
@@ -93,7 +93,7 @@ export async function nodeCreate(
     };
 }
 
-async function snapshotOf(client: DriverClient, uuid: string): Promise<NodeSnapshot> {
+async function snapshotOf(client: Driver, uuid: string): Promise<NodeSnapshot> {
     const snapshot = nodeSnapshotOf(await client.editor.scene.queryNode(uuid), uuid);
     if (!snapshot) throw new Error(`node ${uuid} is not in the open scene`);
     return snapshot;
@@ -115,7 +115,7 @@ export interface SetSpec {
  * only piles up drift.
  */
 export async function nodeSet(
-    client: DriverClient, target: string, spec: SetSpec,
+    client: Driver, target: string, spec: SetSpec,
     pollOptions?: { timeoutMs?: number; intervalMs?: number }
 ): Promise<Report> {
     const uuid = await resolveNode(client, target);
@@ -176,7 +176,7 @@ export async function nodeSet(
  * is polled until it takes; one that never takes names the parent the node actually has.
  */
 export async function nodeMove(
-    client: DriverClient, target: string, parent: string, keepWorldTransform: boolean,
+    client: Driver, target: string, parent: string, keepWorldTransform: boolean,
     pollOptions?: { timeoutMs?: number; intervalMs?: number }
 ): Promise<Report> {
     const uuid = await resolveNode(client, target);
@@ -209,7 +209,7 @@ export async function nodeMove(
 }
 
 export async function nodeDuplicate(
-    client: DriverClient, target: string,
+    client: Driver, target: string,
     pollOptions?: { timeoutMs?: number; intervalMs?: number }
 ): Promise<Report> {
     const uuid = await resolveNode(client, target);

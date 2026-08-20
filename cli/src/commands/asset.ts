@@ -1,15 +1,15 @@
+import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
-import { settle } from '../settle';
-import { withClient } from './shared';
+import { settle } from '../settle.ts';
+import { withClient } from './shared.ts';
 import {
     ASSET_TYPES, assetQuery, commonAssetFolder, requireAssetUrl, selectAssets
-} from '../asset/query';
-import type { AssetQuery, AssetRecord, AssetType } from '../asset/query';
-import { diffAssets, diffClasses, fingerprintOf, settled, snapshotKey } from '../asset/settle';
-import type { DbSnapshot, Sample } from '../asset/settle';
-import type { Report, SettleReport } from '../render/present';
-import type { DriverClient } from '../driver-client';
-import type { Resolved } from '../resolve';
+} from '../asset/query.ts';
+import type { AssetQuery, AssetRecord, AssetType } from '../asset/query.ts';
+import { diffAssets, diffClasses, fingerprintOf, settled, snapshotKey } from '../asset/settle.ts';
+import type { DbSnapshot, Sample } from '../asset/settle.ts';
+import type { Report, SettleReport } from '../render/present.ts';
+import type { Resolved } from '../resolve.ts';
 
 const DEFAULT_FOLDER = 'db://assets';
 const DEFAULT_MAX_RESULTS = 200;
@@ -36,17 +36,17 @@ function waitOptions(options: { timeout?: string; quietFor?: string }): WaitOpti
     };
 }
 
-async function queryAssets(client: DriverClient, query: AssetQuery): Promise<AssetRecord[]> {
+async function queryAssets(client: Driver, query: AssetQuery): Promise<AssetRecord[]> {
     const found = await client.editor.assetDb.queryAssets(query).catch(() => []);
     return Array.isArray(found) ? found as AssetRecord[] : [];
 }
 
-async function queryOne(client: DriverClient, urlOrUuid: string): Promise<AssetRecord | null> {
+async function queryOne(client: Driver, urlOrUuid: string): Promise<AssetRecord | null> {
     const info = await client.editor.assetDb.queryAssetInfo(urlOrUuid).catch(() => null);
     return info ? info as AssetRecord : null;
 }
 
-async function requireOne(client: DriverClient, urlOrUuid: string): Promise<AssetRecord> {
+async function requireOne(client: Driver, urlOrUuid: string): Promise<AssetRecord> {
     const info = await queryOne(client, urlOrUuid);
     if (!info) throw new Error(`the asset database does not know '${urlOrUuid}'`);
     return info;
@@ -57,7 +57,7 @@ async function requireOne(client: DriverClient, urlOrUuid: string): Promise<Asse
  * notice the new @ccclass` — the question a `refresh` is run for, while a files-only report talks
  * about the disk when the class was what was asked about.
  */
-async function registeredClasses(client: DriverClient): Promise<string[] | null> {
+async function registeredClasses(client: Driver): Promise<string[] | null> {
     const components = await client.editor.scene.queryComponents().catch(() => null);
     if (!Array.isArray(components)) return null;
     return (components as Array<{ name?: string }>)
@@ -70,7 +70,7 @@ async function registeredClasses(client: DriverClient): Promise<string[] | null>
  * database does not know yet does not disturb the wait: before the `refresh` it is simply absent
  * from both halves.
  */
-async function snapshot(client: DriverClient, url: string): Promise<DbSnapshot> {
+async function snapshot(client: Driver, url: string): Promise<DbSnapshot> {
     const under = await queryAssets(client, assetQuery(url, 'all'));
     const self = await queryOne(client, url);
     const byUuid = new Map<string, AssetRecord>();
@@ -92,7 +92,7 @@ export interface SettleOutcome {
  * eight seconds before it — so the waiting lives here rather than in the caller.
  */
 async function settleAssetDb(
-    client: DriverClient, url: string, options: WaitOptions
+    client: Driver, url: string, options: WaitOptions
 ): Promise<SettleOutcome> {
     const started = options.now();
     const samples: Sample[] = [];
@@ -109,7 +109,7 @@ async function settleAssetDb(
 }
 
 async function settleAndDiff(
-    client: DriverClient, action: string, target: string, scope: string,
+    client: Driver, action: string, target: string, scope: string,
     before: DbSnapshot, options: WaitOptions
 ): Promise<SettleReport> {
     const outcome = await settleAssetDb(client, scope, options);
@@ -133,13 +133,13 @@ function outputOf(report: SettleReport, options: WaitOptions, extraNote?: string
  * survived, and the answer was `null`. So their answer is never read: where the asset ended up is
  * asked of the database by its uuid.
  */
-async function whereIs(client: DriverClient, uuid: string): Promise<string | null> {
+async function whereIs(client: Driver, uuid: string): Promise<string | null> {
     const url = await client.editor.assetDb.queryUrl(uuid).catch(() => null);
     return typeof url === 'string' && url ? url : null;
 }
 
 export async function assetRefresh(
-    client: DriverClient, target: string, options: WaitOptions
+    client: Driver, target: string, options: WaitOptions
 ): Promise<Report> {
     const url = requireAssetUrl(target, 'the folder to refresh');
     const before = await snapshot(client, url);
@@ -148,7 +148,7 @@ export async function assetRefresh(
 }
 
 export async function assetReimport(
-    client: DriverClient, target: string, options: WaitOptions
+    client: Driver, target: string, options: WaitOptions
 ): Promise<Report> {
     const url = requireAssetUrl(target, 'the asset to reimport');
     if (!await queryOne(client, url)) {
@@ -162,7 +162,7 @@ export async function assetReimport(
 }
 
 export async function assetMove(
-    client: DriverClient, source: string, target: string,
+    client: Driver, source: string, target: string,
     options: WaitOptions & { overwrite?: boolean }
 ): Promise<Report> {
     const from = requireAssetUrl(source, 'the source asset');
@@ -191,13 +191,13 @@ export async function assetMove(
 }
 
 export async function assetGet(
-    client: DriverClient, target: string, options: { field?: string }
+    client: Driver, target: string, options: { field?: string }
 ): Promise<Report> {
     return { kind: 'assetInfo', asset: await requireOne(client, target), field: options.field };
 }
 
 export async function assetList(
-    client: DriverClient, folder: string,
+    client: Driver, folder: string,
     options: { type?: string; name?: string; exact?: boolean; max?: string }
 ): Promise<Report> {
     const root = requireAssetUrl(folder, 'the folder to search');

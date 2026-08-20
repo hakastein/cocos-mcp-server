@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveMethod } from '../lib/method-table.js';
+import { resolveMethod } from '../src/method-table.ts';
 
 const editor = {
     scene: { createNode: () => 'created', beginRecording: () => 'begun' },

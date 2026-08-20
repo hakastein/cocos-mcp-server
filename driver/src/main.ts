@@ -1,8 +1,8 @@
-import { readSettings, saveSettings } from './settings';
-import { DriverSettings } from './types';
-import { EditorApi } from './editor-api';
-import { SceneScriptClient } from './scene-script-client';
-import { PipeServer } from './pipe-server';
+import { readSettings, saveSettings } from './settings.ts';
+import type { DriverSettings } from './types/index.ts';
+import { EditorApi } from './editor-api.ts';
+import { SceneScriptClient } from './scene-script-client.ts';
+import { PipeServer } from './pipe-server.ts';
 
 let settings: DriverSettings = readSettings();
 let server: PipeServer | null = null;

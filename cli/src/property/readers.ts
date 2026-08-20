@@ -1,4 +1,5 @@
-import { PropertyDescriptor, PropertyKind, isDumpDescriptor, resolveKind } from './kind';
+import { isDumpDescriptor, resolveKind } from './kind.ts';
+import type { PropertyDescriptor, PropertyKind } from './kind.ts';
 
 export function projectDescriptor(descriptor?: PropertyDescriptor | null): unknown {
     if (!descriptor || typeof descriptor !== 'object') return null;

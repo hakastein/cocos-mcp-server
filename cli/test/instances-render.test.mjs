@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { renderInstances } from '../lib/render/instances.js';
+import { renderInstances } from '../src/render/instances.ts';
 
 const hello = (project, projectPath, pid) => ({
     project, projectPath, pid, version: '2.0.0', surfaceChecksum: 'abc'

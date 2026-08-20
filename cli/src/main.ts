@@ -1,14 +1,14 @@
 import { Command, CommanderError } from 'commander';
-import { discover, probeAddress } from './discovery';
-import { present } from './render/present';
-import { emit } from './commands/shared';
-import { resolveClient } from './resolve';
-import { registerScene } from './commands/scene';
-import { registerNode } from './commands/node';
-import { registerComponent } from './commands/component';
-import { registerPrefab } from './commands/prefab';
-import { registerAsset } from './commands/asset';
-import { EXIT } from './exit';
+import { discover, probeAddress } from './discovery.ts';
+import { present } from './render/present.ts';
+import { emit } from './commands/shared.ts';
+import { resolveClient } from './resolve.ts';
+import { registerScene } from './commands/scene.ts';
+import { registerNode } from './commands/node.ts';
+import { registerComponent } from './commands/component.ts';
+import { registerPrefab } from './commands/prefab.ts';
+import { registerAsset } from './commands/asset.ts';
+import { EXIT } from './exit.ts';
 
 export function buildProgram(): Command {
     const program = new Command('cocos');

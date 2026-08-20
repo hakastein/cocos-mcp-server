@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { referenceRequest, spellingOf } from '../lib/property/reference-target.js';
+import { referenceRequest, spellingOf } from '../src/property/reference-target.ts';
 
 test('a db:// path reads as an address in the asset database', () => {
     assert.deepEqual(spellingOf('db://assets/ui/icon.png/spriteFrame'),

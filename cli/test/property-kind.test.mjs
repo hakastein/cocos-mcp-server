@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { resolveKind } from '../lib/property/kind.js';
-import { projectValue, projectDescriptor } from '../lib/property/readers.js';
+import { resolveKind } from '../src/property/kind.ts';
+import { projectValue, projectDescriptor } from '../src/property/readers.ts';
 
 const fixtures = JSON.parse(
     readFileSync(fileURLToPath(new URL('./fixtures/descriptors.json', import.meta.url)), 'utf8')

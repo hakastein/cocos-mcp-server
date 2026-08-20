@@ -2,8 +2,9 @@
 
 import { readFileSync } from 'fs-extra';
 import { join } from 'path';
-import { createApp, App, defineComponent, ref, computed, onMounted, watch } from 'vue';
-import type { DriverSettings } from '../../types';
+import { createApp, defineComponent, ref, computed, onMounted, watch } from 'vue';
+import type { App } from 'vue';
+import type { DriverSettings } from '../../types/index.ts';
 
 const panelDataMap = new WeakMap<any, App>();
 

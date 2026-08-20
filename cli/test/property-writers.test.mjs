@@ -5,8 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 import {
     WRITERS, writerFor, buildClassElement, buildClassPatch, readBackMatches, readBackMismatches
-} from '../lib/property/writers.js';
-import { withoutUuidWrappers } from '../lib/property/verified-write.js';
+} from '../src/property/writers.ts';
+import { withoutUuidWrappers } from '../src/property/verified-write.ts';
+import { MemoryDriver } from '../src/driver/memory.ts';
 
 const fixtures = JSON.parse(
     readFileSync(fileURLToPath(new URL('./fixtures/descriptors.json', import.meta.url)), 'utf8')
@@ -242,84 +243,79 @@ test('an object that only looks like a reference keeps its members', () => {
 
 const writerNamed = (name) => WRITERS.find(writer => writer.name === name);
 
-function referenceCtx({ projectionChecked = true, projected = [NODE], refuseSetProperty = false } = {}) {
-    const answers = {
-        resolveComponentReference: {
-            success: true,
-            data: {
-                componentIndex: 2, property: 'target', isArray: false, dumpType: 'cc.Node',
-                uuids: [NODE], expected: [NODE], assignedKind: 'node', assignedNames: [''],
-                assignedTypes: [''], declaredType: 'cc.Node', inferredType: null
+/**
+ * The owner carries TestComp at `__comps__.2`, the index `targetFor` addresses; `prefab` is what
+ * decides whether the next load rebuilds the reference, so all three verdicts come from one model.
+ */
+function referenceScene({ prefab, refuses } = {}) {
+    return new MemoryDriver({
+        nodes: [
+            { name: 'Hero', uuid: NODE },
+            {
+                name: 'Owner',
+                ...(prefab ? { prefab } : {}),
+                components: [
+                    { type: 'Filler' },
+                    { type: 'Filler' },
+                    { type: 'TestComp', props: { target: { ...fixtures.nodeRef, value: { uuid: '' } } } }
+                ]
             }
-        },
-        applyComponentReference: { success: true, data: { property: 'target', assigned: [NODE] } },
-        pruneComponentReferenceOverrides: { success: true, data: { removed: 0, paths: [] } },
-        componentReferenceOutcome: {
-            success: true,
-            data: {
-                live: [NODE], serialized: projected, projected, projectionChecked,
-                componentInSceneGraph: true, overrides: []
-            }
-        }
-    };
-    return {
-        scene: { call: async (method) => answers[method] },
-        editor: {
-            scene: {
-                setProperty: async () => {
-                    if (refuseSetProperty) throw new Error('set-property refused');
-                    return true;
-                }
-            }
-        }
-    };
+        ],
+        ...(refuses ? { refuses } : {})
+    });
 }
 
+const ownerTarget = (driver, name) => targetFor(name, { nodeUuid: driver.uuidOf('Owner') });
+
 test('a reference the next load rebuilds intact is persisted, and the editor channel is named', async () => {
-    const report = await writerNamed('node-ref').write(targetFor('nodeRef'), NODE, referenceCtx());
+    const driver = referenceScene();
+    const report = await writerNamed('node-ref').write(ownerTarget(driver, 'nodeRef'), NODE, driver);
     assert.equal(report.persisted, true);
     assert.equal(report.channel, 'editor');
     assert.equal(report.verified, true);
 });
 
 test('a reference the next load loses is persisted:false — proven, so a caller may fail on it', async () => {
-    const report = await writerNamed('node-ref')
-        .write(targetFor('nodeRef'), NODE, referenceCtx({ projected: [null] }));
+    const driver = referenceScene({ prefab: { asset: 'p_hut' } });
+    const report = await writerNamed('node-ref').write(ownerTarget(driver, 'nodeRef'), NODE, driver);
     assert.equal(report.persisted, false);
     assert.equal(report.channel, 'editor');
     assert.match(report.detail, /the next load builds/);
 });
 
 test('an unreadable prefab asset is persisted:null — nobody looked, which is not "it is lost"', async () => {
-    const report = await writerNamed('node-ref')
-        .write(targetFor('nodeRef'), NODE, referenceCtx({ projectionChecked: false }));
+    const driver = referenceScene({ prefab: { asset: 'p_hut', readable: false } });
+    const report = await writerNamed('node-ref').write(ownerTarget(driver, 'nodeRef'), NODE, driver);
     assert.equal(report.persisted, null);
     assert.equal(report.channel, 'editor');
     assert.match(report.detail, /NOT established/);
 });
 
+test('an override the editor records carries the reference through the next load', async () => {
+    const driver = referenceScene({ prefab: { asset: 'p_hut', recordsOverrides: true } });
+    const report = await writerNamed('node-ref').write(ownerTarget(driver, 'nodeRef'), NODE, driver);
+    assert.equal(report.persisted, true);
+    assert.equal(report.prefabOverride.targetPath, '__comps__.2.target');
+});
+
 test('the live fallback is persisted:false on the live channel, which is that channel working', async () => {
-    const report = await writerNamed('node-ref')
-        .write(targetFor('nodeRef'), NODE, referenceCtx({ refuseSetProperty: true }));
+    const driver = referenceScene({ refuses: { setProperty: 'set-property refused' } });
+    const report = await writerNamed('node-ref').write(ownerTarget(driver, 'nodeRef'), NODE, driver);
     assert.equal(report.persisted, false);
     assert.equal(report.channel, 'live');
 });
 
 test('the editor channel alone claims nothing about a save: persisted stays null until checked', async () => {
-    const target = targetFor('number');
-    let written;
-    const ctx = {
-        editor: {
-            scene: {
-                setProperty: async ({ dump }) => { written = dump.value; return true; },
-                queryNode: async () => ({
-                    __comps__: [{}, {}, { value: { [target.propertyPath]: { type: 'Number', value: written } } }]
-                })
-            }
-        }
-    };
-    const report = await writerNamed('typed:plain').write(target, 2.5, ctx);
+    const driver = new MemoryDriver({
+        nodes: [{ name: 'Owner', components: [
+            { type: 'Filler' }, { type: 'Filler' },
+            { type: 'TestComp', props: { spread: { ...fixtures.number, value: 0 } } }
+        ] }]
+    });
+    const target = ownerTarget(driver, 'number');
+    const report = await writerNamed('typed:plain').write(target, 2.5, driver);
     assert.equal(report.verified, true);
     assert.equal(report.persisted, null);
     assert.equal(report.channel, 'editor');
+    assert.equal(driver.componentsOf(target.nodeUuid)[2].props.spread.value, 2.5);
 });

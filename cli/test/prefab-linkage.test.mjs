@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import l from '../lib/prefab-linkage.js';
+import * as l from '../src/prefab-linkage.ts';
 
 const { applyLinkageOptions, expectsLinkage, linkageVerdict, prefabSavePath, PREFAB_ASSET_TYPE } = l;
 

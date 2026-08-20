@@ -2,10 +2,11 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
 import split2 from 'split2';
-import { Hello, PIPE_PREFIX, pipeDirectory } from '@cocos-cli/shared';
+import { PIPE_PREFIX, pipeDirectory } from '@cocos-cli/shared';
+import type { Hello } from '@cocos-cli/shared';
 
-export { EXIT } from './exit';
-export type { ExitCode } from './exit';
+export { EXIT } from './exit.ts';
+export type { ExitCode } from './exit.ts';
 
 export type Selection =
     | { ok: true; chosen: Hello }

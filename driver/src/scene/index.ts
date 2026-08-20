@@ -1,22 +1,22 @@
 import type { SceneMethods } from '@cocos-cli/shared';
-import { dumpSceneNodes, findComponentOwners, getCurrentSceneInfo, getNodeInfo } from './dump';
-import { previewPlay, setNodeProperty } from './node-ops';
+import { dumpSceneNodes, findComponentOwners, getCurrentSceneInfo, getNodeInfo } from './dump.ts';
+import { previewPlay, setNodeProperty } from './node-ops.ts';
 import {
     addComponentToNode, addSkeletalSocket, listSkeletalSockets,
     removeSkeletalSocket, setParticleCurve, setParticleGradient
-} from './component-ops';
+} from './component-ops.ts';
 import {
     applyComponentReference, componentReferenceOutcome, prefabInstancePropertyOutcome,
     pruneComponentReferenceOverrides, resolveComponentReference
-} from './property-write';
+} from './property-write.ts';
 import {
     applyPrefabToAsset, createPrefabFromNode2, dumpPrefabAsset, listPrefabOverrides,
     removePrefabOverride, revertPrefabInstance
-} from './prefab-ops';
+} from './prefab-ops.ts';
 import {
     declaredComponentProperty, dumpMissingScripts, evalInScene, nodePrefabLinkage, resolveNodePaths,
     sceneDirtyAgainstDisk, serializedComponentValue
-} from './query';
+} from './query.ts';
 
 export const methods: SceneMethods = {
     declaredComponentProperty,

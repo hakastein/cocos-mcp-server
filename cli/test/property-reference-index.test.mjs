@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildReferenceIndex, referencedUuids } from '../lib/property/reference-index.js';
+import { buildReferenceIndex, referencedUuids } from '../src/property/reference-index.ts';
 
 const nodes = () => [
     {

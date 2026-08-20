@@ -1,5 +1,5 @@
 import type { PrefabLinkageReport } from '@cocos-cli/shared';
-import type { Verdict } from './render/verdict';
+import type { Verdict } from './render/verdict.ts';
 
 /** The only asset type whose creation carries a prefab link. */
 export const PREFAB_ASSET_TYPE = 'cc.Prefab';

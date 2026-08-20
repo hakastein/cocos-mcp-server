@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import s from '../lib/asset/settle.js';
+import * as s from '../src/asset/settle.ts';
 
 const { fingerprintOf, snapshotKey, settled, diffAssets, diffClasses, assetDiffEmpty } = s;
 

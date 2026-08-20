@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { DriverSettings } from './types';
+import type { DriverSettings } from './types/index.ts';
 
 export const DEFAULT_SETTINGS: DriverSettings = {
     enableDebugLog: false

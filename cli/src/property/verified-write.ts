@@ -1,11 +1,11 @@
 import {
-    WriteTarget, componentCid, componentPath, kindOf, readBack, readBackMismatches, writerFor
-} from './writers';
-import { projectValue } from './readers';
-import { withUndoBracket } from '../undo-bracket';
-import type { DriverClient } from '../driver-client';
+    componentCid, componentPath, kindOf, readBack, readBackMismatches, writerFor
+} from './writers.ts';
+import type { WriteTarget } from './writers.ts';
+import { projectValue } from './readers.ts';
+import { withUndoBracket } from '../undo-bracket.ts';
 import type {
-    PrefabOverrideOutcome, SceneDirtyReport, SceneResult, SerializedValue, WriteReport
+    Driver, PrefabOverrideOutcome, SceneDirtyReport, SceneResult, SerializedValue, WriteReport
 } from '@cocos-cli/shared';
 
 export interface VerifiedWriteOptions {
@@ -15,7 +15,7 @@ export interface VerifiedWriteOptions {
 export async function verifiedWrite(
     target: WriteTarget,
     value: unknown,
-    ctx: DriverClient,
+    ctx: Driver,
     opts: VerifiedWriteOptions = {}
 ): Promise<WriteReport> {
     const writer = writerFor(target, value);
@@ -42,7 +42,7 @@ export async function verifiedWrite(
  * and the serializer does not is a write that reads back perfectly and reaches no file.
  */
 async function withSerializerVerdict(
-    report: WriteReport, target: WriteTarget, ctx: DriverClient
+    report: WriteReport, target: WriteTarget, ctx: Driver
 ): Promise<WriteReport> {
     const cid = await componentCid(target, ctx);
     if (cid === undefined) {
@@ -78,7 +78,7 @@ async function withSerializerVerdict(
  * whether a save carries this write.
  */
 async function withOverrideVerdict(
-    report: WriteReport, target: WriteTarget, cid: string, ctx: DriverClient
+    report: WriteReport, target: WriteTarget, cid: string, ctx: Driver
 ): Promise<WriteReport> {
     let result: SceneResult<PrefabOverrideOutcome>;
     try {
@@ -121,7 +121,7 @@ type SerializedLookup = { value: unknown } | { problem: string; inPrefabInstance
  * The serializer writes backing fields, so the accessor `color` is emitted as `_color` and asking
  * for the accessor name alone reports a property nothing carries.
  */
-async function serializedValue(target: WriteTarget, cid: string, ctx: DriverClient): Promise<SerializedLookup> {
+async function serializedValue(target: WriteTarget, cid: string, ctx: Driver): Promise<SerializedLookup> {
     const underscored = target.propertyPath.replace(/(^|\.)([^.]+)$/, '$1_$2');
     const spellings = underscored === target.propertyPath || /(^|\.)_/.test(target.propertyPath)
         ? [target.propertyPath]
@@ -172,7 +172,7 @@ export function withoutUuidWrappers(value: unknown): unknown {
  * `sceneDirtyAgainstDisk` compares the open scene with the file, which the editor's own dirty
  * flag does not: it counts undo steps.
  */
-async function diskVerdict(ctx: DriverClient): Promise<string> {
+async function diskVerdict(ctx: Driver): Promise<string> {
     let result: SceneResult<SceneDirtyReport>;
     try {
         result = await ctx.scene.call('sceneDirtyAgainstDisk');

@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { EXIT, selectInstance, discover } from '../lib/discovery.js';
+import { EXIT, selectInstance, discover } from '../src/discovery.ts';
 
 const hello = (project, projectPath) => ({
     project, projectPath, pid: 1, version: '2.0.0', surfaceChecksum: 'abc'
