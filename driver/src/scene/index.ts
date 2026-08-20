@@ -15,7 +15,7 @@ import {
 } from './prefab-ops.ts';
 import {
     declaredComponentProperty, dumpMissingScripts, evalInScene, nodePrefabLinkage, resolveNodePaths,
-    sceneDirtyAgainstDisk, serializedComponentValue
+    sceneDirtyAgainstDisk, serializedComponentValue, serializedNodeValue
 } from './query.ts';
 
 export const methods: SceneMethods = {
@@ -38,6 +38,7 @@ export const methods: SceneMethods = {
     listPrefabOverrides,
     removePrefabOverride,
     serializedComponentValue,
+    serializedNodeValue,
     prefabInstancePropertyOutcome,
     nodePrefabLinkage,
     resolveComponentReference,

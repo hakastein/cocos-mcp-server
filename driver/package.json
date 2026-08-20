@@ -84,6 +84,7 @@
         "listPrefabOverrides",
         "removePrefabOverride",
         "serializedComponentValue",
+        "serializedNodeValue",
         "prefabInstancePropertyOutcome",
         "nodePrefabLinkage",
         "resolveComponentReference",

@@ -57,15 +57,15 @@ agent
   │ shell — the only interface
 CLI                    cli/src/            all the logic: commands, orchestration, undo, rendering
   │ JSON-RPC over a local channel (named pipe on Windows, unix socket elsewhere)
-driver                 driver/src/         88 native primitives, no logic of its own
+driver                 driver/src/         89 native primitives, no logic of its own
   ├ editor.*           58 methods over Editor.Message
-  └ scene.*            30 methods over the scene script
+  └ scene.*            31 methods over the scene script
 scene script           driver/src/scene/   the only place `cc.*` exists
 ```
 
 `shared/` holds the types and pure logic both sides need: the whole driver seam (`Driver` =
 `EditorMethods` + `SceneFacade`, in `driver.ts` over `editor-contract.ts` and `scene-contract.ts`),
-`WriteReport` and `SceneResult`, the list of all 88 methods and the check that gates them
+`WriteReport` and `SceneResult`, the list of all 89 methods and the check that gates them
 (`protocol.ts`), the handshake shape (`Hello`), the channel address (`pipe-name.ts`), node-path
 parsing, and serialized-value comparison (`serialized-diff.ts`, `reference-projection.ts`).
 Three adapters satisfy `Driver`: `driver/src/editor-api.ts` over `Editor.Message`,
@@ -91,7 +91,7 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 
 | File | Role |
 |------|------|
-| `shared/src/protocol.ts` | `EDITOR_METHODS`/`SCENE_METHODS` — the 88-method list that is the driver's whole reachable surface; `isKnownMethod`; the handshake `Hello` shape; the two `Exhaustive` aliases that stop the list and `EditorMethods` from drifting apart |
+| `shared/src/protocol.ts` | `EDITOR_METHODS`/`SCENE_METHODS` — the 89-method list that is the driver's whole reachable surface; `isKnownMethod`; the handshake `Hello` shape; the two `Exhaustive` aliases that stop the list and `EditorMethods` from drifting apart |
 | `shared/src/editor-contract.ts` | `EditorMethods` — the 58 `editor.*` signatures, parameters and results taken from Creator's `EditorMessageMaps` so they cannot drift from it; the handful that deviate are `Answering<>` or written out, each saying why |
 | `shared/src/driver.ts` | `Driver` — `EditorMethods` and `SceneFacade` as one seam |
 | `shared/src/pipe-name.ts` | project path → channel address, computed identically by both sides |

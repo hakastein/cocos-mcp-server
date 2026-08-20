@@ -13,9 +13,9 @@ test('the editor namespace holds exactly 58 methods, with no duplicates', () => 
     assert.equal(new Set(EDITOR_METHODS).size, 58);
 });
 
-test('the scene namespace holds exactly 30 methods, with no duplicates', () => {
-    assert.equal(SCENE_METHODS.length, 30);
-    assert.equal(new Set(SCENE_METHODS).size, 30);
+test('the scene namespace holds exactly 31 methods, with no duplicates', () => {
+    assert.equal(SCENE_METHODS.length, 31);
+    assert.equal(new Set(SCENE_METHODS).size, 31);
 });
 
 test('every editor name carries a group through a dot, scene names are flat', () => {
@@ -26,7 +26,7 @@ test('every editor name carries a group through a dot, scene names are flat', ()
 });
 
 test('the combined list is the union of both with their namespace prefixes', () => {
-    assert.equal(ALL_METHODS.length, 88);
+    assert.equal(ALL_METHODS.length, 89);
     assert.ok(ALL_METHODS.includes('editor.scene.createNode'));
     assert.ok(ALL_METHODS.includes('scene.dumpSceneNodes'));
 });

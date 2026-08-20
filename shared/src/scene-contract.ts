@@ -295,7 +295,7 @@ export interface SerializedValue {
     found: boolean;
     value: unknown;
     reason?: string;
-    /** The scene file carries none of this component's properties; only an override would. */
+    /** The scene file carries none of this node's or component's properties; only an override would. */
     inPrefabInstance?: boolean;
     /**
      * The value points at a node the file names by index alone and the pairing could not resolve,
@@ -439,6 +439,7 @@ export interface SceneMethods {
         index?: number,
     ): SceneResult<PrefabOverrideRemoval>;
     serializedComponentValue(nodeUuid: string, cid: string, property: string): SceneResult<SerializedValue>;
+    serializedNodeValue(nodeUuid: string, property: string): SceneResult<SerializedValue>;
     prefabInstancePropertyOutcome(
         nodeUuid: string,
         cid: string,

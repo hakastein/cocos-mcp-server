@@ -1,7 +1,9 @@
 import {
     buildPathIndex, resolvePathInIndex, siblingLabels, diffSerialized, liveNodesBySerializedIndex
 } from '@cocos-cli/shared';
-import type { DeclaredProperty, PrefabLinkageReport, SceneMethods, SceneResult } from '@cocos-cli/shared';
+import type {
+    DeclaredProperty, PrefabLinkageReport, SceneMethods, SceneResult, SerializedValue
+} from '@cocos-cli/shared';
 import {
     ctorIsA, findNodeByUuid, plainSerialized, requireActiveScene
 } from './engine.ts';
@@ -198,8 +200,59 @@ export const evalInScene: SceneMethods['evalInScene'] = async (code, timeoutMs =
     }
 };
 
+interface SerializedScene {
+    objects: any[];
+    naming: SerializedNodeNaming;
+}
+
 // Save writes exactly the output of `EditorExtends.serialize`, so whatever this call omits is
 // absent from the `.scene` file too — the Inspector dump can still show it.
+function serializeScene(scene: any): SerializedScene {
+    const serialized = (globalThis as any).EditorExtends.serialize(scene, { stringify: false });
+    const objects: any[] = Array.isArray(serialized) ? serialized : [serialized];
+    return {
+        objects,
+        naming: {
+            nodes: liveNodesBySerializedIndex(
+                objects, objects.findIndex((entry) => entry && entry.__type__ === 'cc.Scene'), scene),
+            unnamed: []
+        }
+    };
+}
+
+function valueAtPath(file: SerializedScene, root: any, property: string): { found: boolean; value?: any } {
+    let current: any = root;
+    for (const segment of property.split('.')) {
+        if (current && typeof current === 'object' && typeof current.__id__ === 'number') {
+            current = file.objects[current.__id__];
+        }
+        if (!current || typeof current !== 'object' || !(segment in current)) return { found: false };
+        current = current[segment];
+    }
+    return { found: true, value: plainSerialized(file.objects, current, 0, file.naming) };
+}
+
+function foundValue(file: SerializedScene, value: any): SceneResult<SerializedValue> {
+    return {
+        success: true,
+        data: file.naming.unnamed.length ? { found: true, value, unnamedReference: true } : { found: true, value }
+    };
+}
+
+/** What a save records for anything inside a prefab instance is an override, so the file itself is silent. */
+function carriedByOverrideInstead(where: string, whose: string): SceneResult<SerializedValue> {
+    return {
+        success: true,
+        data: {
+            found: false,
+            value: undefined,
+            inPrefabInstance: true,
+            reason: `${where}, so the scene file carries none of this ${whose}'s properties directly `
+                + '— only a prefab property override would.'
+        }
+    };
+}
+
 export const serializedComponentValue: SceneMethods['serializedComponentValue'] = (nodeUuid, cid, property) => {
     try {
         const cc = require('cc');
@@ -211,47 +264,66 @@ export const serializedComponentValue: SceneMethods['serializedComponentValue'] 
             return { success: false, error: `No component with cid '${cid}' on node ${nodeUuid}` };
         }
 
-        const serialized = (globalThis as any).EditorExtends.serialize(scene, { stringify: false });
-        const objects: any[] = Array.isArray(serialized) ? serialized : [serialized];
-        const componentObject = objects.find((entry) => entry && entry._id === component.uuid);
+        const file = serializeScene(scene);
+        const componentObject = file.objects.find((entry) => entry && entry._id === component.uuid);
         if (!componentObject) {
-            return {
-                success: true,
-                data: {
-                    found: false,
-                    value: undefined,
-                    inPrefabInstance: true,
-                    reason: `'${node.name}' is inside a prefab instance, so the scene file carries none of `
-                        + `this component's properties directly — only a prefab property override would.`
-                }
-            };
+            return carriedByOverrideInstead(`'${node.name}' is inside a prefab instance`, 'component');
         }
 
-        let current: any = componentObject;
-        for (const segment of property.split('.')) {
-            if (current && typeof current === 'object' && typeof current.__id__ === 'number') {
-                current = objects[current.__id__];
-            }
-            if (!current || typeof current !== 'object' || !(segment in current)) {
-                return { success: true, data: { found: false, value: undefined } };
-            }
-            current = current[segment];
-        }
-        const naming: SerializedNodeNaming = {
-            nodes: liveNodesBySerializedIndex(
-                objects, objects.findIndex((entry) => entry && entry.__type__ === 'cc.Scene'), scene),
-            unnamed: []
-        };
-        const value = overlaidReferenceValue(
-            scene, component, property, plainSerialized(objects, current, 0, naming));
-        return {
-            success: true,
-            data: naming.unnamed.length ? { found: true, value, unnamedReference: true } : { found: true, value }
-        };
+        const at = valueAtPath(file, componentObject, property);
+        if (!at.found) return { success: true, data: { found: false, value: undefined } };
+        return foundValue(file, overlaidReferenceValue(scene, component, property, at.value));
     } catch (error: any) {
         return { success: false, error: error.message || String(error) };
     }
 };
+
+/**
+ * The same question about a node's OWN properties, which the serializer emits under their storage
+ * names — `_lpos`, `_lrot`, `_lscale`, `_name`, `_active`, `_layer`.
+ *
+ * A node inside a prefab instance carries none of them in the scene file, and neither does the
+ * instance ROOT: checked live 2026-08-20, the root's entry is a stub of `_parent` and `_prefab`
+ * alone, its transform and its name living in the instance's `propertyOverrides`. Both therefore
+ * answer `inPrefabInstance` for a property of their own rather than a bare miss. The two keys the
+ * stub does carry are answered from it, because for those the file is not silent.
+ */
+export const serializedNodeValue: SceneMethods['serializedNodeValue'] = (nodeUuid, property) => {
+    try {
+        const scene = requireActiveScene();
+        const node = findNodeByUuid(scene, nodeUuid);
+        const file = serializeScene(scene);
+        const nodeObject = file.objects.find(
+            (entry) => entry && entry.__type__ === 'cc.Node' && entry._id === nodeUuid
+        ) || pairedNodeObject(file, nodeUuid);
+
+        const at = nodeObject ? valueAtPath(file, nodeObject, property) : { found: false, value: undefined };
+        if (at.found) return foundValue(file, at.value);
+
+        const instance = prefabInstanceAncestor(node);
+        if (!instance) return { success: true, data: { found: false, value: undefined } };
+        return carriedByOverrideInstead(instance === node
+            ? `'${node.name}' is the root of a prefab instance`
+            : `'${node.name}' is inside the prefab instance '${instance.name}'`, 'node');
+    } catch (error: any) {
+        return { success: false, error: error.message || String(error) };
+    }
+};
+
+/** A prefab instance root is found here and nowhere else: the file gives its entry no `_id`. */
+function pairedNodeObject(file: SerializedScene, nodeUuid: string): any {
+    for (const [index, live] of file.naming.nodes) {
+        if (live.uuid === nodeUuid) return file.objects[index];
+    }
+    return null;
+}
+
+function prefabInstanceAncestor(node: any): any {
+    for (let current = node; current; current = current.parent) {
+        if (current._prefab && current._prefab.instance) return current;
+    }
+    return null;
+}
 
 /**
  * Whether a node is a prefab INSTANCE, answered twice: from the live node, and from what the
