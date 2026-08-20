@@ -1,6 +1,8 @@
 import type { SceneResult } from '@cocos-cli/shared';
 import { EXIT } from '../exit';
 import { settle } from '../settle';
+import { componentClassNames, selectComponent } from '../property/component-dump';
+import type { ComponentDump } from '../property/component-dump';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
@@ -23,6 +25,8 @@ export async function unwrap<T>(
 export interface CommandOutput {
     stdout?: string;
     stderr?: string;
+    /** Команда отработала, но её результат — не успех: запись, которую сохранение уронит. */
+    failed?: boolean;
 }
 
 /**
@@ -44,6 +48,7 @@ export async function withClient(
         const output = await run(resolved.client);
         if (output.stdout !== undefined) process.stdout.write(output.stdout + '\n');
         if (output.stderr !== undefined) process.stderr.write(output.stderr + '\n');
+        if (output.failed) process.exitCode = EXIT.FAILED;
     } catch (error) {
         process.stderr.write((error instanceof Error ? error.message : String(error)) + '\n');
         process.exitCode = EXIT.FAILED;
@@ -59,10 +64,9 @@ function bareComponentType(type: string): string {
 }
 
 /**
- * `getNodeInfo` always names a component by its bare JS class ("MeshRenderer"), never by the
- * `cc.`-qualified spelling a caller may type. The editor's `create-component` message silently
- * does nothing for the spelling it does not register under, and the scene-side fallback throws
- * `Component type not found` for the other — so both spellings are tried, caller's own first.
+ * The editor's `create-component` message silently does nothing for the spelling it does not
+ * register under, and the scene-side fallback throws `Component type not found` for the other —
+ * so both spellings are tried, caller's own first.
  */
 function spellingCandidates(type: string): string[] {
     const bare = bareComponentType(type);
@@ -70,12 +74,15 @@ function spellingCandidates(type: string): string[] {
     return type === bare ? [bare, prefixed] : [prefixed, bare];
 }
 
-function componentTypesOf(components: Array<{ type: string }> | undefined): string[] {
-    return (components || []).map(component => component.type);
+export async function queryComponents(client: DriverClient, nodeUuid: string): Promise<ComponentDump[]> {
+    const node = await client.editor.scene.queryNode(nodeUuid) as { __comps__?: ComponentDump[] };
+    return (node && node.__comps__) || [];
 }
 
-async function componentTypesNow(client: DriverClient, nodeUuid: string): Promise<string[]> {
-    return componentTypesOf((await unwrap(client.scene.call('getNodeInfo', nodeUuid), 'getNodeInfo')).components);
+/** Registered class names — `cc.MeshRenderer`, `GameBootstrap` — the way every other subcommand
+ * names a component. `getNodeInfo` would answer the bare JS class instead. */
+async function componentNamesNow(client: DriverClient, nodeUuid: string): Promise<string[]> {
+    return componentClassNames(await queryComponents(client, nodeUuid));
 }
 
 /**
@@ -104,7 +111,7 @@ async function pollForNewComponent(
 ): Promise<string | null> {
     let found: string | null = null;
     await settle(async () => {
-        found = newlyAppearedType(before, await componentTypesNow(client, nodeUuid));
+        found = newlyAppearedType(before, await componentNamesNow(client, nodeUuid));
         return found !== null;
     }, pollOptions);
     return found;
@@ -121,9 +128,10 @@ export interface ComponentAddOutcome {
 export async function addComponent(
     client: DriverClient, nodeUuid: string, type: string, pollOptions?: PollOptions
 ): Promise<ComponentAddOutcome> {
-    const before = await componentTypesNow(client, nodeUuid);
-    const bare = bareComponentType(type);
-    if (before.includes(bare)) return { type: bare, alreadyPresent: true };
+    const components = await queryComponents(client, nodeUuid);
+    const present = selectComponent(components, type);
+    if (present) return { type: present.className, alreadyPresent: true };
+    const before = componentClassNames(components);
 
     for (const candidate of spellingCandidates(type)) {
         await client.editor.scene.createComponent({ uuid: nodeUuid, component: candidate }).catch(() => undefined);
@@ -137,7 +145,7 @@ export async function addComponent(
         }
     }
 
-    const after = await componentTypesNow(client, nodeUuid);
+    const after = await componentNamesNow(client, nodeUuid);
     throw new Error(
         `компонент '${type}' не появился на узле ${nodeUuid} после добавления; есть: ${
             after.join(', ') || '(ни одного)'}`);

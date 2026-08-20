@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { renderWriteReport } from '../lib/render/report.js';
+import { renderWriteReport, writeFailed } from '../lib/render/report.js';
 
 const write = (report = {}, over = {}) => ({
     component: 'Sprite',
@@ -27,6 +27,26 @@ test('persisted=false на канале editor — это потеря знач�
     const text = renderWriteReport(write({ persisted: false, channel: 'editor' }));
     assert.match(text, /persisted=false/);
     assert.match(text, /editor/);
+});
+
+// Первое слово читают все, хвост строки не читает никто: запись, которую сохранение уронит,
+// не имеет права начинаться с ok, даже когда read-back её подтвердил.
+test('проверенная запись, которую сохранение уронит, не выдаётся за ok', () => {
+    const text = renderWriteReport(write({ verified: true, persisted: false, channel: 'editor' }));
+    assert.doesNotMatch(text, /^ok/);
+    assert.equal(writeFailed({ written: true, verified: true, persisted: false, channel: 'editor' }), true);
+});
+
+test('на канале live persisted=false исходом не считается — там нечему сериализоваться', () => {
+    assert.equal(writeFailed({ written: true, verified: true, persisted: false, channel: 'live' }), false);
+});
+
+test('непроверенное сохранение исходом не считается: никто не смотрел', () => {
+    assert.equal(writeFailed({ written: true, verified: true, persisted: null, channel: 'editor' }), false);
+});
+
+test('незаписанное — исход в любом случае', () => {
+    assert.equal(writeFailed({ written: false, verified: false, persisted: null }), true);
 });
 
 test('persisted=false на канале live — ожидаемое состояние, а не дефект', () => {

@@ -26,9 +26,9 @@ const TREE = {
     }
 };
 
-// getNodeInfo здесь стейтфул: addComponent опрашивает его до и после навешивания. `accept`
-// решает, регистрирует ли движок данное написание — по умолчанию любое.
-const bareType = type => type.startsWith('cc.') ? type.slice(3) : type;
+// Состав компонентов здесь стейтфул: `node get` читает его через getNodeInfo, addComponent —
+// через дамп узла, где класс назван зарегистрированным именем. `accept` решает, регистрирует ли
+// движок данное написание — по умолчанию любое.
 const FAST = { timeoutMs: 30, intervalMs: 5 };
 
 const recorder = (overrides = {}) => {
@@ -51,7 +51,11 @@ const recorder = (overrides = {}) => {
                 createComponent: async (options) => {
                     calls.push(['createComponent', options]);
                     if (!accept(options.component)) return;
-                    components.get(options.uuid).push(bareType(options.component));
+                    components.get(options.uuid).push(options.component);
+                },
+                queryNode: async (uuid) => {
+                    calls.push(['queryNode', uuid]);
+                    return { __comps__: (components.get(uuid) || []).map(type => ({ type, value: {} })) };
                 },
                 setProperty: async (...a) => { calls.push(['setProperty', ...a]); return true; }
             }
@@ -70,7 +74,7 @@ const recorder = (overrides = {}) => {
                 if (method === 'addComponentToNode') {
                     const [uuid, type] = a;
                     if (!accept(type)) return { success: false, error: `Component type not found: ${type}` };
-                    components.get(uuid).push(bareType(type));
+                    components.get(uuid).push(type);
                     return { success: true, data: { componentId: 'c1' } };
                 }
                 return { success: true, data: {} };
@@ -122,11 +126,10 @@ test('создание с компонентом укладывается в о�
 });
 
 test('отчёт называет зарегистрированное имя компонента, а не то, что попросили (L3)', async () => {
-    const driver = recorder();
+    const driver = recorder({ acceptComponent: type => type.startsWith('cc.') });
     const text = await nodeCreate(
-        driver, { parent: 'Canvas/Bg', name: 'New', components: ['cc.MeshRenderer'] }, FAST);
-    assert.match(text, /\[MeshRenderer\]/);
-    assert.ok(!text.includes('cc.MeshRenderer'));
+        driver, { parent: 'Canvas/Bg', name: 'New', components: ['MeshRenderer'] }, FAST);
+    assert.match(text, /\[cc\.MeshRenderer\]/);
 });
 
 test('компонент, который движок так и не зарегистрировал, — отказ, а не тихий ok', async () => {
