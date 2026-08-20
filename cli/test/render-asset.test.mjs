@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 
 import r from '../lib/render/asset.js';
 
-const { assetField, renderAssetInfo, renderAssetList, assetListSummary, renderSettleReport, settleNote } = r;
+const {
+    assetField, renderAssetInfo, renderAssetList, assetListSummary, renderSettleReport, settleNote,
+    settleVerdict
+} = r;
 
 const asset = (over = {}) => ({
     name: 'rifle', type: 'cc.Prefab', uuid: 'u-1', url: 'db://assets/rifle.prefab',
@@ -77,13 +80,21 @@ test('the newly registered class is named — that is what a refresh is run for'
 
 test('a database that never went quiet does not get the ok head word', () => {
     const text = renderSettleReport(report({ settled: false }));
-    assert.equal(text.split('  ')[0], 'НЕ УЛЕГЛОСЬ');
+    assert.equal(text.split('  ')[0], 'TIMEOUT');
 });
 
 test('an operation that did not happen outranks the settle verdict in the head word', () => {
     const text = renderSettleReport(report({ settled: true, failure: 'ассет остался на месте' }));
-    assert.equal(text.split('  ')[0], 'НЕ СДЕЛАНО');
+    assert.equal(text.split('  ')[0], 'FAILED');
     assert.match(text, /ассет остался на месте/);
+});
+
+// База отвечает до конца импорта, поэтому «команда отработала» и «база доимпортировала» —
+// разные новости, и вторая обязана иметь своё слово.
+test('a database still working when the timeout ran out is a TIMEOUT, not a FAILED', () => {
+    assert.equal(settleVerdict(report({ settled: false })), 'TIMEOUT');
+    assert.equal(settleVerdict(report({ settled: false, failure: 'ассет остался на месте' })), 'FAILED');
+    assert.equal(settleVerdict(report()), 'ok');
 });
 
 test('a long list is capped and says how many it did not print', () => {

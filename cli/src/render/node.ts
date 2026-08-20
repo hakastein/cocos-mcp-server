@@ -1,4 +1,5 @@
 import type { NodeType } from '../node-type';
+import type { Verdict } from './verdict';
 
 export interface AppliedWrite {
     property: string;
@@ -20,34 +21,30 @@ export interface NodeWriteReport {
     undoNote?: string;
 }
 
-export function nodeWriteFailed(report: NodeWriteReport): boolean {
-    return report.unapplied !== undefined;
+export function nodeWriteVerdict(report: NodeWriteReport): Verdict {
+    return report.unapplied ? 'FAILED' : 'ok';
 }
 
-/**
- * Первое слово — вердикт, как и у `component set`. Запись, которая до узла не дошла, получает своё
- * слово, а не `ok` с оговоркой в хвосте: хвост никто не читает.
- */
 export function renderNodeWrite(report: NodeWriteReport): string {
+    const head = nodeWriteVerdict(report);
     if (report.unapplied) {
         const { property, expected, observed } = report.unapplied;
-        return `НЕ ЗАПИСАНО  ${report.target}.${property} = ${JSON.stringify(expected)}`
+        return `${head}  ${report.target}.${property} = ${JSON.stringify(expected)}`
             + `  узел по-прежнему отвечает ${JSON.stringify(observed)}`
             + (report.applied.length
                 ? `  (успело лечь: ${report.applied.map(write => write.property).join(', ')})`
                 : '');
     }
-    if (!report.applied.length) return `нечего писать  ${report.target}`;
+    if (!report.applied.length) return `${head}  ${report.target}  нечего писать`;
 
     const written = report.applied
         .map(write => `${write.property}=${JSON.stringify(write.value)}`)
         .join('  ');
-    return `ok  ${report.target}  ${written}`
+    return `${head}  ${report.target}  ${written}`
         + (report.nodeType ? `  ${report.nodeType}` : '')
         + (report.undoNote ? `  ${report.undoNote}` : '  undo=1');
 }
 
-/** Обнулённая ось у 2D-узла — не деталь оформления: молча испорченный трансформ читается как успех. */
 export function nodeWriteNote(report: NodeWriteReport): string {
     return report.warnings.join('\n');
 }

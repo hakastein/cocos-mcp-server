@@ -1,6 +1,7 @@
 import type { AssetRecord } from '../asset/query';
 import type { AssetDiff, ClassDiff } from '../asset/settle';
 import { assetDiffEmpty } from '../asset/settle';
+import type { Verdict } from './verdict';
 
 export const ASSET_FIELDS = [
     'name', 'type', 'uuid', 'url', 'importer', 'imported', 'invalid', 'isDirectory', 'file', 'subAssets'
@@ -89,11 +90,16 @@ function listed(urls: readonly string[], mark: string, cap: number): string[] {
 }
 
 /**
- * Первое слово — вердикт: `refresh` и `reimport` возвращают управление до конца импорта, поэтому
- * «команда отработала» и «база доимпортировала» — разные новости, и вторая стоит в заголовке.
+ * `refresh` и `reimport` возвращают управление до конца импорта, поэтому «команда отработала» и
+ * «база доимпортировала» — разные новости, и вторая решает вердикт.
  */
+export function settleVerdict(report: SettleReport): Verdict {
+    if (report.failure) return 'FAILED';
+    return report.settled ? 'ok' : 'TIMEOUT';
+}
+
 export function renderSettleReport(report: SettleReport, cap: number = DEFAULT_LIST_CAP): string {
-    const head = report.failure ? 'НЕ СДЕЛАНО' : report.settled ? 'ok' : 'НЕ УЛЕГЛОСЬ';
+    const head = settleVerdict(report);
     const seconds = (report.elapsedMs / 1000).toFixed(1);
     const { added, removed, changed } = report.assets;
     const quiet = assetDiffEmpty(report.assets);

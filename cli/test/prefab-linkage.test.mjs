@@ -37,41 +37,39 @@ test('linkage is expected only for a prefab that was not asked to be unlinked', 
 
 test('a linked prefab confirmed against the serializer passes', () => {
     const verdict = linkageVerdict(linkage(), PREFAB_ASSET_TYPE, false);
-    assert.equal(verdict.failed, false);
-    assert.equal(verdict.head, 'ok');
+    assert.equal(verdict.verdict, 'ok');
     assert.match(verdict.detail, /persisted=true/);
 });
 
 test('a prefab that came back without a PrefabInfo is a failure, not a quiet copy', () => {
-    const verdict = linkageVerdict(linkage({ linked: false }), PREFAB_ASSET_TYPE, false);
-    assert.equal(verdict.failed, true);
-    assert.equal(verdict.head, 'НЕ СВЯЗАН');
+    assert.equal(
+        linkageVerdict(linkage({ linked: false }), PREFAB_ASSET_TYPE, false).verdict, 'FAILED');
 });
 
-test('a live link the serializer drops is a failure — the save turns it into a flat copy', () => {
-    const verdict = linkageVerdict(linkage({ persisted: false }), PREFAB_ASSET_TYPE, false);
-    assert.equal(verdict.failed, true);
-    assert.equal(verdict.head, 'СВЯЗЬ НЕ СОХРАНИТСЯ');
+// Связь, которую сериализатор выбрасывает, — тот же исход, что и запись, которую уронит
+// сохранение, поэтому и слово у них одно.
+test('a live link the serializer drops is UNPERSISTED — the save turns it into a flat copy', () => {
+    assert.equal(
+        linkageVerdict(linkage({ persisted: false }), PREFAB_ASSET_TYPE, false).verdict, 'UNPERSISTED');
 });
 
 test('an unreached serializer leaves the question open rather than answering no', () => {
     const verdict = linkageVerdict(
         linkage({ persistenceChecked: false, persisted: false, persistenceReason: 'сцена молчит' }),
         PREFAB_ASSET_TYPE, false);
-    assert.equal(verdict.failed, false);
-    assert.equal(verdict.head, 'СВЯЗАН, НЕ ПРОВЕРЕНО');
+    assert.equal(verdict.verdict, 'UNVERIFIED');
     assert.match(verdict.detail, /сцена молчит/);
 });
 
 test('an unlinked copy that was asked for is not judged on a link it never wanted', () => {
     const verdict = linkageVerdict(linkage({ linked: false }), PREFAB_ASSET_TYPE, true);
-    assert.equal(verdict.failed, false);
+    assert.equal(verdict.verdict, 'ok');
     assert.match(verdict.detail, /--unlink/);
 });
 
 test('a non-prefab asset is not judged on linkage either', () => {
     const verdict = linkageVerdict(linkage({ linked: false }), 'cc.Mesh', false);
-    assert.equal(verdict.failed, false);
+    assert.equal(verdict.verdict, 'ok');
     assert.match(verdict.detail, /cc\.Mesh/);
 });
 

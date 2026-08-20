@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { componentSet } from '../lib/commands/component.js';
+import { present } from '../lib/render/present.js';
+
+/** Команда отвечает отчётом; строки и код выхода из него делает presenter. */
+const setOutput = async (...args) => present(await componentSet(...args));
 
 const HERO_UUID = 'aQ1wErTyUiOpAsDfGhJkL2';
 
@@ -92,7 +96,7 @@ test('запись обёрнута в скобку undo', async () => {
 });
 
 test('результат приходит отчётом на stdout, а не сырым объектом', async () => {
-    const output = await componentSet(driverDouble({ components: sprite() }),
+    const output = await setOutput(driverDouble({ components: sprite() }),
         { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ffffff' });
     assert.match(output.stdout, /^ok/);
     assert.match(output.stdout, /cc\.Sprite\.color/);
@@ -101,7 +105,7 @@ test('результат приходит отчётом на stdout, а не с
 });
 
 test('запись принимает приставочное написание и называет зарегистрированный класс', async () => {
-    const output = await componentSet(driverDouble({ components: sprite() }),
+    const output = await setOutput(driverDouble({ components: sprite() }),
         { node: 'Canvas/Bg', component: 'cc.Sprite', property: 'color', value: '#ffffff' });
     assert.match(output.stdout, /cc\.Sprite\.color/);
 });
@@ -122,7 +126,7 @@ test('cc.Color получает подсказку типа, и значение
 });
 
 test('сериализатор отдаёт другое значение — persisted=false и ненулевой исход', async () => {
-    const output = await componentSet(
+    const output = await setOutput(
         driverDouble({
             components: sprite(),
             // Форма, которую реально отдаёт сериализатор для cc.Color — объект каналов; здесь это
@@ -131,7 +135,7 @@ test('сериализатор отдаёт другое значение — pe
         }),
         { node: 'Canvas/Bg', component: 'Sprite', property: 'color', value: '#ffffff' });
     assert.match(output.stdout, /persisted=false/);
-    assert.doesNotMatch(output.stdout, /^ok/);
+    assert.equal(output.stdout.split('  ')[0], 'UNPERSISTED');
     assert.equal(output.failed, true);
 });
 
@@ -142,7 +146,7 @@ test('сериализатор знает свойство только под �
             ? { found: true, value: 128 }
             : { found: false, reason: `сериализатор не отдаёт '${property}'` }
     });
-    const output = await componentSet(driver,
+    const output = await setOutput(driver,
         { node: 'Canvas/Bg', component: 'UIOpacity', property: 'opacity', value: 128 });
     assert.match(output.stdout, /persisted=true/);
 });
@@ -200,7 +204,7 @@ test('путь узла доезжает до сцены разрешённым 
         nodes: { 'Characters/hero': HERO_UUID },
         references: referenceScript(components)
     });
-    const output = await componentSet(driver,
+    const output = await setOutput(driver,
         { node: 'Canvas/Bg', component: 'Npc', property: 'target', value: 'Characters/hero' });
 
     const plan = driver.calls.find(entry => entry[0] === 'resolveComponentReference');
@@ -252,9 +256,9 @@ test('uuid, которого в сцене нет, — отказ сцены, с
     components[0].value.target.value.uuid = HERO_UUID;
     const driver = driverDouble({ components, references: referenceScript(components) });
 
-    const output = await componentSet(driver,
+    const output = await setOutput(driver,
         { node: 'Canvas/Bg', component: 'Npc', property: 'target', value: 'zZzZzZzZzZzZzZzZzZzZzZ' });
-    assert.match(output.stdout, /^НЕ ЗАПИСАНО/);
+    assert.equal(output.stdout.split('  ')[0], 'FAILED');
     assert.equal(output.failed, true);
     assert.ok(!driver.calls.some(entry => entry[0] === 'setProperty'));
     assert.equal(components[0].value.target.value.uuid, HERO_UUID);

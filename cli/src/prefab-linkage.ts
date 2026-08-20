@@ -1,4 +1,5 @@
 import type { PrefabLinkageReport } from '@cocos-cli/shared';
+import type { Verdict } from './render/verdict';
 
 /** Единственный тип ассета, чьё создание несёт префаб-связь. */
 export const PREFAB_ASSET_TYPE = 'cc.Prefab';
@@ -33,9 +34,7 @@ export function expectsLinkage(assetType: string | null | undefined, unlinkPrefa
 }
 
 export interface LinkageVerdict {
-    failed: boolean;
-    /** Первое слово строки отчёта. */
-    head: string;
+    verdict: Verdict;
     detail: string;
 }
 
@@ -49,18 +48,19 @@ export function linkageVerdict(
 ): LinkageVerdict {
     if (!expectsLinkage(assetType, unlinkPrefab)) {
         return {
-            failed: false,
-            head: 'ok',
+            verdict: 'ok',
             detail: unlinkPrefab
                 ? 'связи нет по заказу: --unlink, узел — плоская копия, правки префаба до неё не дойдут'
                 : `связи не ожидалось: ассет ${assetType || 'неизвестного типа'}, а не ${PREFAB_ASSET_TYPE}`
         };
     }
+    return establishedLinkage(linkage);
+}
 
+export function establishedLinkage(linkage: PrefabLinkageReport): LinkageVerdict {
     if (!linkage.linked) {
         return {
-            failed: true,
-            head: 'НЕ СВЯЗАН',
+            verdict: 'FAILED',
             detail: 'узел создан, но PrefabInfo на нём нет: сцена за ассетом не следит, в сохранённой '
                 + 'сцене блока _prefab не будет, правки префаба до узла не дойдут. Удали узел и заведи '
                 + 'запись о пробеле, а не работай с копией'
@@ -69,8 +69,7 @@ export function linkageVerdict(
 
     if (!linkage.persistenceChecked) {
         return {
-            failed: false,
-            head: 'СВЯЗАН, НЕ ПРОВЕРЕНО',
+            verdict: 'UNVERIFIED',
             detail: `PrefabInfo на живом узле есть, против сохранённой формы не сверено (${
                 linkage.persistenceReason || 'сериализатор недоступен'})`
         };
@@ -78,16 +77,14 @@ export function linkageVerdict(
 
     if (!linkage.persisted) {
         return {
-            failed: true,
-            head: 'СВЯЗЬ НЕ СОХРАНИТСЯ',
+            verdict: 'UNPERSISTED',
             detail: 'PrefabInfo на живом узле есть, а сериализатор редактора его не выдаёт: сохранение '
                 + 'сцены связь уронит, и в файле узел окажется плоской копией'
         };
     }
 
     return {
-        failed: false,
-        head: 'ok',
+        verdict: 'ok',
         detail: `связан с ${linkage.asset || 'ассетом'}  fileId=${linkage.fileId || 'нет'}`
             + `  ${linkage.instanceRoot ? 'корень инстанса' : 'внутри инстанса'}  persisted=true`
     };

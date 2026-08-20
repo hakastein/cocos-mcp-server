@@ -1,6 +1,7 @@
 import { Command, CommanderError } from 'commander';
 import { discover, probeAddress } from './discovery';
-import { renderInstances } from './render/instances';
+import { present } from './render/present';
+import { emit } from './commands/shared';
 import { resolveClient } from './resolve';
 import { registerScene } from './commands/scene';
 import { registerNode } from './commands/node';
@@ -22,11 +23,7 @@ export function buildProgram(): Command {
         .option('--json', 'выдать структурную форму вместо текста')
         .action(async (options: { json?: boolean }) => {
             const found = await discover(probeAddress);
-            if (options.json) {
-                process.stdout.write(JSON.stringify(found) + '\n');
-            } else {
-                process.stdout.write(renderInstances(found) + '\n');
-            }
+            emit(present({ kind: 'instances', instances: found }, { json: options.json }));
             process.exitCode = found.length ? EXIT.OK : EXIT.NO_EDITOR;
         });
 

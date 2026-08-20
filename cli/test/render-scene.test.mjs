@@ -5,7 +5,7 @@ import r from '../lib/render/scene.js';
 
 const {
     renderComponentOwners, componentOwnersSummary, renderSceneDirty, sceneDirtyNote,
-    renderMissingScripts, missingScriptsSummary
+    renderMissingScripts
 } = r;
 
 const owner = (over = {}) => ({
@@ -93,6 +93,3 @@ test('a dead component with no cid says so instead of printing null', () => {
         /cid=неизвестен/);
 });
 
-test('the summary counts the dead components', () => {
-    assert.equal(missingScriptsSummary({ entries: [{}, {}] }), 'мёртвых компонентов: 2');
-});

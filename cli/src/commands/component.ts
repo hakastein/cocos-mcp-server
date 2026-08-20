@@ -1,7 +1,5 @@
 import { Command } from 'commander';
 import { addComponent, queryComponents, unwrap, withClient } from './shared';
-import { renderWriteReport, writeFailed } from '../render/report';
-import { renderComponentReading, formatReading } from '../render/property';
 import { verifiedWrite } from '../property/verified-write';
 import { writerFor } from '../property/writers';
 import {
@@ -12,7 +10,7 @@ import { buildReferenceIndex, referencedUuids } from '../property/reference-inde
 import { isReferenceKind, referenceRequest } from '../property/reference-target';
 import { resolveKind } from '../property/kind';
 import { resolveNode } from './node';
-import type { CommandOutput } from './shared';
+import type { ComponentAddress, Report } from '../render/present';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 import type { PropertyKind } from '../property/kind';
@@ -20,7 +18,7 @@ import type { WriteTarget } from '../property/writers';
 import type { VerifiedWriteOptions } from '../property/verified-write';
 import type { TargetSpelling } from '../property/reference-target';
 import type { ComponentChoice, ComponentDump, PropertyReading } from '../property/component-dump';
-import type { ReferenceLabel, ReferenceLookup } from '../property/reference-index';
+import type { ReferenceLabel } from '../property/reference-index';
 
 export interface SetSpec {
     node: string;
@@ -35,7 +33,6 @@ export interface GetSpec {
     node: string;
     component: string;
     property?: string;
-    json?: boolean;
 }
 
 interface ComponentMatch extends ComponentChoice {
@@ -103,7 +100,7 @@ function verificationFor(kind: PropertyKind): VerifiedWriteOptions {
     return kind === 'nodeRef' || kind === 'componentRef' ? {} : { verify: 'serializer' };
 }
 
-export async function componentSet(client: DriverClient, spec: SetSpec): Promise<CommandOutput> {
+export async function componentSet(client: DriverClient, spec: SetSpec): Promise<Report> {
     const nodeUuid = await resolveNode(client, spec.node);
     const component = await findComponent(client, nodeUuid, spec.component);
     const descriptor = descriptorOf(component.dump, spec.property);
@@ -126,14 +123,13 @@ export async function componentSet(client: DriverClient, spec: SetSpec): Promise
         throw new Error(`свойство '${spec.property}' вида '${kind}' записывать нечем`);
     }
 
-    const report = await verifiedWrite(target, value, client, verificationFor(kind));
-    const stdout = renderWriteReport({
+    return {
+        kind: 'propertyWrite',
         component: component.className,
         property: spec.property,
         value: spec.value,
-        report
-    });
-    return { stdout, failed: writeFailed(report) };
+        report: await verifiedWrite(target, value, client, verificationFor(kind))
+    };
 }
 
 interface ResolvedReferences {
@@ -172,27 +168,10 @@ async function resolveReferences(
     return { index, note };
 }
 
-function nodeAndComponent(spec: GetSpec, nodeUuid: string, choice: {
-    className: string; cid: string | null; enabled: boolean | null; index: number;
-}): Record<string, unknown> {
-    return {
-        node: { path: spec.node, uuid: nodeUuid },
-        component: {
-            className: choice.className, cid: choice.cid, enabled: choice.enabled, index: choice.index
-        }
-    };
-}
-
-function referencesJson(index: Map<string, ReferenceLabel>): Record<string, ReferenceLabel> {
-    const references: Record<string, ReferenceLabel> = {};
-    for (const [uuid, label] of index) references[uuid] = label;
-    return references;
-}
-
-export async function componentGet(client: DriverClient, spec: GetSpec): Promise<CommandOutput> {
+export async function componentGet(client: DriverClient, spec: GetSpec): Promise<Report> {
     const nodeUuid = await resolveNode(client, spec.node);
     const component = await findComponent(client, nodeUuid, spec.component);
-    const head = nodeAndComponent(spec, nodeUuid, component);
+    const address: ComponentAddress = { nodePath: spec.node, nodeUuid, choice: component };
 
     if (spec.property) {
         const reading = findProperty(component.dump, spec.property);
@@ -201,43 +180,12 @@ export async function componentGet(client: DriverClient, spec: GetSpec): Promise
                 propertyNames(component.dump).join(', ') || '(ни одного)'}`);
         }
         const { index, note } = await resolveReferences(client, [reading]);
-        const lookup: ReferenceLookup = uuid => index.get(uuid);
-        const explanation = [
-            `${component.className}.${reading.name}  ${reading.type || 'тип не объявлен'}`,
-            reading.differsFromDefault === true ? 'отличается от умолчания' : '',
-            reading.hiddenInInspector ? 'инспектор его не рисует, в файле оно есть' : '',
-            note || ''
-        ].filter(Boolean).join('  ');
-        return {
-            stdout: spec.json
-                ? JSON.stringify({ ...head, property: reading, references: referencesJson(index) })
-                : formatReading(reading, lookup),
-            stderr: explanation
-        };
+        return { kind: 'componentProperty', address, reading, references: index, note };
     }
 
     const { readings, hidden } = readComponentProperties(component.dump);
     const { index, note } = await resolveReferences(client, readings);
-    const lookup: ReferenceLookup = uuid => index.get(uuid);
-    const explanation = [
-        `${component.className} на ${spec.node}  enabled=${component.enabled === null ? 'unknown' : component.enabled}`,
-        `свойств: ${readings.length}`,
-        hidden.length
-            ? `скрыто: ${hidden.length} (служебные поля и дубли-хранилища, каждое читается через --prop)`
-            : '',
-        readings.some(reading => reading.differsFromDefault === true) ? '* — отличается от умолчания' : '',
-        component.sameClassCount > 1
-            ? `на узле ${component.sameClassCount} компонента этого класса, прочитан первый`
-            : '',
-        note || ''
-    ].filter(Boolean).join('  ');
-
-    return {
-        stdout: spec.json
-            ? JSON.stringify({ ...head, properties: readings, hidden, references: referencesJson(index) })
-            : renderComponentReading(readings, lookup),
-        stderr: explanation
-    };
+    return { kind: 'componentProperties', address, readings, hidden, references: index, note };
 }
 
 export function registerComponent(program: Command, resolve: () => Promise<Resolved>): void {
@@ -250,8 +198,8 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
         .option('--json', 'выдать структурную форму вместо текста')
         .action((target: string, type: string, options: { prop?: string; json?: boolean }) =>
             withClient(resolve, client => componentGet(client, {
-                node: target, component: type, property: options.prop, json: options.json
-            })));
+                node: target, component: type, property: options.prop
+            }), { json: options.json }));
 
     component
         .command('add <path> <type>')
@@ -259,9 +207,13 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
         .action((target: string, type: string) => withClient(resolve, async client => {
             const uuid = await resolveNode(client, target);
             const outcome = await addComponent(client, uuid, type);
-            return { stdout: outcome.alreadyPresent
-                ? `ok  ${outcome.type} уже на ${target}`
-                : `ok  ${outcome.type} навешен на ${target}` };
+            return {
+                kind: 'action',
+                verdict: 'ok',
+                summary: outcome.alreadyPresent
+                    ? `${outcome.type} уже на ${target}`
+                    : `${outcome.type} навешен на ${target}`
+            };
         }));
 
     component
@@ -279,7 +231,9 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
                     `компонент '${component.className}' виден на узле, но его uuid не нашёлся среди владельцев класса`);
             }
             await client.editor.scene.removeComponent({ uuid: owner.componentUuid });
-            return { stdout: `ok  ${component.className} снят с ${target}` };
+            return {
+                kind: 'action', verdict: 'ok', summary: `${component.className} снят с ${target}`
+            };
         }));
 
     component

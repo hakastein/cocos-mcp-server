@@ -57,7 +57,3 @@ export function renderMissingScripts(dump: MissingScriptDump): string {
         .map(entry => `${entry.nodePath}  cid=${entry.cid || 'неизвестен'}  ${entry.componentUuid}`)
         .join('\n');
 }
-
-export function missingScriptsSummary(dump: MissingScriptDump): string {
-    return `мёртвых компонентов: ${dump.entries.length}`;
-}

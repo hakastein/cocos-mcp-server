@@ -94,14 +94,14 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/discovery.ts` | enumerates channels, probes each with `hello`, `selectInstance` narrows by `--project` |
 | `cli/src/resolve.ts` | `resolveClient` — discovery, selection and connect, in the shape every command's `resolve` thunk needs |
 | `cli/src/driver-client.ts` | `DriverClient` — the `editor.*`/`scene.*` facades over JSON-RPC; `editor` is generated from `EDITOR_METHODS`, `scene.call` is typed by `SceneMethods` |
-| `cli/src/commands/shared.ts` | `withClient` (resolve → run → print → close — the one place command output touches `stdout`/`stderr`) and `unwrap` (`SceneResult<T>` → value or thrown error) |
+| `cli/src/commands/shared.ts` | `withClient` (resolve → run → present → close) and `emit`, the one place command output touches `stdout`/`stderr`; plus `unwrap` (`SceneResult<T>` → value or thrown error) |
 | `cli/src/undo-bracket.ts` | `withUndoBracket` — one write wrapped in one undo step, `undoNote` when the editor refused or left it open |
 | `cli/src/node-snapshot.ts` | the editor's descriptor-wrapped node dump projected to what a write reads back |
 | `cli/src/node-transform.ts` | `parseVec3` (an empty axis keeps its value), and the 2D-node clamp that zeroes `position.z` / `rotation.x,y` and says which value it destroyed |
 | `cli/src/prefab-linkage.ts` | the `type: 'cc.Prefab'` that separates a linked instance from a flat copy, and the two-sided linkage verdict (live node vs serializer) |
 | `cli/src/asset/` | the asset-database decisions: the `db://` glob and the name/limit cut a listing takes (`query.ts`), and the quiescence verdict a refresh waits on — snapshot fingerprint, `settled`, the asset and component-class deltas (`settle.ts`) |
 | `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`), the read side of a component dump — class selection, property rows, default comparison (`component-dump.ts`), uuid → scene name (`reference-index.ts`) and the spelling a reference value is written in — path, `db://` url or uuid (`reference-target.ts`) |
-| `cli/src/render/` | `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `node.ts`, `scene.ts`, `instances.ts` — the text (or `--json`) the agent actually reads |
+| `cli/src/render/` | `verdict.ts` (the five head words and their exit codes) and `present.ts` (the `Report` union and `present`) over eight formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `node.ts`, `scene.ts`, `instances.ts`. Only `present.ts` is imported from outside `render/` |
 
 Everything a command decides that does not need a live editor lives in a pure module beside
 `commands/`: `property/`, `render/`, `asset/`, `node-type.ts`, `node-snapshot.ts`, `node-transform.ts`,
@@ -129,11 +129,39 @@ a `db://` url or a uuid; `commands/component.ts` turns it into a uuid **before**
 because an address that resolves to nothing must be refused rather than set as a value the editor
 silently turns into `null`.
 
-`cli/src/render/report.ts`'s `renderWriteReport` is how a `WriteReport` reaches the agent's
-terminal — `persisted: null` prints as `unknown`, never as `false`, and `persisted: false` on the
-editor channel gets its own head word (`НЕ СОХРАНИТСЯ`) rather than `ok` with a caveat in the tail.
-`writeFailed` beside it is what turns that outcome into a non-zero exit code, carried out of a
-command body by `CommandOutput.failed`.
+`cli/src/render/report.ts`'s `writeVerdict` turns a `WriteReport` into one of the five words below
+and `renderWriteReport` prints it — `persisted: null` prints as `unknown`, never as `false`, and
+`persisted: false` on the editor channel is `UNPERSISTED` rather than `ok` with a caveat in the tail.
+
+## Verdicts and the Presenter
+
+The first word of an outcome line comes from a closed set, declared once in
+`cli/src/render/verdict.ts`:
+
+| head | meaning | exit |
+|---|---|---|
+| `ok` | done, read back, and a save either carries it or the question does not apply | 0 |
+| `UNVERIFIED` | done, and the read-back did not confirm it | 0 |
+| `UNPERSISTED` | done and verified, and a save is proven to drop it | 1 |
+| `FAILED` | not done | 1 |
+| `TIMEOUT` | did not settle inside `--timeout` | 1 |
+
+Caps everywhere but `ok`. Everything that used to be its own word — a move that did not land, a
+link the serializer drops, a database still importing — is now the tail of the line.
+`verdictFailed` is the only place a verdict becomes an exit code; `UNVERIFIED` exits 0 on purpose,
+so `&&` does not break on a write that landed but could not be read back.
+
+A command body assembles neither `stdout`, `stderr` nor `failed`. It answers a `Report` — a
+discriminated union in `cli/src/render/present.ts`, `kind` the tag — and `present(report, { json })`
+turns it into a `CommandOutput`. The union is what makes the set closed: a new kind of report does
+not compile until its `render` arm names a verdict. `--json` stays a per-command option (it was
+dropped as a global in `bfb4d01`, because it promised structure where there is none), and the
+`json ? JSON.stringify(x) : renderX(x)` branch lives in the presenter rather than in ten action
+bodies. A report with no structural form — `kind: 'action'`, a verdict plus a free-text tail —
+prints its text under `--json` too.
+
+The eight `render/*` formatters are internal to the presenter: nothing outside `render/` imports
+them.
 
 **Undo brackets.** `withUndoBracket(client, nodeUuid, write)` (`cli/src/undo-bracket.ts`) wraps a
 write in the driver's begin/end-recording pair so Ctrl+Z takes it back, and returns an `undoNote`
@@ -152,7 +180,7 @@ established live rather than read out of the typings:
   fingerprint of the asset tree (uuid, url, mtime, `imported`) plus the registered component-class
   list, and `cli/src/asset/settle.ts`'s `settled()` calls it done only once the database reports
   ready **and** that fingerprint has held unchanged for `--quiet-for` (1.5 s by default). A run that
-  never goes quiet inside `--timeout` prints `НЕ УЛЕГЛОСЬ` and exits non-zero.
+  never goes quiet inside `--timeout` prints `TIMEOUT` and exits non-zero.
 - **`move-asset`, `copy-asset`, `create-asset` and `delete-asset` answer `null` on success.**
   Checked live 2026-08-20: a move that landed the file in its new folder with its uuid intact still
   answered `null`. Their return value is therefore never read. What happened is asked of the database
@@ -185,7 +213,9 @@ instantiate today into no-ops.
 Linkage is then reported rather than assumed, from two places: the live node, and what the editor's
 serializer emits for it. They can disagree — a PrefabInfo the runtime holds and the serializer drops
 is a link that dies on save — so `linkageVerdict` has four outcomes, not two, and the one where the
-serializer could not be reached is `СВЯЗАН, НЕ ПРОВЕРЕНО` rather than a `false`.
+serializer could not be reached is `UNVERIFIED` rather than a `false`. The other three map onto the
+same five words as a property write: no PrefabInfo is `FAILED`, a link the serializer drops is
+`UNPERSISTED`, a link confirmed on both sides is `ok`.
 
 `prefab create` writes the asset from `createPrefabFromNode2`, which is the editor's own serializer.
 A hand-rolled one was tried and dropped mesh and material references, producing prefabs that
@@ -200,8 +230,9 @@ rendered empty.
 2. Every action body runs through `withClient(resolve, async client => { ...; return { stdout,
    stderr }; })` from `commands/shared.ts` — it is the one place that resolves the connection, closes
    it in every branch (success or thrown), and turns a thrown `Error` into `process.exitCode =
-   EXIT.FAILED` on `stderr`. An action returns a `CommandOutput`; it does not call
-   `process.stdout.write` itself.
+   EXIT.FAILED` on `stderr`. An action returns a `Report` (`cli/src/render/present.ts`); it
+   assembles neither stream nor the exit code, and never calls `process.stdout.write` itself.
+   A `--json` option is handed to `withClient` as its third argument.
 3. Call a primitive as `client.editor.<group>.<method>(...)` or `client.scene.call('<method>', ...)`
    — the latter is typed against `SceneMethods`, so a signature drift is a compile error. Use
    `unwrap()` from `commands/shared.ts` when the command needs the scene script's `data` rather than

@@ -7,6 +7,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { resolveNode, nodeGet, nodeCreate } from '../lib/commands/node.js';
+import { present } from '../lib/render/present.js';
+
+const printed = async (report) => present(await report).stdout;
 
 const TREE = {
     success: true,
@@ -109,7 +112,7 @@ test('имя узла той же длины и алфавита, что uuid, �
 });
 
 test('get отдаёт одну строку с именем, состоянием и компонентами', async () => {
-    const text = await nodeGet(recorder(), 'Canvas/Bg');
+    const text = await printed(nodeGet(recorder(), 'Canvas/Bg'));
     assert.match(text, /Bg/);
     assert.match(text, /Sprite/);
 });
@@ -127,8 +130,8 @@ test('создание с компонентом укладывается в о�
 
 test('отчёт называет зарегистрированное имя компонента, а не то, что попросили (L3)', async () => {
     const driver = recorder({ acceptComponent: type => type.startsWith('cc.') });
-    const text = await nodeCreate(
-        driver, { parent: 'Canvas/Bg', name: 'New', components: ['MeshRenderer'] }, FAST);
+    const text = await printed(nodeCreate(
+        driver, { parent: 'Canvas/Bg', name: 'New', components: ['MeshRenderer'] }, FAST));
     assert.match(text, /\[cc\.MeshRenderer\]/);
 });
 
@@ -147,10 +150,10 @@ test('падение при добавлении компонента снима
 });
 
 test('get помечает неактивный узел и выключенный компонент как (off)', async () => {
-    const text = await nodeGet(recorder({
+    const text = await printed(nodeGet(recorder({
         getNodeInfo: { success: true, data: { name: 'Bg', uuid: 'u_bg', active: false,
             components: [{ type: 'Sprite', enabled: false }] } }
-    }), 'Canvas/Bg');
+    }), 'Canvas/Bg'));
     assert.match(text, /Bg {2}\(off\)/);
     assert.match(text, /Sprite\(off\)/);
 });

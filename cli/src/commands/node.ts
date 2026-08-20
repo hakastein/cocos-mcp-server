@@ -7,11 +7,9 @@ import { nodePropertyOf, nodeSnapshotOf } from '../node-snapshot';
 import {
     TRANSFORM_KINDS, normalizedTransform, parseVec3, sameVec3
 } from '../node-transform';
-import { nodeWriteFailed, nodeWriteNote, renderNodeWrite } from '../render/node';
 import type { NodeProperty, NodeSnapshot } from '../node-snapshot';
 import type { TransformKind, Vec3Parts } from '../node-transform';
-import type { NodeWriteReport } from '../render/node';
-import type { CommandOutput } from './shared';
+import type { NodeWriteReport, Report } from '../render/present';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
@@ -34,15 +32,19 @@ export async function resolveNode(client: DriverClient, pathOrUuid: string): Pro
     return resolution.uuid;
 }
 
-export async function nodeGet(client: DriverClient, pathOrUuid: string): Promise<string> {
+export async function nodeGet(client: DriverClient, pathOrUuid: string): Promise<Report> {
     const uuid = await resolveNode(client, pathOrUuid);
     const info = await unwrap(client.scene.call('getNodeInfo', uuid), 'getNodeInfo');
     const components = (info.components || [])
         .map(component => component.enabled === false ? `${component.type}(off)` : component.type)
         .join(',');
-    return `${info.name}${info.active ? '' : '  (off)'}`
-        + (components ? `  [${components}]` : '')
-        + `  ${info.uuid}`;
+    return {
+        kind: 'action',
+        verdict: 'ok',
+        summary: `${info.name}${info.active ? '' : '  (off)'}`
+            + (components ? `  [${components}]` : '')
+            + `  ${info.uuid}`
+    };
 }
 
 export interface CreateSpec {
@@ -61,7 +63,7 @@ export interface CreateSpec {
  */
 export async function nodeCreate(
     client: DriverClient, spec: CreateSpec, componentPollOptions?: { timeoutMs?: number; intervalMs?: number }
-): Promise<string> {
+): Promise<Report> {
     const parentUuid = await resolveNode(client, spec.parent);
 
     const { result, undoNote } = await withUndoBracket(client, parentUuid, async () => {
@@ -82,9 +84,13 @@ export async function nodeCreate(
         return { createdUuid, registered };
     });
 
-    return `ok  создан ${spec.parent}/${spec.name}  ${result.createdUuid}`
-        + (result.registered.length ? `  [${result.registered.join(',')}]` : '')
-        + (undoNote ? `  ${undoNote}` : '  undo=1');
+    return {
+        kind: 'action',
+        verdict: 'ok',
+        summary: `создан ${spec.parent}/${spec.name}  ${result.createdUuid}`
+            + (result.registered.length ? `  [${result.registered.join(',')}]` : '')
+            + (undoNote ? `  ${undoNote}` : '  undo=1')
+    };
 }
 
 async function snapshotOf(client: DriverClient, uuid: string): Promise<NodeSnapshot> {
@@ -110,7 +116,7 @@ export interface SetSpec {
 export async function nodeSet(
     client: DriverClient, target: string, spec: SetSpec,
     pollOptions?: { timeoutMs?: number; intervalMs?: number }
-): Promise<CommandOutput> {
+): Promise<Report> {
     const uuid = await resolveNode(client, target);
     const before = await snapshotOf(client, uuid);
     const nodeType = classifyNode(before.componentTypes, before.layer).nodeType;
@@ -161,12 +167,7 @@ export async function nodeSet(
     });
     if (undoNote) report.undoNote = undoNote;
 
-    const note = nodeWriteNote(report);
-    return {
-        stdout: renderNodeWrite(report),
-        stderr: note || undefined,
-        failed: nodeWriteFailed(report)
-    };
+    return { kind: 'nodeWrite', write: report };
 }
 
 /**
@@ -176,7 +177,7 @@ export async function nodeSet(
 export async function nodeMove(
     client: DriverClient, target: string, parent: string, keepWorldTransform: boolean,
     pollOptions?: { timeoutMs?: number; intervalMs?: number }
-): Promise<CommandOutput> {
+): Promise<Report> {
     const uuid = await resolveNode(client, target);
     const parentUuid = await resolveNode(client, parent);
     if (uuid === parentUuid) throw new Error(`${target} не может быть родителем самому себе`);
@@ -191,13 +192,16 @@ export async function nodeMove(
     }, pollOptions);
     if (!moved) {
         return {
-            stdout: `НЕ ПЕРЕНЕСЁН  ${target}  родитель по-прежнему ${actual || 'неизвестен'}`
-                + `, ожидался ${parentUuid}`,
-            failed: true
+            kind: 'action',
+            verdict: 'FAILED',
+            summary: `${target} не перенесён  родитель по-прежнему ${actual || 'неизвестен'}`
+                + `, ожидался ${parentUuid}`
         };
     }
     return {
-        stdout: `ok  ${target} перенесён под ${parent}  ${uuid}`
+        kind: 'action',
+        verdict: 'ok',
+        summary: `${target} перенесён под ${parent}  ${uuid}`
             + (keepWorldTransform ? '  мировой трансформ сохранён' : '')
             + (undoNote ? `  ${undoNote}` : '  undo=1')
     };
@@ -206,7 +210,7 @@ export async function nodeMove(
 export async function nodeDuplicate(
     client: DriverClient, target: string,
     pollOptions?: { timeoutMs?: number; intervalMs?: number }
-): Promise<CommandOutput> {
+): Promise<Report> {
     const uuid = await resolveNode(client, target);
     const { result, undoNote } = await withUndoBracket(client, uuid, () =>
         client.editor.scene.duplicateNode(uuid));
@@ -219,13 +223,16 @@ export async function nodeDuplicate(
         () => snapshotOf(client, created).then(() => true, () => false), pollOptions);
     if (!appeared) {
         return {
-            stdout: `НЕ СКОПИРОВАН  редактор ответил uuid ${created}, но такого узла в сцене нет`,
-            failed: true
+            kind: 'action',
+            verdict: 'FAILED',
+            summary: `${target} не скопирован  редактор ответил uuid ${created}, но такого узла в сцене нет`
         };
     }
     const copy = await snapshotOf(client, created);
     return {
-        stdout: `ok  ${target} скопирован как ${copy.name}  ${created}`
+        kind: 'action',
+        verdict: 'ok',
+        summary: `${target} скопирован как ${copy.name}  ${created}`
             + (undoNote ? `  ${undoNote}` : '  undo=1')
     };
 }
@@ -236,7 +243,7 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
     node
         .command('get <path>')
         .description('имя, состояние и компоненты узла')
-        .action((target: string) => withClient(resolve, async client => ({ stdout: await nodeGet(client, target) })));
+        .action((target: string) => withClient(resolve, client => nodeGet(client, target)));
 
     node
         .command('create')
@@ -246,15 +253,13 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
         .option('--component <type...>', 'компоненты, которые навесить', [])
         .option('--pos <x,y,z>', 'позиция')
         .action((options: { parent: string; name: string; component: string[]; pos?: string }) =>
-            withClient(resolve, async client => ({
-                stdout: await nodeCreate(client, {
-                    parent: options.parent,
-                    name: options.name,
-                    components: options.component,
-                    pos: options.pos
-                        ? options.pos.split(',').map(Number) as [number, number, number]
-                        : undefined
-                })
+            withClient(resolve, client => nodeCreate(client, {
+                parent: options.parent,
+                name: options.name,
+                components: options.component,
+                pos: options.pos
+                    ? options.pos.split(',').map(Number) as [number, number, number]
+                    : undefined
             })));
 
     node
@@ -307,6 +312,6 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
         .action((target: string) => withClient(resolve, async client => {
             const uuid = await resolveNode(client, target);
             await client.editor.scene.removeNode({ uuid });
-            return { stdout: `ok  удалён ${target}` };
+            return { kind: 'action', verdict: 'ok', summary: `удалён ${target}` };
         }));
 }

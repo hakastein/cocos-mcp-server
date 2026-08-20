@@ -132,24 +132,27 @@ cocos component set "Characters/guard_1" TargetPolicy --prop target --value null
 
 An array field takes a JSON array of the same spellings. A field declared without a type takes `--target-component <type>` to say which component of the target node is meant.
 
-**An address that resolves to nothing is refused before anything is written** — code 1, the slot untouched. Checked live 2026-08-19: a path miss lists the siblings, a uuid the scene no longer holds answers `НЕ ЗАПИСАНО`, and in both cases the previous value is still there afterwards.
+**An address that resolves to nothing is refused before anything is written** — code 1, the slot untouched. Checked live 2026-08-19: a path miss lists the siblings, a uuid the scene no longer holds answers `FAILED`, and in both cases the previous value is still there afterwards.
 
 Done editing — save the scene yourself with `cocos scene save`. Asking a human to press Ctrl+S is a wasted round trip.
 
 Engine components are registered under a prefix (`cc.MeshRenderer`), user ones under their own class name. Every subcommand — `get`, `add`, `rm`, `set`, and `node create --component` — takes either spelling and prints the **registered** one; where the two differ, trust the report. Checked live: `component add "X" UIOpacity` answers `cc.UIOpacity навешен`. A component that never appeared gives a code-1 failure listing what the node does carry, registered names and all.
 
-## The write report
+## The verdict vocabulary
 
-`component set` prints a line whose first word is the verdict:
+Every command that does something prints a line whose first word comes from one closed set, and the exit code follows from that word alone. Whatever the outcome was called before — a move that did not land, a link the serializer drops, a database still importing — is now the tail of the same line.
 
-| First word | Meaning |
-|---|---|
-| `ok` | written, read back, and a save carries it |
-| `НЕ СОХРАНИТСЯ` | the write landed on the live object and a save would drop it |
-| `ЗАПИСАНО, НЕ ПРОВЕРЕНО` | the editor accepted it, the check did not pass; the reason ends the line |
-| `НЕ ЗАПИСАНО` | the write never landed |
+| First word | Meaning | Exit |
+|---|---|---|
+| `ok` | done, read back, and a save either carries it or the question does not apply | 0 |
+| `UNVERIFIED` | done, and the read-back did not confirm it; the reason ends the line | 0 |
+| `UNPERSISTED` | done and verified, and a save is proven to drop it | 1 |
+| `FAILED` | not done | 1 |
+| `TIMEOUT` | did not settle inside `--timeout` | 1 |
 
-`ok` and `ЗАПИСАНО, НЕ ПРОВЕРЕНО` exit 0; `НЕ СОХРАНИТСЯ` and `НЕ ЗАПИСАНО` exit 1, so `&&` catches a lost write.
+`UNVERIFIED` exiting 0 is deliberate: the write landed, only the check did not, and that is not where a `&&` chain should stop. `UNPERSISTED` and `FAILED` are, so `&&` catches a lost write.
+
+Reads — `scene tree`, `asset ls`, `component get`, `prefab dump` and their kind — carry no verdict word; their stdout is the listing itself and the summary goes to stderr.
 
 Further along the line, `persisted=`:
 
@@ -197,7 +200,7 @@ ok  CliProbeInstance из db://assets/projectile/bullet.prefab  f5iNhJK09LSrN7ha
 связан с 7c815697-…  fileId=d1Wq/c/N1He6HkIUsWJcmU  корень инстанса  persisted=true
 ```
 
-Head words: `ok`; `СВЯЗАН, НЕ ПРОВЕРЕНО` when the serializer could not be reached (link unproven, exit 0); `НЕ СВЯЗАН` and `СВЯЗЬ НЕ СОХРАНИТСЯ` both exit 1. `--unlink` asks for the flat copy on purpose and is judged accordingly. An FBX/glTF has no instantiable main asset — the command resolves its `gltf-scene` sub-asset and says it did.
+The linkage takes the same five words: `ok` when both sides agree; `UNVERIFIED` when the serializer could not be reached, so the link is unproven rather than absent; `FAILED` when the node came back with no PrefabInfo; `UNPERSISTED` when the live node holds one and the serializer drops it, so the save turns the instance into a flat copy. `--unlink` asks for the flat copy on purpose and is judged accordingly. An FBX/glTF has no instantiable main asset — the command resolves its `gltf-scene` sub-asset and says it did.
 
 `prefab create` writes the asset through the editor's own serializer, which is what keeps mesh and material references; the source node does **not** become an instance (unlike dragging into the Assets panel), and the command says so. `<db://path>` takes a full `.prefab` address or a folder plus `--name`.
 
@@ -238,7 +241,7 @@ ok  db://assets/framework/targeting  обновлено за 1.7с
 классы компонентов: +CliProbeMarker
 ```
 
-`ok` means the database went quiet; `НЕ УЛЕГЛОСЬ` means it was still working when `--timeout` (60 s) ran out, and exits 1. `без изменений` on the head line is a real answer — the editor already knew everything under that folder. A refresh over the whole 254-script `framework` tree cost 1.7 s.
+`ok` means the database went quiet; `TIMEOUT` means it was still working when `--timeout` (60 s) ran out, and exits 1. `без изменений` on the head line is a real answer — the editor already knew everything under that folder. A refresh over the whole 254-script `framework` tree cost 1.7 s.
 
 `--quiet-for <ms>` (1.5 s) is how long the database's fingerprint must hold still before the command believes it. Raise both flags for a large reimport.
 

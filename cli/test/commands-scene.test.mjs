@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { sceneTree, sceneInfo } from '../lib/commands/scene.js';
+import { present } from '../lib/render/present.js';
+
+const treeOutput = async (...args) => present(await sceneTree(...args));
 
 const driver = (answers) => ({
     editor: { scene: {} },
@@ -21,10 +24,10 @@ const DUMP = {
 };
 
 test('дерево строится из дампа и сообщает число узлов', async () => {
-    const result = await sceneTree(driver({ dumpSceneNodes: DUMP }), {});
-    assert.equal(result.count, 2);
-    assert.match(result.text, /Canvas {2}\[Canvas\]/);
-    assert.match(result.text, /Bg {2}\[Sprite\]/);
+    const output = await treeOutput(driver({ dumpSceneNodes: DUMP }), {});
+    assert.equal(output.stderr, 'узлов: 2');
+    assert.match(output.stdout, /Canvas {2}\[Canvas\]/);
+    assert.match(output.stdout, /Bg {2}\[Sprite\]/);
 });
 
 test('отказ scene-скрипта поднимается как ошибка с его же текстом', async () => {
@@ -34,15 +37,16 @@ test('отказ scene-скрипта поднимается как ошибка
 });
 
 test('дамп без узлов не притворяется деревом', async () => {
-    const result = await sceneTree(driver({ dumpSceneNodes: { success: true, data: { nodes: [] } } }), {});
-    assert.equal(result.count, 0);
-    assert.match(result.text, /пусто|нет узлов/i);
+    const output = await treeOutput(
+        driver({ dumpSceneNodes: { success: true, data: { nodes: [] } } }), {});
+    assert.equal(output.stderr, 'узлов: 0');
+    assert.match(output.stdout, /пусто|нет узлов/i);
 });
 
 test('info называет сцену и число узлов одной строкой', async () => {
-    const text = await sceneInfo(driver({
+    const text = present(await sceneInfo(driver({
         getCurrentSceneInfo: { success: true, data: { name: 'main', uuid: 'u1', nodeCount: 42 } }
-    }));
+    }))).stdout;
     assert.match(text, /main/);
     assert.match(text, /42/);
 });

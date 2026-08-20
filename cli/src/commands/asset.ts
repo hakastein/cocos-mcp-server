@@ -7,11 +7,7 @@ import {
 import type { AssetQuery, AssetRecord, AssetType } from '../asset/query';
 import { diffAssets, diffClasses, fingerprintOf, settled, snapshotKey } from '../asset/settle';
 import type { DbSnapshot, Sample } from '../asset/settle';
-import {
-    assetField, assetListSummary, renderAssetInfo, renderAssetList, renderSettleReport, settleNote
-} from '../render/asset';
-import type { SettleReport } from '../render/asset';
-import type { CommandOutput } from './shared';
+import type { Report, SettleReport } from '../render/present';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
@@ -126,13 +122,8 @@ async function settleAndDiff(
     };
 }
 
-function outputOf(report: SettleReport, options: WaitOptions, extraNote?: string): CommandOutput {
-    const notes = [settleNote(report, options.timeoutMs), extraNote].filter(note => note);
-    return {
-        stdout: renderSettleReport(report),
-        stderr: notes.length ? notes.join('\n') : undefined,
-        failed: !report.settled || report.failure !== undefined
-    };
+function outputOf(report: SettleReport, options: WaitOptions, extraNote?: string): Report {
+    return { kind: 'assetSettle', settle: report, timeoutMs: options.timeoutMs, note: extraNote };
 }
 
 /**
@@ -147,7 +138,7 @@ async function whereIs(client: DriverClient, uuid: string): Promise<string | nul
 
 export async function assetRefresh(
     client: DriverClient, target: string, options: WaitOptions
-): Promise<CommandOutput> {
+): Promise<Report> {
     const url = requireAssetUrl(target, 'папка обновления');
     const before = await snapshot(client, url);
     await client.editor.assetDb.refreshAsset(url);
@@ -156,7 +147,7 @@ export async function assetRefresh(
 
 export async function assetReimport(
     client: DriverClient, target: string, options: WaitOptions
-): Promise<CommandOutput> {
+): Promise<Report> {
     const url = requireAssetUrl(target, 'переимпортируемый ассет');
     if (!await queryOne(client, url)) {
         throw new Error(`база ассетов не знает '${url}'; если файл появился на диске мимо редактора, `
@@ -171,7 +162,7 @@ export async function assetReimport(
 export async function assetMove(
     client: DriverClient, source: string, target: string,
     options: WaitOptions & { overwrite?: boolean }
-): Promise<CommandOutput> {
+): Promise<Report> {
     const from = requireAssetUrl(source, 'исходный ассет');
     const to = requireAssetUrl(target, 'целевой адрес');
     const moving = await requireOne(client, from);
@@ -198,17 +189,15 @@ export async function assetMove(
 }
 
 export async function assetGet(
-    client: DriverClient, target: string, options: { field?: string; json?: boolean }
-): Promise<CommandOutput> {
-    const info = await requireOne(client, target);
-    if (options.field) return { stdout: assetField(info, options.field) };
-    return { stdout: options.json ? JSON.stringify(info) : renderAssetInfo(info) };
+    client: DriverClient, target: string, options: { field?: string }
+): Promise<Report> {
+    return { kind: 'assetInfo', asset: await requireOne(client, target), field: options.field };
 }
 
 export async function assetList(
     client: DriverClient, folder: string,
-    options: { type?: string; name?: string; exact?: boolean; max?: string; json?: boolean }
-): Promise<CommandOutput> {
+    options: { type?: string; name?: string; exact?: boolean; max?: string }
+): Promise<Report> {
     const root = requireAssetUrl(folder, 'папка поиска');
     const type = (options.type || 'all') as AssetType;
     if (ASSET_TYPES.indexOf(type) === -1) {
@@ -218,10 +207,7 @@ export async function assetList(
     const selection = selectAssets(await queryAssets(client, assetQuery(root, type)), {
         name: options.name, exactMatch: options.exact === true, maxResults
     });
-    return {
-        stdout: options.json ? JSON.stringify(selection.assets) : renderAssetList(selection.assets),
-        stderr: assetListSummary(selection.assets.length, selection.total)
-    };
+    return { kind: 'assetList', assets: selection.assets, total: selection.total };
 }
 
 export function registerAsset(program: Command, resolve: () => Promise<Resolved>): void {
@@ -239,7 +225,7 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
         .option('--field <name>', 'выдать одно поле голым значением')
         .option('--json', 'выдать структурную форму вместо текста')
         .action((target: string, options: { field?: string; json?: boolean }) =>
-            withClient(resolve, client => assetGet(client, target, options)));
+            withClient(resolve, client => assetGet(client, target, options), { json: options.json }));
 
     asset
         .command('ls [folder]')
@@ -252,7 +238,9 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
         .option('--json', 'выдать структурную форму вместо текста')
         .action((folder: string | undefined, options: {
             type?: string; name?: string; exact?: boolean; max?: string; json?: boolean
-        }) => withClient(resolve, client => assetList(client, folder || DEFAULT_FOLDER, options)));
+        }) => withClient(
+            resolve, client => assetList(client, folder || DEFAULT_FOLDER, options),
+            { json: options.json }));
 
     waitFlags(asset
         .command('refresh <folder>')
@@ -290,15 +278,24 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
                 });
                 const landed = await queryOne(client, to);
                 if (!landed) {
-                    return { stdout: `НЕ СДЕЛАНО  ${to} не появился в базе после копирования`, failed: true };
+                    return {
+                        kind: 'action',
+                        verdict: 'FAILED',
+                        summary: `${to} не появился в базе после копирования`
+                    };
                 }
                 if (landed.uuid === original.uuid) {
                     return {
-                        stdout: `НЕ СДЕЛАНО  по ${to} лежит сам ${from}, копии нет`,
-                        failed: true
+                        kind: 'action',
+                        verdict: 'FAILED',
+                        summary: `по ${to} лежит сам ${from}, копии нет`
                     };
                 }
-                return { stdout: `ok  скопировано в ${landed.url}  ${landed.uuid}` };
+                return {
+                    kind: 'action',
+                    verdict: 'ok',
+                    summary: `скопировано в ${landed.url}  ${landed.uuid}`
+                };
             }));
 
     asset
@@ -310,9 +307,15 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
             await client.editor.assetDb.deleteAsset(url);
             const stillThere = await whereIs(client, existing.uuid);
             if (stillThere !== null) {
-                return { stdout: `НЕ СДЕЛАНО  ${existing.uuid} всё ещё лежит по ${stillThere}`, failed: true };
+                return {
+                    kind: 'action',
+                    verdict: 'FAILED',
+                    summary: `${existing.uuid} всё ещё лежит по ${stillThere}`
+                };
             }
-            return { stdout: `ok  удалён ${url}  ${existing.uuid}` };
+            return {
+                kind: 'action', verdict: 'ok', summary: `удалён ${url}  ${existing.uuid}`
+            };
         }));
 
     asset
@@ -322,10 +325,14 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
             const url = requireAssetUrl(folder, 'создаваемая папка');
             await client.editor.assetDb.createAsset(url, null);
             const created = await queryOne(client, url);
-            if (!created) return { stdout: `НЕ СДЕЛАНО  ${url} не появилась в базе`, failed: true };
+            if (!created) {
+                return { kind: 'action', verdict: 'FAILED', summary: `${url} не появилась в базе` };
+            }
             return {
-                stdout: `ok  создана ${created.url}  ${created.uuid}`,
-                stderr: created.isDirectory === true ? undefined : `${url} — не папка`
+                kind: 'action',
+                verdict: 'ok',
+                summary: `создана ${created.url}  ${created.uuid}`,
+                note: created.isDirectory === true ? undefined : `${url} — не папка`
             };
         }));
 
@@ -334,6 +341,8 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
         .description('закончила ли база ассетов запуск — всё, прочитанное до этого, о недоимпортированном проекте')
         .action(() => withClient(resolve, async client => {
             const ready = await client.editor.assetDb.queryReady();
-            return { stdout: ready === true ? 'готова' : 'не готова', failed: ready !== true };
+            return ready === true
+                ? { kind: 'action', verdict: 'ok', summary: 'база ассетов готова' }
+                : { kind: 'action', verdict: 'FAILED', summary: 'база ассетов ещё не готова' };
         }));
 }

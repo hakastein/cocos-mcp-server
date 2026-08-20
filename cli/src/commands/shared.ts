@@ -1,8 +1,10 @@
 import type { SceneResult } from '@cocos-cli/shared';
 import { EXIT } from '../exit';
+import { present } from '../render/present';
 import { settle } from '../settle';
 import { componentClassNames, selectComponent } from '../property/component-dump';
 import type { ComponentDump } from '../property/component-dump';
+import type { CommandOutput, PresentOptions, Report } from '../render/present';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
@@ -22,21 +24,21 @@ export async function unwrap<T>(
     return settled.data;
 }
 
-export interface CommandOutput {
-    stdout?: string;
-    stderr?: string;
-    /** Команда отработала, но её результат — не успех: запись, которую сохранение уронит. */
-    failed?: boolean;
+/** Единственное место, которое пишет вывод команды в потоки процесса. */
+export function emit(output: CommandOutput): void {
+    if (output.stdout !== undefined) process.stdout.write(output.stdout + '\n');
+    if (output.stderr !== undefined) process.stderr.write(output.stderr + '\n');
 }
 
 /**
- * Resolve, run, print, close — the four things every command group's action does, gathered in
- * one place instead of once per action body. `run` reports what it wants on each stream instead
- * of writing directly, so this stays the only spot that touches `process.stdout`/`process.stderr`
- * for command output; the connection closes in every branch, success or thrown.
+ * Resolve, run, present, close — the four things every command group's action does, gathered in
+ * one place instead of once per action body. `run` answers with a `Report`, so neither the two
+ * streams nor the exit code are assembled in an action body; the connection closes in every
+ * branch, success or thrown.
  */
 export async function withClient(
-    resolve: () => Promise<Resolved>, run: (client: DriverClient) => Promise<CommandOutput>
+    resolve: () => Promise<Resolved>, run: (client: DriverClient) => Promise<Report>,
+    options?: PresentOptions
 ): Promise<void> {
     const resolved = await resolve();
     if (!resolved.ok) {
@@ -45,9 +47,8 @@ export async function withClient(
         return;
     }
     try {
-        const output = await run(resolved.client);
-        if (output.stdout !== undefined) process.stdout.write(output.stdout + '\n');
-        if (output.stderr !== undefined) process.stderr.write(output.stderr + '\n');
+        const output = present(await run(resolved.client), options);
+        emit(output);
         if (output.failed) process.exitCode = EXIT.FAILED;
     } catch (error) {
         process.stderr.write((error instanceof Error ? error.message : String(error)) + '\n');

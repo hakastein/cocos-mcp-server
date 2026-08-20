@@ -1,15 +1,14 @@
 import { Command } from 'commander';
 import { unwrap, withClient } from './shared';
-import {
-    prefabDumpSummary, prefabOverridesSummary, renderPrefabDump, renderPrefabOverrides
-} from '../render/prefab';
 import { spellingOf } from '../property/reference-target';
-import { applyLinkageOptions, linkageVerdict, prefabSavePath } from '../prefab-linkage';
+import {
+    applyLinkageOptions, establishedLinkage, linkageVerdict, prefabSavePath
+} from '../prefab-linkage';
 import { requireAssetUrl } from '../asset/query';
 import { resolveNode } from './node';
 import type { AssetRecord } from '../asset/query';
 import type { CreateNodeOptions } from '../prefab-linkage';
-import type { CommandOutput } from './shared';
+import type { Report } from '../render/present';
 import type { DriverClient } from '../driver-client';
 import type { Resolved } from '../resolve';
 
@@ -30,25 +29,20 @@ async function resolvePrefabUuid(client: DriverClient, asset: string): Promise<s
     return uuid;
 }
 
-export async function prefabDump(
-    client: DriverClient, asset: string, json?: boolean
-): Promise<CommandOutput> {
+export async function prefabDump(client: DriverClient, asset: string): Promise<Report> {
     const uuid = await resolvePrefabUuid(client, asset);
-    const dump = await unwrap(client.scene.call('dumpPrefabAsset', uuid), 'dumpPrefabAsset');
     return {
-        stdout: json ? JSON.stringify(dump) : renderPrefabDump(dump),
-        stderr: prefabDumpSummary(dump)
+        kind: 'prefabDump',
+        dump: await unwrap(client.scene.call('dumpPrefabAsset', uuid), 'dumpPrefabAsset')
     };
 }
 
-export async function prefabOverrides(
-    client: DriverClient, target: string, json?: boolean
-): Promise<CommandOutput> {
+export async function prefabOverrides(client: DriverClient, target: string): Promise<Report> {
     const nodeUuid = await resolveNode(client, target);
-    const report = await unwrap(client.scene.call('listPrefabOverrides', nodeUuid), 'listPrefabOverrides');
     return {
-        stdout: json ? JSON.stringify(report) : renderPrefabOverrides(report),
-        stderr: prefabOverridesSummary(report)
+        kind: 'prefabOverrides',
+        overrides: await unwrap(
+            client.scene.call('listPrefabOverrides', nodeUuid), 'listPrefabOverrides')
     };
 }
 
@@ -78,7 +72,7 @@ async function instantiableAsset(
 export async function prefabInstantiate(
     client: DriverClient, asset: string,
     options: { parent?: string; name?: string; pos?: string; unlink?: boolean }
-): Promise<CommandOutput> {
+): Promise<Report> {
     const url = requireAssetUrl(asset, 'префаб');
     const target = await instantiableAsset(client, url);
     const unlink = options.unlink === true;
@@ -103,10 +97,11 @@ export async function prefabInstantiate(
     const linkage = await unwrap(client.scene.call('nodePrefabLinkage', uuid), 'nodePrefabLinkage');
     const verdict = linkageVerdict(linkage, target.type, unlink);
     return {
-        stdout: `${verdict.head}  ${payload.name} из ${url}  ${uuid}`
+        kind: 'action',
+        verdict: verdict.verdict,
+        summary: `${payload.name} из ${url}  ${uuid}`
             + (target.fromModel ? '  (через саб-ассет gltf-scene)' : ''),
-        stderr: verdict.detail,
-        failed: verdict.failed
+        note: verdict.detail
     };
 }
 
@@ -116,7 +111,7 @@ export async function prefabInstantiate(
  */
 export async function prefabCreate(
     client: DriverClient, target: string, savePath: string, name?: string
-): Promise<CommandOutput> {
+): Promise<Report> {
     const nodeUuid = await resolveNode(client, target);
     const generated = await unwrap(
         client.scene.call('createPrefabFromNode2', nodeUuid), 'createPrefabFromNode2');
@@ -129,12 +124,14 @@ export async function prefabCreate(
     const written = await client.editor.assetDb.queryAssetInfo(path.url).catch(() => null) as
         AssetRecord | null;
     if (!written) {
-        return { stdout: `НЕ СДЕЛАНО  ${path.url} не появился в базе ассетов`, failed: true };
+        return { kind: 'action', verdict: 'FAILED', summary: `${path.url} не появился в базе ассетов` };
     }
 
     return {
-        stdout: `ok  ${target} записан в ${written.url}  ${written.uuid}`,
-        stderr: 'исходный узел инстансом не стал — в отличие от перетаскивания в панель Assets; '
+        kind: 'action',
+        verdict: 'ok',
+        summary: `${target} записан в ${written.url}  ${written.uuid}`,
+        note: 'исходный узел инстансом не стал — в отличие от перетаскивания в панель Assets; '
             + `связать его с ассетом можно только заново, через 'cocos prefab instantiate'`
     };
 }
@@ -147,7 +144,7 @@ export function registerPrefab(program: Command, resolve: () => Promise<Resolved
         .description('дерево .prefab-ассета: узлы и компоненты под зарегистрированными именами')
         .option('--json', 'выдать структурную форму вместо текста')
         .action((asset: string, options: { json?: boolean }) =>
-            withClient(resolve, client => prefabDump(client, asset, options.json)));
+            withClient(resolve, client => prefabDump(client, asset), { json: options.json }));
 
     prefab
         .command('instantiate <asset>')
@@ -174,18 +171,19 @@ export function registerPrefab(program: Command, resolve: () => Promise<Resolved
         .action((target: string) => withClient(resolve, async client => {
             const nodeUuid = await resolveNode(client, target);
             const report = await unwrap(client.scene.call('nodePrefabLinkage', nodeUuid), 'nodePrefabLinkage');
-            if (!report.linked) return { stdout: `${target} не связан с префабом` };
-            const persisted = !report.persistenceChecked
-                ? 'persisted=unknown'
-                : `persisted=${report.persisted}`;
+            if (!report.linked) {
+                return { kind: 'action', verdict: 'ok', summary: `${target} не связан с префабом` };
+            }
             return {
-                stdout: [
+                kind: 'action',
+                verdict: establishedLinkage(report).verdict,
+                summary: [
                     `${target}  префаб ${report.asset || 'не назван'}`,
                     report.instanceRoot ? 'корень инстанса' : 'внутри инстанса',
                     `fileId=${report.fileId || 'нет'}`,
-                    persisted
+                    report.persistenceChecked ? `persisted=${report.persisted}` : 'persisted=unknown'
                 ].join('  '),
-                stderr: report.persistenceReason || ''
+                note: report.persistenceReason || undefined
             };
         }));
 
@@ -194,7 +192,7 @@ export function registerPrefab(program: Command, resolve: () => Promise<Resolved
         .description('что инстанс держит поверх префаба')
         .option('--json', 'выдать структурную форму вместо текста')
         .action((target: string, options: { json?: boolean }) =>
-            withClient(resolve, client => prefabOverrides(client, target, options.json)));
+            withClient(resolve, client => prefabOverrides(client, target), { json: options.json }));
 
     prefab
         .command('rm-override <path> <property>')
@@ -208,8 +206,12 @@ export function registerPrefab(program: Command, resolve: () => Promise<Resolved
                     client.scene.call('removePrefabOverride', nodeUuid, property, options.localId,
                         options.index === undefined ? undefined : Number(options.index)),
                     'removePrefabOverride');
-                return { stdout: `ok  снят оверрайд ${removal.removed.propertyPath} с ${target}`
-                    + `  осталось: ${removal.remaining}` };
+                return {
+                    kind: 'action',
+                    verdict: 'ok',
+                    summary: `снят оверрайд ${removal.removed.propertyPath} с ${target}`
+                        + `  осталось: ${removal.remaining}`
+                };
             }));
 
     prefab
@@ -218,8 +220,14 @@ export function registerPrefab(program: Command, resolve: () => Promise<Resolved
         .action((target: string) => withClient(resolve, async client => {
             const nodeUuid = await resolveNode(client, target);
             const report = await unwrap(client.scene.call('applyPrefabToAsset', nodeUuid), 'applyPrefabToAsset');
-            return { stdout: `ok  ${report.nodeName} записан в префаб ${report.prefabAsset || 'не назван'}`
-                + (report.accepted === null ? '  (редактор не сказал, принял ли)' : `  accepted=${report.accepted}`) };
+            return {
+                kind: 'action',
+                verdict: 'ok',
+                summary: `${report.nodeName} записан в префаб ${report.prefabAsset || 'не назван'}`
+                    + (report.accepted === null
+                        ? '  (редактор не сказал, принял ли)'
+                        : `  accepted=${report.accepted}`)
+            };
         }));
 
     prefab
@@ -228,7 +236,13 @@ export function registerPrefab(program: Command, resolve: () => Promise<Resolved
         .action((target: string) => withClient(resolve, async client => {
             const nodeUuid = await resolveNode(client, target);
             const report = await unwrap(client.scene.call('revertPrefabInstance', nodeUuid), 'revertPrefabInstance');
-            return { stdout: `ok  ${report.nodeName} возвращён к префабу ${report.prefabAsset || 'не назван'}`
-                + (report.accepted === null ? '  (редактор не сказал, принял ли)' : `  accepted=${report.accepted}`) };
+            return {
+                kind: 'action',
+                verdict: 'ok',
+                summary: `${report.nodeName} возвращён к префабу ${report.prefabAsset || 'не назван'}`
+                    + (report.accepted === null
+                        ? '  (редактор не сказал, принял ли)'
+                        : `  accepted=${report.accepted}`)
+            };
         }));
 }
