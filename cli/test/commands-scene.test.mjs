@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { sceneTree, sceneInfo } from '../src/commands/scene.ts';
+import {
+    sceneDirty, sceneInfo, sceneMissing, sceneOpen, sceneOwners, sceneSave, sceneTree
+} from '../src/commands/scene.ts';
 import { present } from '../src/render/present.ts';
 import { MemoryDriver } from '../src/driver/memory.ts';
 
@@ -35,4 +37,81 @@ test('info names the scene and its node count on one line', async () => {
     const text = present(await sceneInfo(new MemoryDriver({ name: 'main', nodes }))).stdout;
     assert.match(text, /main/);
     assert.match(text, /42/);
+});
+
+const dirtyScene = () => new MemoryDriver({
+    nodes: [{ name: 'Canvas', components: [{ type: 'Canvas' }] }],
+    dirty: {
+        differsFromDisk: true,
+        scenePath: 'db://assets/main.scene',
+        diffs: [{ path: 'Canvas._lpos', kind: 'changed', disk: 0, live: 12 }]
+    }
+});
+
+test('owners asks with the class and takes the active-only flag as its inverse', async () => {
+    const driver = new MemoryDriver({
+        nodes: [{ name: 'Canvas', components: [{ type: 'Canvas' }] }]
+    });
+    const output = present(await sceneOwners(driver, { className: 'Canvas', activeOnly: true }));
+    assert.match(output.stdout, /Canvas/);
+    const asked = driver.calls.find(call => call.name === 'findComponentOwners');
+    assert.deepEqual(asked.args[0], { className: 'Canvas', includeInactive: false });
+});
+
+test('without --active-only the listing includes nodes switched off', async () => {
+    const driver = new MemoryDriver({ nodes: [{ name: 'Canvas', components: [{ type: 'Canvas' }] }] });
+    await sceneOwners(driver, { className: 'Canvas' });
+    assert.equal(driver.calls.find(call => call.name === 'findComponentOwners').args[0].includeInactive, true);
+});
+
+test('dirty names the file the open scene differs from and where', async () => {
+    const output = present(await sceneDirty(dirtyScene()));
+    assert.match(output.stdout, /differs from disk/);
+    assert.match(output.stdout, /Canvas\._lpos/);
+});
+
+test('a scene matching its file says so instead of listing nothing', async () => {
+    const output = present(await sceneDirty(new MemoryDriver({ nodes: [] })));
+    assert.doesNotMatch(output.stdout, /differs from disk/);
+});
+
+test('missing lists the component slots whose script no longer resolves', async () => {
+    const driver = new MemoryDriver({
+        nodes: [{ name: 'Canvas' }],
+        missingScripts: [{
+            nodePath: 'Canvas', nodeUuid: 'n-1', componentUuid: 'c-1', cid: 'abc'
+        }]
+    });
+    assert.match(present(await sceneMissing(driver, {})).stdout, /Canvas/);
+});
+
+// --root is a node path, and the scene script takes a uuid: an unresolved path would scan the
+// whole scene and answer about nodes nobody asked about.
+test('--root reaches the scene as a resolved uuid rather than as the path', async () => {
+    const driver = new MemoryDriver({
+        nodes: [{ name: 'Canvas', children: [{ name: 'Bg' }] }], missingScripts: []
+    });
+    await sceneMissing(driver, { root: 'Canvas/Bg' });
+    const asked = driver.calls.find(call => call.name === 'dumpMissingScripts');
+    assert.deepEqual(asked.args[0], { rootUuid: driver.uuidOf('Canvas/Bg') });
+});
+
+test('without --root the scene is scanned whole, with no rootUuid invented for it', async () => {
+    const driver = new MemoryDriver({ nodes: [{ name: 'Canvas' }], missingScripts: [] });
+    await sceneMissing(driver, {});
+    assert.deepEqual(driver.calls.find(call => call.name === 'dumpMissingScripts').args[0], {});
+});
+
+test('open tells the editor the address it was given and names it back', async () => {
+    const driver = new MemoryDriver({ nodes: [] });
+    const output = present(await sceneOpen(driver, { target: 'db://assets/main.scene' }));
+    assert.match(output.stdout, /^ok {2}opened db:\/\/assets\/main\.scene/);
+    assert.equal(driver.calls.find(call => call.name === 'scene.openScene').args[0],
+        'db://assets/main.scene');
+});
+
+test('save goes through the editor rather than writing the file itself', async () => {
+    const driver = new MemoryDriver({ nodes: [] });
+    assert.match(present(await sceneSave(driver)).stdout, /^ok {2}scene saved/);
+    assert.equal(driver.calls.filter(call => call.name === 'scene.saveScene').length, 1);
 });

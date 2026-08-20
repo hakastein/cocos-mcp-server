@@ -102,7 +102,7 @@ function newlyAppearedType(before: string[], after: string[]): string | null {
     return null;
 }
 
-interface PollOptions {
+export interface PollOptions {
     timeoutMs?: number;
     intervalMs?: number;
 }

@@ -17,14 +17,12 @@ function toDumpNode(node: SceneNodeEntry): DumpNode {
     };
 }
 
-export async function sceneTree(
-    client: Driver, options: { uuid?: boolean }
-): Promise<Report> {
+export async function sceneTree(client: Driver, spec: { uuid?: boolean }): Promise<Report> {
     const dump = await unwrap(client.scene.call('dumpSceneNodes'), 'dumpSceneNodes');
     return {
         kind: 'sceneTree',
         nodes: (dump.nodes || []).map(toDumpNode),
-        options: { uuid: options.uuid }
+        options: { uuid: spec.uuid }
     };
 }
 
@@ -37,6 +35,45 @@ export async function sceneInfo(client: Driver): Promise<Report> {
     };
 }
 
+export async function sceneOwners(
+    client: Driver, spec: { className: string; activeOnly?: boolean }
+): Promise<Report> {
+    return {
+        kind: 'sceneOwners',
+        owners: await unwrap(
+            client.scene.call('findComponentOwners',
+                { className: spec.className, includeInactive: spec.activeOnly !== true }),
+            'findComponentOwners')
+    };
+}
+
+export async function sceneDirty(client: Driver): Promise<Report> {
+    return {
+        kind: 'sceneDirty',
+        dirty: await unwrap(client.scene.call('sceneDirtyAgainstDisk'), 'sceneDirtyAgainstDisk')
+    };
+}
+
+export async function sceneMissing(client: Driver, spec: { root?: string }): Promise<Report> {
+    const rootUuid = spec.root === undefined ? undefined : await resolveNode(client, spec.root);
+    return {
+        kind: 'sceneMissing',
+        missing: await unwrap(
+            client.scene.call('dumpMissingScripts', rootUuid === undefined ? {} : { rootUuid }),
+            'dumpMissingScripts')
+    };
+}
+
+export async function sceneOpen(client: Driver, spec: { target: string }): Promise<Report> {
+    await client.editor.scene.openScene(spec.target);
+    return { kind: 'action', verdict: 'ok', summary: `opened ${spec.target}` };
+}
+
+export async function sceneSave(client: Driver): Promise<Report> {
+    await client.editor.scene.saveScene();
+    return { kind: 'action', verdict: 'ok', summary: 'scene saved' };
+}
+
 export function registerScene(program: Command, resolve: () => Promise<Resolved>): void {
     const scene = program.command('scene').description('the open scene as a whole');
 
@@ -44,7 +81,8 @@ export function registerScene(program: Command, resolve: () => Promise<Resolved>
         .command('tree')
         .description('hierarchy of the open scene')
         .option('--uuid', 'show node uuids')
-        .action((options: { uuid?: boolean }) => withClient(resolve, client => sceneTree(client, options)));
+        .action((options: { uuid?: boolean }) =>
+            withClient(resolve, client => sceneTree(client, { uuid: options.uuid })));
 
     scene
         .command('info')
@@ -57,53 +95,33 @@ export function registerScene(program: Command, resolve: () => Promise<Resolved>
         .option('--active-only', 'skip nodes switched off in the hierarchy')
         .option('--json', 'print the structural form instead of text')
         .action((className: string, options: { activeOnly?: boolean; json?: boolean }) =>
-            withClient(resolve, async client => ({
-                kind: 'sceneOwners',
-                owners: await unwrap(
-                    client.scene.call('findComponentOwners',
-                        { className, includeInactive: options.activeOnly !== true }),
-                    'findComponentOwners')
+            withClient(resolve, client => sceneOwners(client, {
+                className, activeOnly: options.activeOnly
             }), { json: options.json }));
 
     scene
         .command('dirty')
         .description('whether the open scene differs from the file on disk, and where')
         .option('--json', 'print the structural form instead of text')
-        .action((options: { json?: boolean }) => withClient(resolve, async client => ({
-            kind: 'sceneDirty',
-            dirty: await unwrap(client.scene.call('sceneDirtyAgainstDisk'), 'sceneDirtyAgainstDisk')
-        }), { json: options.json }));
+        .action((options: { json?: boolean }) =>
+            withClient(resolve, sceneDirty, { json: options.json }));
 
     scene
         .command('missing')
         .description('components whose script no longer resolves — that slot crashes preview')
         .option('--root <path>', 'look only under this node')
         .option('--json', 'print the structural form instead of text')
-        .action((options: { root?: string; json?: boolean }) => withClient(resolve, async client => {
-            const rootUuid = options.root === undefined
-                ? undefined
-                : await resolveNode(client, options.root);
-            return {
-                kind: 'sceneMissing',
-                missing: await unwrap(
-                    client.scene.call('dumpMissingScripts', rootUuid === undefined ? {} : { rootUuid }),
-                    'dumpMissingScripts')
-            };
-        }, { json: options.json }));
+        .action((options: { root?: string; json?: boolean }) =>
+            withClient(resolve, client => sceneMissing(client, { root: options.root }),
+                { json: options.json }));
 
     scene
         .command('open <path>')
         .description('open a scene by its db:// url or uuid')
-        .action((target: string) => withClient(resolve, async client => {
-            await client.editor.scene.openScene(target);
-            return { kind: 'action', verdict: 'ok', summary: `opened ${target}` };
-        }));
+        .action((target: string) => withClient(resolve, client => sceneOpen(client, { target })));
 
     scene
         .command('save')
         .description('save the open scene')
-        .action(() => withClient(resolve, async client => {
-            await client.editor.scene.saveScene();
-            return { kind: 'action', verdict: 'ok', summary: 'scene saved' };
-        }));
+        .action(() => withClient(resolve, sceneSave));
 }

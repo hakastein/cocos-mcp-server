@@ -1,6 +1,7 @@
 import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
 import { addComponent, queryComponents, unwrap, withClient } from './shared.ts';
+import { jsonFlag } from './flags.ts';
 import { verifiedWrite } from '../property/verified-write.ts';
 import { writerFor } from '../property/writers.ts';
 import {
@@ -11,6 +12,7 @@ import { buildReferenceIndex, referencedUuids } from '../property/reference-inde
 import { isReferenceKind, referenceRequest } from '../property/reference-target.ts';
 import { resolveKind } from '../property/kind.ts';
 import { resolveNode } from './node.ts';
+import type { PollOptions } from './shared.ts';
 import type { ComponentAddress, Report } from '../render/present.ts';
 import type { Resolved } from '../resolve.ts';
 import type { PropertyKind } from '../property/kind.ts';
@@ -192,6 +194,50 @@ export async function componentGet(client: Driver, spec: GetSpec): Promise<Repor
     return { kind: 'componentProperties', address, readings, hidden, references: index, note };
 }
 
+export interface AddSpec {
+    node: string;
+    component: string;
+    /** How long the add is polled for before it counts as not having appeared. */
+    poll?: PollOptions;
+}
+
+export async function componentAdd(client: Driver, spec: AddSpec): Promise<Report> {
+    const uuid = await resolveNode(client, spec.node);
+    const outcome = await addComponent(client, uuid, spec.component, spec.poll);
+    return {
+        kind: 'action',
+        verdict: 'ok',
+        summary: outcome.alreadyPresent
+            ? `${outcome.type} already on ${spec.node}`
+            : `${outcome.type} added to ${spec.node}`
+    };
+}
+
+/**
+ * The uuid `remove-component` takes is the component's own, which the node dump does not carry —
+ * only the class-owner listing does. A class visible on the node and absent from that listing is
+ * refused rather than turned into a removal of some other node's component.
+ */
+export async function componentRemove(
+    client: Driver, spec: { node: string; component: string }
+): Promise<Report> {
+    const uuid = await resolveNode(client, spec.node);
+    const component = await findComponent(client, uuid, spec.component);
+    const owners = await unwrap(
+        client.scene.call('findComponentOwners', { className: component.className }),
+        'findComponentOwners');
+    const owner = owners.owners.find(entry => entry.nodeUuid === uuid);
+    if (!owner) {
+        throw new Error(`component '${component.className}' is visible on the node, but its uuid is `
+            + 'not among the owners of the class');
+    }
+    await client.editor.scene.removeComponent({ uuid: owner.componentUuid });
+    return {
+        kind: 'action', verdict: 'ok',
+        summary: `${component.className} removed from ${spec.node}`
+    };
+}
+
 export function registerComponent(program: Command, resolve: () => Promise<Resolved>): void {
     const component = program.command('component').description('components on nodes');
 
@@ -208,37 +254,14 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
     component
         .command('add <path> <type>')
         .description('add a component to a node, checking that it appeared')
-        .action((target: string, type: string) => withClient(resolve, async client => {
-            const uuid = await resolveNode(client, target);
-            const outcome = await addComponent(client, uuid, type);
-            return {
-                kind: 'action',
-                verdict: 'ok',
-                summary: outcome.alreadyPresent
-                    ? `${outcome.type} already on ${target}`
-                    : `${outcome.type} added to ${target}`
-            };
-        }));
+        .action((target: string, type: string) =>
+            withClient(resolve, client => componentAdd(client, { node: target, component: type })));
 
     component
         .command('rm <path> <type>')
         .description('remove a component from a node')
-        .action((target: string, type: string) => withClient(resolve, async client => {
-            const uuid = await resolveNode(client, target);
-            const component = await findComponent(client, uuid, type);
-            const owners = await unwrap(
-                client.scene.call('findComponentOwners', { className: component.className }),
-                'findComponentOwners');
-            const owner = owners.owners.find(entry => entry.nodeUuid === uuid);
-            if (!owner) {
-                throw new Error(
-                    `component '${component.className}' is visible on the node, but its uuid is not among the owners of the class`);
-            }
-            await client.editor.scene.removeComponent({ uuid: owner.componentUuid });
-            return {
-                kind: 'action', verdict: 'ok', summary: `${component.className} removed from ${target}`
-            };
-        }));
+        .action((target: string, type: string) =>
+            withClient(resolve, client => componentRemove(client, { node: target, component: type })));
 
     component
         .command('set <path> <type>')
@@ -250,12 +273,8 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
             + 'field is declared without a type')
         .action((target: string, type: string,
             options: { prop: string; value: string; targetComponent?: string }) =>
-            withClient(resolve, async client => {
-                let value: unknown = options.value;
-                try { value = JSON.parse(options.value); } catch { }
-                return componentSet(client, {
-                    node: target, component: type, property: options.prop, value,
-                    targetComponent: options.targetComponent
-                });
-            }));
+            withClient(resolve, client => componentSet(client, {
+                node: target, component: type, property: options.prop,
+                value: jsonFlag(options.value), targetComponent: options.targetComponent
+            })));
 }

@@ -1,15 +1,15 @@
 import type { Driver, WriteReport } from '@cocos-cli/shared';
 import { Command } from 'commander';
 import { addComponent, unwrap, withClient } from './shared.ts';
+import { booleanFlag, numberFlag, vec3Flag, vec3PartsFlag } from './flags.ts';
 import { withUndoBracket } from '../undo-bracket.ts';
 import { settle } from '../settle.ts';
 import { classifyNode } from '../node-type.ts';
 import { nodePropertyOf, nodeSnapshotOf } from '../node-snapshot.ts';
-import {
-    TRANSFORM_KINDS, normalizedTransform, parseVec3, sameVec3
-} from '../node-transform.ts';
+import { TRANSFORM_KINDS, normalizedTransform, sameVec3 } from '../node-transform.ts';
+import type { PollOptions } from './shared.ts';
 import type { NodeProperty, NodeSnapshot } from '../node-snapshot.ts';
-import type { TransformKind, Vec3Parts } from '../node-transform.ts';
+import type { TransformKind, Vec3, Vec3Parts } from '../node-transform.ts';
 import { withNodePersistence } from '../node-write.ts';
 import type { NodeStoredProperty } from '../node-write.ts';
 import type { RenderedWrite, Report } from '../render/present.ts';
@@ -34,8 +34,8 @@ export async function resolveNode(client: Driver, pathOrUuid: string): Promise<s
     return resolution.uuid;
 }
 
-export async function nodeGet(client: Driver, pathOrUuid: string): Promise<Report> {
-    const uuid = await resolveNode(client, pathOrUuid);
+export async function nodeGet(client: Driver, spec: { target: string }): Promise<Report> {
+    const uuid = await resolveNode(client, spec.target);
     const info = await unwrap(client.scene.call('getNodeInfo', uuid), 'getNodeInfo');
     const components = (info.components || [])
         .map(component => component.enabled === false ? `${component.type}(off)` : component.type)
@@ -53,19 +53,16 @@ export interface CreateSpec {
     parent: string;
     name: string;
     components: string[];
-    pos?: [number, number, number];
+    pos?: Vec3;
+    /** How long an added component is polled for before it counts as not having appeared. */
+    poll?: PollOptions;
 }
 
 /**
  * The bracket covers both the structural step and the setup, so a created node comes back on one
  * Ctrl+Z. A failure at any step drops the bracket: a recording left open would outlive the process.
- *
- * `componentPollOptions` tunes only the `addComponent` poll that follows the add — a test lever;
- * the real call passes nothing and gets `settle`'s own timeout.
  */
-export async function nodeCreate(
-    client: Driver, spec: CreateSpec, componentPollOptions?: { timeoutMs?: number; intervalMs?: number }
-): Promise<Report> {
+export async function nodeCreate(client: Driver, spec: CreateSpec): Promise<Report> {
     const parentUuid = await resolveNode(client, spec.parent);
 
     const { result, undoNote } = await withUndoBracket(client, parentUuid, async () => {
@@ -74,13 +71,13 @@ export async function nodeCreate(
         }) as string;
         const registered: string[] = [];
         for (const type of spec.components) {
-            registered.push((await addComponent(client, createdUuid, type, componentPollOptions)).type);
+            registered.push((await addComponent(client, createdUuid, type, spec.poll)).type);
         }
         if (spec.pos) {
             await client.editor.scene.setProperty({
                 uuid: createdUuid,
                 path: 'position',
-                dump: { type: 'cc.Vec3', value: { x: spec.pos[0], y: spec.pos[1], z: spec.pos[2] } }
+                dump: { type: 'cc.Vec3', value: spec.pos }
             });
         }
         return { createdUuid, registered };
@@ -102,12 +99,15 @@ async function snapshotOf(client: Driver, uuid: string): Promise<NodeSnapshot> {
 }
 
 export interface SetSpec {
+    target: string;
     name?: string;
     active?: boolean;
     layer?: number;
     position?: Vec3Parts;
     rotation?: Vec3Parts;
     scale?: Vec3Parts;
+    /** How long each write is polled for before it counts as not having landed. */
+    poll?: PollOptions;
 }
 
 /**
@@ -116,10 +116,8 @@ export interface SetSpec {
  * does not land cuts the rest short — writing further onto a node that refused the previous value
  * only piles up drift.
  */
-export async function nodeSet(
-    client: Driver, target: string, spec: SetSpec,
-    pollOptions?: { timeoutMs?: number; intervalMs?: number }
-): Promise<Report> {
+export async function nodeSet(client: Driver, spec: SetSpec): Promise<Report> {
+    const target = spec.target;
     const uuid = await resolveNode(client, target);
     const before = await snapshotOf(client, uuid);
     const nodeType = classifyNode(before.componentTypes, before.layer).nodeType;
@@ -139,7 +137,7 @@ export async function nodeSet(
             const landed = await settle(async () => {
                 observed = nodePropertyOf(await snapshotOf(client, uuid), property);
                 return observed === value;
-            }, pollOptions);
+            }, spec.poll);
             writes.push({
                 target, property, value, expected: value,
                 report: readBackReport(landed, property, observed)
@@ -161,7 +159,7 @@ export async function nodeSet(
             const landed = await settle(async () => {
                 observed = (await snapshotOf(client, uuid))[kind];
                 return sameVec3(observed, normalized.value);
-            }, pollOptions);
+            }, spec.poll);
             writes.push({
                 target, property: kind, value: normalized.value, expected: normalized.value,
                 report: readBackReport(landed, kind, observed)
@@ -215,16 +213,23 @@ async function judged(client: Driver, uuid: string, writes: NodeWrite[]): Promis
     return answered;
 }
 
+export interface MoveSpec {
+    target: string;
+    parent: string;
+    keepWorldTransform?: boolean;
+    /** How long the reparent is polled for before it counts as not having landed. */
+    poll?: PollOptions;
+}
+
 /**
  * The editor applies a reparent asynchronously and silently ignores some of them, so the new parent
  * is polled until it takes; one that never takes names the parent the node actually has.
  */
-export async function nodeMove(
-    client: Driver, target: string, parent: string, keepWorldTransform: boolean,
-    pollOptions?: { timeoutMs?: number; intervalMs?: number }
-): Promise<Report> {
+export async function nodeMove(client: Driver, spec: MoveSpec): Promise<Report> {
+    const target = spec.target;
+    const keepWorldTransform = spec.keepWorldTransform === true;
     const uuid = await resolveNode(client, target);
-    const parentUuid = await resolveNode(client, parent);
+    const parentUuid = await resolveNode(client, spec.parent);
     if (uuid === parentUuid) throw new Error(`${target} cannot be its own parent`);
 
     const { undoNote } = await withUndoBracket(client, uuid, () =>
@@ -234,9 +239,9 @@ export async function nodeMove(
     const moved = await settle(async () => {
         actual = (await snapshotOf(client, uuid)).parent;
         return actual === parentUuid;
-    }, pollOptions);
+    }, spec.poll);
     const write: NodeWrite = {
-        target, property: 'parent', value: parent, expected: { uuid: parentUuid },
+        target, property: 'parent', value: spec.parent, expected: { uuid: parentUuid },
         report: moved
             ? { written: true, verified: true, persisted: null, channel: 'editor' }
             : {
@@ -255,10 +260,14 @@ export async function nodeMove(
     };
 }
 
-export async function nodeDuplicate(
-    client: Driver, target: string,
-    pollOptions?: { timeoutMs?: number; intervalMs?: number }
-): Promise<Report> {
+export interface DuplicateSpec {
+    target: string;
+    /** How long the copy is polled for before it counts as never having appeared. */
+    poll?: PollOptions;
+}
+
+export async function nodeDuplicate(client: Driver, spec: DuplicateSpec): Promise<Report> {
+    const target = spec.target;
     const uuid = await resolveNode(client, target);
     const { result, undoNote } = await withUndoBracket(client, uuid, () =>
         client.editor.scene.duplicateNode(uuid));
@@ -268,7 +277,7 @@ export async function nodeDuplicate(
     }
 
     const appeared = await settle(
-        () => snapshotOf(client, created).then(() => true, () => false), pollOptions);
+        () => snapshotOf(client, created).then(() => true, () => false), spec.poll);
     if (!appeared) {
         return {
             kind: 'write',
@@ -297,13 +306,19 @@ export async function nodeDuplicate(
     };
 }
 
+export async function nodeRemove(client: Driver, spec: { target: string }): Promise<Report> {
+    const uuid = await resolveNode(client, spec.target);
+    await client.editor.scene.removeNode({ uuid });
+    return { kind: 'action', verdict: 'ok', summary: `removed ${spec.target}` };
+}
+
 export function registerNode(program: Command, resolve: () => Promise<Resolved>): void {
     const node = program.command('node').description('nodes of the open scene');
 
     node
         .command('get <path>')
         .description('name, state and components of a node')
-        .action((target: string) => withClient(resolve, client => nodeGet(client, target)));
+        .action((target: string) => withClient(resolve, client => nodeGet(client, { target })));
 
     node
         .command('create')
@@ -317,9 +332,7 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
                 parent: options.parent,
                 name: options.name,
                 components: options.component,
-                pos: options.pos
-                    ? options.pos.split(',').map(Number) as [number, number, number]
-                    : undefined
+                pos: vec3Flag('--pos', options.pos)
             })));
 
     node
@@ -333,23 +346,15 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
         .option('--scale <x,y,z>', 'local scale')
         .action((target: string, options: {
             name?: string; active?: string; layer?: string; pos?: string; rot?: string; scale?: string
-        }) => withClient(resolve, client => {
-            if (options.active !== undefined && options.active !== 'true' && options.active !== 'false') {
-                throw new Error(`--active takes true or false; got ${JSON.stringify(options.active)}`);
-            }
-            const layer = options.layer === undefined ? undefined : Number(options.layer);
-            if (layer !== undefined && !Number.isFinite(layer)) {
-                throw new Error(`--layer takes a number; got ${JSON.stringify(options.layer)}`);
-            }
-            return nodeSet(client, target, {
-                name: options.name,
-                active: options.active === undefined ? undefined : options.active === 'true',
-                layer,
-                position: options.pos === undefined ? undefined : parseVec3(options.pos),
-                rotation: options.rot === undefined ? undefined : parseVec3(options.rot),
-                scale: options.scale === undefined ? undefined : parseVec3(options.scale)
-            });
-        }));
+        }) => withClient(resolve, client => nodeSet(client, {
+            target,
+            name: options.name,
+            active: booleanFlag('--active', options.active),
+            layer: numberFlag('--layer', options.layer),
+            position: vec3PartsFlag('--pos', options.pos),
+            rotation: vec3PartsFlag('--rot', options.rot),
+            scale: vec3PartsFlag('--scale', options.scale)
+        })));
 
     node
         .command('mv <path>')
@@ -357,21 +362,18 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
         .requiredOption('--parent <path>', 'new parent')
         .option('--keep-world', 'keep the world transform instead of the local one')
         .action((target: string, options: { parent: string; keepWorld?: boolean }) =>
-            withClient(resolve, client =>
-                nodeMove(client, target, options.parent, options.keepWorld === true)));
+            withClient(resolve, client => nodeMove(client, {
+                target, parent: options.parent, keepWorldTransform: options.keepWorld === true
+            })));
 
     node
         .command('dup <path>')
         .description('duplicate a node with its subtree, as a sibling of the original')
         .action((target: string) =>
-            withClient(resolve, client => nodeDuplicate(client, target)));
+            withClient(resolve, client => nodeDuplicate(client, { target })));
 
     node
         .command('rm <path>')
         .description('remove a node')
-        .action((target: string) => withClient(resolve, async client => {
-            const uuid = await resolveNode(client, target);
-            await client.editor.scene.removeNode({ uuid });
-            return { kind: 'action', verdict: 'ok', summary: `removed ${target}` };
-        }));
+        .action((target: string) => withClient(resolve, client => nodeRemove(client, { target })));
 }

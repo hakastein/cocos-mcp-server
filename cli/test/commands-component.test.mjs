@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { componentSet } from '../src/commands/component.ts';
+import {
+    componentAdd, componentGet, componentRemove, componentSet
+} from '../src/commands/component.ts';
 import { present } from '../src/render/present.ts';
 import { MemoryDriver } from '../src/driver/memory.ts';
 
@@ -190,4 +192,74 @@ test('an asset is not looked up by node name — refused before the write', asyn
             { node: 'Canvas/Bg', component: 'Sprite', property: 'spriteFrame', value: 'Canvas/Bg' }),
         /db:/);
     assert.ok(!driver.calls.some(call => call.name === 'scene.setProperty'));
+});
+
+const FAST = { timeoutMs: 30, intervalMs: 5 };
+
+const withGuard = () => new MemoryDriver({
+    nodes: [{ name: 'Guard', components: [{ type: 'cc.Sprite' }] }],
+    classes: ['cc.Sprite', 'cc.Camera']
+});
+
+test('add names the class the engine registered, not the spelling that was typed', async () => {
+    const driver = withGuard();
+    const output = present(await componentAdd(driver, {
+        node: 'Guard', component: 'Camera', poll: FAST
+    }));
+    assert.match(output.stdout, /^ok {2}cc\.Camera added to Guard/);
+    assert.ok(driver.componentsOf(driver.uuidOf('Guard')).some(one => one.type === 'cc.Camera'));
+});
+
+test('a class already on the node is said to be already there rather than added twice', async () => {
+    const driver = withGuard();
+    const output = present(await componentAdd(driver, {
+        node: 'Guard', component: 'cc.Sprite', poll: FAST
+    }));
+    assert.match(output.stdout, /already on Guard/);
+    assert.equal(driver.componentsOf(driver.uuidOf('Guard')).length, 1);
+});
+
+test('a class the engine never registered is refused rather than reported as added', async () => {
+    const driver = new MemoryDriver({ nodes: [{ name: 'Guard' }], classes: [] });
+    await assert.rejects(
+        () => componentAdd(driver, { node: 'Guard', component: 'Nope', poll: FAST }), /Nope/);
+});
+
+// `remove-component` takes the component's own uuid, which the node dump does not carry — only the
+// class-owner listing does, and a removal aimed at the node uuid would take the wrong thing.
+test('rm reaches the editor with the component uuid the owner listing named', async () => {
+    const driver = withGuard();
+    const nodeUuid = driver.uuidOf('Guard');
+    const componentUuid = driver.componentsOf(nodeUuid)[0].uuid;
+    const output = present(await componentRemove(driver, { node: 'Guard', component: 'cc.Sprite' }));
+    assert.match(output.stdout, /^ok {2}cc\.Sprite removed from Guard/);
+    assert.equal(driver.calls.find(call => call.name === 'scene.removeComponent').args[0].uuid,
+        componentUuid);
+    assert.equal(driver.componentsOf(nodeUuid).length, 0);
+});
+
+test('a class the node does not carry is refused, naming what it does carry', async () => {
+    await assert.rejects(
+        () => componentRemove(withGuard(), { node: 'Guard', component: 'cc.Camera' }),
+        /cc\.Sprite/);
+});
+
+test('get reads the properties of a component the way the inspector holds them', async () => {
+    const output = present(await componentGet(new MemoryDriver(spriteScene()),
+        { node: 'Canvas/Bg', component: 'Sprite' }));
+    assert.match(output.stdout, /color/);
+    assert.match(output.stderr, /cc\.Sprite/);
+});
+
+test('--prop prints that one value bare, for a shell to read', async () => {
+    const output = present(await componentGet(new MemoryDriver(spriteScene()),
+        { node: 'Canvas/Bg', component: 'Sprite', property: 'color' }));
+    assert.equal(output.stdout, '#ffffffff');
+});
+
+test('a property the component does not declare is refused, naming the ones it has', async () => {
+    await assert.rejects(
+        () => componentGet(new MemoryDriver(spriteScene()),
+            { node: 'Canvas/Bg', component: 'Sprite', property: 'tint' }),
+        /no property 'tint'.*color/s);
 });

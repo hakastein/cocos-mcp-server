@@ -101,10 +101,17 @@ export class MemoryAssetDb {
             name,
             uuid,
             url,
-            type: dot > 0 ? `cc.${name.slice(dot + 1)}` : 'cc.Asset',
+            type: dot > 0 ? assetType(name.slice(dot + 1)) : 'cc.Asset',
             imported: true,
             isDirectory: dot <= 0,
             mtime: this.clock++
         };
     }
+}
+
+/** The editor names a prefab `cc.Prefab`; the extension it is spelled with is lower case. */
+function assetType(extension: string): string {
+    return extension.toLowerCase() === 'prefab'
+        ? 'cc.Prefab'
+        : `cc.${extension}`;
 }

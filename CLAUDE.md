@@ -110,6 +110,7 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/driver/memory.ts` | `MemoryDriver implements Driver` — the same seam over a scene held as data, so a command's writes read back. The scene is the test's own input: nodes with components, descriptors in the editor's dump shape, `classes` for what the engine registers, `refuses` for a message that says no, and a node's `prefab` block for what the next load rebuilds — a write inside an instance records the override the editor would record. A primitive it does not model refuses by name |
 | `cli/src/driver/memory-assets.ts` | `MemoryAssetDb` — the asset half of that seam, a database held as data: the `db://` glob, and the move/copy/create/delete that rename on conflict the way the editor does |
 | `cli/src/commands/shared.ts` | `withClient` (resolve → run → present → close) and `emit`, the one place command output touches `stdout`/`stderr`; plus `unwrap` (`SceneResult<T>` → value or thrown error) |
+| `cli/src/commands/flags.ts` | the coercions an `.action()` body applies to the text Commander hands through — `booleanFlag`, `numberFlag`, `vec3Flag` (all three axes, for a node being created), `vec3PartsFlag` (an empty axis keeps its value), `jsonFlag` |
 | `cli/src/undo-bracket.ts` | `withUndoBracket` — one write wrapped in one undo step, `undoNote` when the editor refused or left it open |
 | `cli/src/node-snapshot.ts` | the editor's descriptor-wrapped node dump projected to what a write reads back |
 | `cli/src/node-transform.ts` | `parseVec3` (an empty axis keeps its value), and the 2D-node clamp that zeroes `position.z` / `rotation.x,y` and says which value it destroyed |
@@ -272,12 +273,19 @@ rendered empty.
    => Promise<Resolved>)` that does `program.command('<group>').description(...)` and attaches
    subcommands with Commander's own `.command()`/`.option()`/`.requiredOption()`/`.action()` —
    `scene.ts`, `node.ts`, `component.ts` are the shape to copy.
-2. Every action body runs through `withClient(resolve, async client => { ...; return { stdout,
-   stderr }; })` from `commands/shared.ts` — it is the one place that resolves the connection, closes
-   it in every branch (success or thrown), and turns a thrown `Error` into `process.exitCode =
-   EXIT.FAILED` on `stderr`. An action returns a `Report` (`cli/src/render/present.ts`); it
-   assembles neither stream nor the exit code, and never calls `process.stdout.write` itself.
-   A `--json` option is handed to `withClient` as its third argument.
+2. **The subcommand itself is an exported `(client: Driver, spec) => Promise<Report>`**, one per
+   subcommand, and `spec` is one object carrying everything the command takes. That function is what
+   a test calls; nothing a command decides lives in a Commander callback, because nothing reaches
+   that callback except through `parseAsync(argv)`. The three subcommands that take nothing
+   (`scene info`, `scene save`, `asset ready`) are `(client) => Promise<Report>`.
+   The `.action()` body is then wiring and nothing else: turn the typed text into values through
+   `commands/flags.ts` (`booleanFlag`, `numberFlag`, `vec3Flag`, `vec3PartsFlag`, `jsonFlag` —
+   `asset.ts`'s `waitOptions` is the same thing for `--timeout`/`--quiet-for`), and hand the spec to
+   `withClient(resolve, client => xxx(client, spec))` from `commands/shared.ts`. `withClient` is the
+   one place that resolves the connection, closes it in every branch (success or thrown), and turns
+   a thrown `Error` into `process.exitCode = EXIT.FAILED` on `stderr`. A command answers a `Report`
+   (`cli/src/render/present.ts`); it assembles neither stream nor the exit code, and never calls
+   `process.stdout.write` itself. A `--json` option is handed to `withClient` as its third argument.
 3. Call a primitive as `client.editor.<group>.<method>(...)` or `client.scene.call('<method>', ...)`
    — the latter is typed against `SceneMethods`, so a signature drift is a compile error. Use
    `unwrap()` from `commands/shared.ts` when the command needs the scene script's `data` rather than

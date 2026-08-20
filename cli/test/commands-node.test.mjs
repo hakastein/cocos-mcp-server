@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    nodeCreate, nodeDuplicate, nodeGet, nodeMove, nodeSet, resolveNode
+    nodeCreate, nodeDuplicate, nodeGet, nodeMove, nodeRemove, nodeSet, resolveNode
 } from '../src/commands/node.ts';
 import { present } from '../src/render/present.ts';
 import { MemoryDriver } from '../src/driver/memory.ts';
@@ -61,14 +61,14 @@ test('a node name of the same length and alphabet as a uuid still resolves as a 
 });
 
 test('get answers one line with the name, the state and the components', async () => {
-    const text = await printed(nodeGet(scene(), 'Canvas/Bg'));
+    const text = await printed(nodeGet(scene(), { target: 'Canvas/Bg' }));
     assert.match(text, /Bg/);
     assert.match(text, /Sprite/);
 });
 
 test('creating with a component fits in one undo bracket', async () => {
     const driver = scene();
-    await nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Sprite'] }, FAST);
+    await nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Sprite'], poll: FAST });
     const names = driver.calls.map(call => call.name);
     assert.equal(names[0], 'resolveNodePaths');
     assert.equal(names[1], 'scene.beginRecording');
@@ -80,21 +80,21 @@ test('creating with a component fits in one undo bracket', async () => {
 test('the report names the registered component name rather than the one asked for (L3)', async () => {
     const driver = scene({ classes: ['cc.MeshRenderer'] });
     const text = await printed(nodeCreate(
-        driver, { parent: 'Canvas/Bg', name: 'New', components: ['MeshRenderer'] }, FAST));
+        driver, { parent: 'Canvas/Bg', name: 'New', components: ['MeshRenderer'], poll: FAST }));
     assert.match(text, /\[cc\.MeshRenderer\]/);
 });
 
 test('a component the engine never registered is refused rather than passed off as ok', async () => {
     await assert.rejects(
         () => nodeCreate(scene({ classes: [] }),
-            { parent: 'Canvas/Bg', name: 'New', components: ['Nope'] }, FAST),
+            { parent: 'Canvas/Bg', name: 'New', components: ['Nope'], poll: FAST }),
         /Nope/);
 });
 
 test('a failure while adding a component drops the bracket instead of leaving it open', async () => {
     const driver = scene({ classes: [] });
     await assert.rejects(
-        () => nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Nope'] }, FAST));
+        () => nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: ['Nope'], poll: FAST }));
     assert.equal(called(driver, 'scene.cancelRecording').length, 1);
 });
 
@@ -102,14 +102,14 @@ test('get marks an inactive node and a disabled component as (off)', async () =>
     const driver = new MemoryDriver({
         nodes: [{ name: 'Bg', active: false, components: [{ type: 'Sprite', enabled: false }] }]
     });
-    const text = await printed(nodeGet(driver, 'Bg'));
+    const text = await printed(nodeGet(driver, { target: 'Bg' }));
     assert.match(text, /Bg {2}\(off\)/);
     assert.match(text, /Sprite\(off\)/);
 });
 
 test('creating with a position writes it inside that same undo bracket, not after it', async () => {
     const driver = scene();
-    await nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: [], pos: [1, 2, 3] });
+    await nodeCreate(driver, { parent: 'Canvas/Bg', name: 'New', components: [], pos: { x: 1, y: 2, z: 3 } });
     const names = driver.calls.map(call => call.name);
     const beginIdx = names.indexOf('scene.beginRecording');
     const endIdx = names.indexOf('scene.endRecording');
@@ -132,7 +132,7 @@ const instanced = (prefab) => new MemoryDriver({
 });
 
 test('a write to a plain node is proven to survive a save', async () => {
-    const output = present(await nodeSet(guard(), 'Environment/Guard', { position: { x: 1, y: 2, z: 3 } }, FAST));
+    const output = present(await nodeSet(guard(), { target: 'Environment/Guard', position: { x: 1, y: 2, z: 3 }, poll: FAST }));
     assert.match(output.stdout, /^ok/);
     assert.match(output.stdout, /persisted=true/);
     assert.equal(output.failed, false);
@@ -141,26 +141,24 @@ test('a write to a plain node is proven to survive a save', async () => {
 // The defect the unified write report exists for: the scene file carries nothing for a node inside
 // a prefab instance, so without an override the next load rebuilds the old position.
 test('a write inside a prefab instance that records no override is UNPERSISTED', async () => {
-    const output = present(await nodeSet(
-        instanced({ asset: 'p-1' }), 'Environment/cc_scene/Guard', { position: { x: 1, y: 2, z: 3 } }, FAST));
+    const output = present(await nodeSet(instanced({ asset: 'p-1' }), {
+        target: 'Environment/cc_scene/Guard', position: { x: 1, y: 2, z: 3 }, poll: FAST }));
     assert.equal(output.stdout.split('  ')[0], 'UNPERSISTED');
     assert.match(output.stdout, /_lpos/);
     assert.equal(output.failed, true);
 });
 
 test('the same write is ok once the editor records the override that carries it', async () => {
-    const output = present(await nodeSet(
-        instanced({ asset: 'p-1', recordsOverrides: true }), 'Environment/cc_scene/Guard',
-        { position: { x: 1, y: 2, z: 3 } }, FAST));
+    const output = present(await nodeSet(instanced({ asset: 'p-1', recordsOverrides: true }), {
+        target: 'Environment/cc_scene/Guard', position: { x: 1, y: 2, z: 3 }, poll: FAST }));
     assert.match(output.stdout, /^ok/);
     assert.match(output.stdout, /persisted=true/);
     assert.match(output.stdout, /override on Environment\/cc_scene\/Guard/);
 });
 
 test('a prefab whose overrides cannot be read leaves persistence unknown rather than false', async () => {
-    const output = present(await nodeSet(
-        instanced({ asset: 'p-1', readable: false }), 'Environment/cc_scene/Guard',
-        { position: { x: 1, y: 2, z: 3 } }, FAST));
+    const output = present(await nodeSet(instanced({ asset: 'p-1', readable: false }), {
+        target: 'Environment/cc_scene/Guard', position: { x: 1, y: 2, z: 3 }, poll: FAST }));
     assert.match(output.stdout, /persisted=unknown/);
     assert.equal(output.failed, false);
 });
@@ -168,8 +166,8 @@ test('a prefab whose overrides cannot be read leaves persistence unknown rather 
 // The head word is read off the first line, so the worst of the writes has to be there.
 test('several writes lead with the one a save would drop, not with the one that landed', async () => {
     const driver = instanced({ asset: 'p-1' });
-    const output = present(await nodeSet(
-        driver, 'Environment/cc_scene', { name: 'Sentry', position: { x: 1, y: 2, z: 3 } }, FAST));
+    const output = present(await nodeSet(driver, {
+        target: 'Environment/cc_scene', name: 'Sentry', position: { x: 1, y: 2, z: 3 }, poll: FAST }));
     const lines = output.stdout.split('\n');
     assert.equal(lines[0].split('  ')[0], 'UNPERSISTED');
     assert.match(lines[1], /^ {2}\w+ {2}name = "Sentry"/);
@@ -179,7 +177,7 @@ test('several writes lead with the one a save would drop, not with the one that 
 
 test('the instance root keeps its own parent in the file, so a move of it is proven', async () => {
     const driver = guard();
-    const output = present(await nodeMove(driver, 'Environment/Guard', 'Bunker', false, FAST));
+    const output = present(await nodeMove(driver, { target: 'Environment/Guard', parent: 'Bunker', poll: FAST }));
     assert.match(output.stdout, /^ok {2}Environment\/Guard\.parent = "Bunker"/);
     assert.match(output.stdout, /persisted=true/);
     assert.equal(driver.uuidOf('Bunker/Guard'), driver.uuidOf('Bunker/Guard'));
@@ -187,7 +185,7 @@ test('the instance root keeps its own parent in the file, so a move of it is pro
 
 test('a move is one undo step and the copy question is asked of the file, not of the tree', async () => {
     const driver = guard();
-    await nodeMove(driver, 'Environment/Guard', 'Bunker', false, FAST);
+    await nodeMove(driver, { target: 'Environment/Guard', parent: 'Bunker', poll: FAST });
     const names = driver.calls.map(call => call.name);
     assert.ok(names.indexOf('scene.beginRecording') < names.indexOf('scene.setParent'));
     assert.ok(names.indexOf('scene.setParent') < names.indexOf('scene.endRecording'));
@@ -196,7 +194,7 @@ test('a move is one undo step and the copy question is asked of the file, not of
 
 test('a duplicate names the new uuid and answers whether the file will hold it', async () => {
     const driver = guard();
-    const output = present(await nodeDuplicate(driver, 'Environment/Guard', FAST));
+    const output = present(await nodeDuplicate(driver, { target: 'Environment/Guard', poll: FAST }));
     assert.match(output.stdout, /^ok {2}Guard\.parent/);
     assert.match(output.stdout, /copy of Environment\/Guard, uuid \S+/);
     assert.match(output.stdout, /persisted=true/);
@@ -207,15 +205,28 @@ test('a value the node did not take cuts the rest of the writes short', async ()
         nodes: [{ name: 'Guard' }], refuses: { setProperty: 'the node is locked' }
     });
     await assert.rejects(
-        () => nodeSet(driver, 'Guard', { name: 'Sentry', active: false }, FAST), /locked/);
+        () => nodeSet(driver, { target: 'Guard', name: 'Sentry', active: false, poll: FAST }), /locked/);
     assert.equal(called(driver, 'scene.cancelRecording').length, 1);
 });
 
 // The serializer shortens a parent NODE to its uuid and expands the SCENE into its whole record, so
 // without projecting the two onto one spelling every duplicate of a root node reads as UNPERSISTED.
 test('a copy of a root node is proven to survive, not reported as dropped on save', async () => {
-    const output = present(await nodeDuplicate(guard(), 'Bunker', FAST));
+    const output = present(await nodeDuplicate(guard(), { target: 'Bunker', poll: FAST }));
     assert.match(output.stdout, /^ok {2}Bunker\.parent/);
     assert.match(output.stdout, /persisted=true/);
     assert.equal(output.failed, false);
+});
+
+test('rm takes the node out of the scene rather than only reporting that it did', async () => {
+    const driver = guard();
+    const output = present(await nodeRemove(driver, { target: 'Environment/Guard' }));
+    assert.match(output.stdout, /^ok {2}removed Environment\/Guard/);
+    await assert.rejects(() => resolveNode(driver, 'Environment/Guard'));
+});
+
+test('a path rm cannot resolve is refused before the editor is told anything', async () => {
+    const driver = guard();
+    await assert.rejects(() => nodeRemove(driver, { target: 'Nowhere' }), /Nowhere/);
+    assert.equal(called(driver, 'scene.removeNode').length, 0);
 });

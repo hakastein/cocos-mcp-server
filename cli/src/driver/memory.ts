@@ -1,10 +1,11 @@
 import { EDITOR_METHODS, buildPathIndex, resolvePathInIndex } from '@cocos-cli/shared';
 import type {
-    ComponentOwner, ComponentOwnerReport, Driver, DumpedComponent, EditorMethods, NodeDump,
-    NodeInfo, PathIndexNode, PathResolution, PrefabLinkageReport, PrefabOverrideOutcome,
-    PrefabOverrideRecord, PrefabOverrideReport, PropertyDump, ReferenceOutcomeReport,
-    ReferencePlanReport, SceneDump, SceneFacade, SceneInfo, SceneMethods, SceneNodeEntry,
-    SceneResult, SerializedValue, Vec3Like
+    ComponentOwner, ComponentOwnerReport, Driver, DumpedComponent, EditorMethods, GeneratedPrefab,
+    MissingScriptEntry, NodeDump, NodeInfo, PathIndexNode, PathResolution, PrefabAssetDump,
+    PrefabLinkageReport, PrefabOverrideOutcome, PrefabOverrideRecord, PrefabOverrideRemoval,
+    PrefabOverrideReport, PrefabSyncReport, PropertyDump, ReferenceOutcomeReport,
+    ReferencePlanReport, SceneDirtyReport, SceneDump, SceneFacade, SceneInfo, SceneMethods,
+    SceneNodeEntry, SceneResult, SerializedValue, Vec3Like
 } from '@cocos-cli/shared';
 import { isDumpDescriptor, resolveKind } from '../property/kind.ts';
 import { projectValue } from '../property/readers.ts';
@@ -212,9 +213,19 @@ export class MemoryDriver implements Driver {
                     return true;
                 },
                 createNode: async options => {
-                    const parent = this.requireNode(String(options.parent));
-                    const child = this.adopt({ name: String(options.name || 'New Node') }, parent);
-                    parent.children.push(child);
+                    const parent = options.parent === undefined
+                        ? null
+                        : this.requireNode(String(options.parent));
+                    // `createNodeFromAsset` keeps the PrefabInfo only on the `cc.Prefab` branch that
+                    // was not asked to unlink; every other call gets a flat copy, silently.
+                    const linked = options.assetUuid !== undefined
+                        && options.type === 'cc.Prefab' && options.unlinkPrefab !== true;
+                    const child = this.adopt({
+                        name: String(options.name || 'New Node'),
+                        prefab: linked ? { asset: String(options.assetUuid) } : undefined,
+                        position: dumpedPosition(options)
+                    }, parent);
+                    (parent ? parent.children : this.roots).push(child);
                     return child.uuid;
                 },
                 setParent: async ({ parent, uuids }) => {
@@ -239,6 +250,25 @@ export class MemoryDriver implements Driver {
                     const node = this.requireNode(options.uuid);
                     if (this.registers(options.component)) this.attach(node, { type: options.component });
                 },
+                removeComponent: async ({ uuid }) => {
+                    for (const node of this.everyNode()) {
+                        const at = node.components.findIndex(component => component.uuid === uuid);
+                        if (at >= 0) { node.components.splice(at, 1); return; }
+                    }
+                    throw new Error(`no component ${uuid} is in the open scene`);
+                },
+                removeNode: async ({ uuid }) => {
+                    const node = this.requireNode(String(uuid));
+                    const siblings = node.parent ? node.parent.children : this.roots;
+                    siblings.splice(siblings.indexOf(node), 1);
+                    const forget = (gone: LiveNode) => {
+                        this.byUuid.delete(gone.uuid);
+                        gone.children.forEach(forget);
+                    };
+                    forget(node);
+                },
+                openScene: async () => undefined,
+                saveScene: async () => undefined,
                 beginRecording: async () => {
                     if (this.refuses.beginRecording) throw new Error(this.refuses.beginRecording);
                     return `undo-${this.calls.length}`;
@@ -323,7 +353,22 @@ export class MemoryDriver implements Driver {
             serializedNodeValue: ([uuid, property]) =>
                 this.serializedNode(uuid as string, property as string),
             nodePrefabLinkage: ([uuid]) => this.prefabLinkage(uuid as string),
-            listPrefabOverrides: ([uuid]) => this.prefabOverrides(uuid as string)
+            listPrefabOverrides: ([uuid]) => this.prefabOverrides(uuid as string),
+            removePrefabOverride: ([uuid, property, localID, index]) => this.removeOverride(
+                uuid as string, property as string, localID as string | undefined,
+                index as number | undefined),
+            applyPrefabToAsset: ([uuid]) => this.prefabSync(uuid as string),
+            revertPrefabInstance: ([uuid]) => this.prefabSync(uuid as string),
+            createPrefabFromNode2: ([uuid]) => this.generatedPrefab(uuid as string),
+            dumpPrefabAsset: ([uuid]) => this.prefabAssetDump(uuid as string),
+            sceneDirtyAgainstDisk: () => ({
+                success: true,
+                data: (this.spec && this.spec.dirty)
+                    || { differsFromDisk: false, scenePath: null, diffs: [] }
+            }),
+            dumpMissingScripts: () => ({
+                success: true, data: { entries: (this.spec && this.spec.missingScripts) || [] }
+            })
         };
 
         return <K extends keyof SceneMethods>(method: K, ...args: Parameters<SceneMethods[K]>) => {
@@ -588,6 +633,67 @@ export class MemoryDriver implements Driver {
         };
     }
 
+    /**
+     * `index` is the position in the WHOLE override list, the way the scene script reads it, and an
+     * ambiguous property with neither `index` nor `localID` is refused rather than resolved to the
+     * first match — a caller that removed the wrong override would never learn of it.
+     */
+    private removeOverride(
+        uuid: string, property: string, localID?: string, index?: number
+    ): SceneResult<PrefabOverrideRemoval> {
+        const node = this.requireNode(uuid);
+        const records = this.overrides.get(node.uuid) || [];
+        const matching = records.filter((record, at) => {
+            if (index !== undefined && at !== index) return false;
+            if (record.propertyPath !== property) return false;
+            const chain = record.localID || [];
+            return !localID || chain[chain.length - 1] === localID;
+        });
+        if (!matching.length) {
+            return { success: false, error: `no override of '${property}' is on '${node.name}'` };
+        }
+        if (matching.length > 1) {
+            return {
+                success: false,
+                error: `'${property}' matches ${matching.length} overrides — pass localID or index`
+            };
+        }
+        const removed = matching[0];
+        records.splice(records.indexOf(removed), 1);
+        return { success: true, data: { nodeUuid: node.uuid, removed, remaining: records.length } };
+    }
+
+    /** `apply` and `revert` answer the same shape, and both leave the memory scene as it was: what a
+     * command decides about either is read off the answer, never off the tree. */
+    private prefabSync(uuid: string): SceneResult<PrefabSyncReport> {
+        const node = this.requireNode(uuid);
+        if (!node.prefab) return { success: false, error: `Node '${node.name}' carries no PrefabInstance` };
+        return {
+            success: true,
+            data: {
+                nodeUuid: node.uuid,
+                nodeName: node.name,
+                prefabAsset: node.prefab.asset,
+                instanceRoot: true,
+                accepted: node.prefab.syncAccepted === undefined ? true : node.prefab.syncAccepted
+            }
+        };
+    }
+
+    private generatedPrefab(uuid: string): SceneResult<GeneratedPrefab> {
+        const node = this.requireNode(uuid);
+        return {
+            success: true,
+            data: { prefabData: `[serialized ${node.name}]`, nodeName: node.name }
+        };
+    }
+
+    private prefabAssetDump(prefabUuid: string): SceneResult<PrefabAssetDump> {
+        const dump = ((this.spec && this.spec.prefabAssets) || {})[prefabUuid];
+        if (!dump) return { success: false, error: `no prefab asset ${prefabUuid} could be read` };
+        return { success: true, data: dump };
+    }
+
     /** A copy is built through `adopt`, so it gets its own uuids and file ids just as the original did. */
     private asSpec(node: LiveNode): MemoryNode {
         return {
@@ -734,6 +840,8 @@ export interface MemoryPrefabInstance {
     readable?: boolean;
     /** Whether the editor records an override; without one the next load rebuilds the asset's value. */
     recordsOverrides?: boolean;
+    /** What `apply`/`revert` answer as `accepted`; `null` is the editor not saying either way. */
+    syncAccepted?: boolean | null;
 }
 
 export interface MemoryNode {
@@ -765,6 +873,11 @@ export interface MemoryScene {
     /** The class names the engine registers; a scene naming none registers every spelling. */
     classes?: string[];
     refuses?: MemoryRefusals;
+    /** What the scene answers when asked how it differs from the file on disk. */
+    dirty?: SceneDirtyReport;
+    missingScripts?: MissingScriptEntry[];
+    /** Prefab asset uuid → the dump `dumpPrefabAsset` answers for it. */
+    prefabAssets?: Record<string, PrefabAssetDump>;
 }
 
 interface LiveComponent {
@@ -801,6 +914,11 @@ interface ReferenceArgs {
 }
 
 type ModelledEditor = { [G in keyof EditorMethods]?: Partial<EditorMethods[G]> };
+
+function dumpedPosition(options: unknown): Vec3Like | undefined {
+    const dump = (options as { dump?: { position?: { value?: Vec3Like } } }).dump;
+    return dump && dump.position && dump.position.value ? dump.position.value : undefined;
+}
 
 /** 1 << 30, the value of cc.Layers.Enum.DEFAULT. */
 const LAYER_DEFAULT = 1073741824;

@@ -2,6 +2,7 @@ import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
 import { settle } from '../settle.ts';
 import { withClient } from './shared.ts';
+import { numberFlag } from './flags.ts';
 import {
     ASSET_TYPES, assetQuery, commonAssetFolder, requireAssetUrl, selectAssets
 } from '../asset/query.ts';
@@ -29,10 +30,13 @@ export interface WaitOptions {
     now: () => number;
 }
 
-function waitOptions(options: { timeout?: string; quietFor?: string }): WaitOptions {
+/** `--timeout` is in seconds because a wait a human types is in seconds; everything below is in ms. */
+export function waitOptions(options: { timeout?: string; quietFor?: string }): WaitOptions {
+    const timeoutSeconds = numberFlag('--timeout', options.timeout);
+    const quietForMs = numberFlag('--quiet-for', options.quietFor);
     return {
-        timeoutMs: options.timeout === undefined ? WAIT.timeoutMs : Number(options.timeout) * 1000,
-        quietForMs: options.quietFor === undefined ? WAIT.quietForMs : Number(options.quietFor),
+        timeoutMs: timeoutSeconds === undefined ? WAIT.timeoutMs : timeoutSeconds * 1000,
+        quietForMs: quietForMs === undefined ? WAIT.quietForMs : quietForMs,
         intervalMs: WAIT.intervalMs,
         now: () => Date.now()
     };
@@ -158,14 +162,14 @@ async function whereIs(client: Driver, uuid: string): Promise<string | null> {
 }
 
 export async function assetRefresh(
-    client: Driver, target: string, options: WaitOptions
+    client: Driver, spec: { target: string } & WaitOptions
 ): Promise<Report> {
-    const url = requireAssetUrl(target, 'the folder to refresh');
+    const url = requireAssetUrl(spec.target, 'the folder to refresh');
     const before = await snapshot(client, url);
     await client.editor.assetDb.refreshAsset(url);
     return outputOf(await afterOperation(client, {
         action: 'refreshed', target: url, scope: url, landing: () => addressOf(client, url)
-    }, before, options), options);
+    }, before, spec), spec);
 }
 
 /** The address itself, when the database still knows it; a folder that vanished answers `null`. */
@@ -175,9 +179,9 @@ async function addressOf(client: Driver, url: string): Promise<string | null> {
 }
 
 export async function assetReimport(
-    client: Driver, target: string, options: WaitOptions
+    client: Driver, spec: { target: string } & WaitOptions
 ): Promise<Report> {
-    const url = requireAssetUrl(target, 'the asset to reimport');
+    const url = requireAssetUrl(spec.target, 'the asset to reimport');
     if (!await queryOne(client, url)) {
         throw new Error(`the asset database does not know '${url}'; if the file appeared on disk past the `
             + `editor, run 'cocos asset refresh <folder>' first`);
@@ -186,56 +190,67 @@ export async function assetReimport(
     await client.editor.assetDb.reimportAsset(url);
     return outputOf(await afterOperation(client, {
         action: 'reimported', target: url, scope: url, landing: () => addressOf(client, url)
-    }, before, options), options);
+    }, before, spec), spec);
 }
 
 export async function assetMove(
-    client: Driver, source: string, target: string,
-    options: WaitOptions & { overwrite?: boolean }
+    client: Driver, spec: { source: string; target: string; overwrite?: boolean } & WaitOptions
 ): Promise<Report> {
-    const from = requireAssetUrl(source, 'the source asset');
-    const to = requireAssetUrl(target, 'the target address');
+    const from = requireAssetUrl(spec.source, 'the source asset');
+    const to = requireAssetUrl(spec.target, 'the target address');
     const moving = await requireOne(client, from);
 
     const scope = commonAssetFolder(from, to);
     const before = await snapshot(client, scope);
     await client.editor.assetDb.moveAsset(from, to, {
-        overwrite: options.overwrite === true, rename: options.overwrite !== true
+        overwrite: spec.overwrite === true, rename: spec.overwrite !== true
     });
 
     const settledReport = await afterOperation(client, {
         action: `moved from ${from}`, target: to, scope,
         landing: () => whereIs(client, moving.uuid)
-    }, before, options);
+    }, before, spec);
 
     const report: AssetReport = settledReport.landedAt === null
         ? { ...settledReport, failure: `${from} is at no address in the database after the move` }
         : settledReport;
-    return outputOf(report, options,
+    return outputOf(report, spec,
         'a uuid survives the move, and absolute db:// paths inside an importer .meta do not: '
             + 'materialDumpDir on a model with dumped materials keeps naming the old folder');
 }
 
 export async function assetGet(
-    client: Driver, target: string, options: { field?: string }
+    client: Driver, spec: { target: string; field?: string }
 ): Promise<Report> {
-    return { kind: 'assetInfo', asset: await requireOne(client, target), field: options.field };
+    return { kind: 'assetInfo', asset: await requireOne(client, spec.target), field: spec.field };
 }
 
-export async function assetList(
-    client: Driver, folder: string,
-    options: { type?: string; name?: string; exact?: boolean; max?: string }
-): Promise<Report> {
-    const root = requireAssetUrl(folder, 'the folder to search');
-    const type = (options.type || 'all') as AssetType;
+export interface ListSpec {
+    folder?: string;
+    type?: string;
+    name?: string;
+    exact?: boolean;
+    max?: number;
+}
+
+export async function assetList(client: Driver, spec: ListSpec): Promise<Report> {
+    const root = requireAssetUrl(spec.folder || DEFAULT_FOLDER, 'the folder to search');
+    const type = (spec.type || 'all') as AssetType;
     if (ASSET_TYPES.indexOf(type) === -1) {
         throw new Error(`asset type '${type}' is not known; the known ones: ${ASSET_TYPES.join(', ')}`);
     }
-    const maxResults = options.max === undefined ? DEFAULT_MAX_RESULTS : Number(options.max);
     const selection = selectAssets(await queryAssets(client, assetQuery(root, type)), {
-        name: options.name, exactMatch: options.exact === true, maxResults
+        name: spec.name, exactMatch: spec.exact === true,
+        maxResults: spec.max === undefined ? DEFAULT_MAX_RESULTS : spec.max
     });
     return { kind: 'assetList', assets: selection.assets, total: selection.total };
+}
+
+export async function assetReady(client: Driver): Promise<Report> {
+    const ready = await client.editor.assetDb.queryReady();
+    return ready === true
+        ? { kind: 'action', verdict: 'ok', summary: 'the asset database is ready' }
+        : { kind: 'action', verdict: 'FAILED', summary: 'the asset database is not ready yet' };
 }
 
 /**
@@ -244,33 +259,32 @@ export async function assetList(
  * asked for can still hold the original, and the copy is then wherever the database gained one.
  */
 export async function assetCopy(
-    client: Driver, source: string, target: string,
-    options: WaitOptions & { overwrite?: boolean }
+    client: Driver, spec: { source: string; target: string; overwrite?: boolean } & WaitOptions
 ): Promise<Report> {
-    const from = requireAssetUrl(source, 'the source asset');
-    const to = requireAssetUrl(target, 'the target address');
+    const from = requireAssetUrl(spec.source, 'the source asset');
+    const to = requireAssetUrl(spec.target, 'the target address');
     await requireOne(client, from);
 
     const scope = commonAssetFolder(from, to);
     const before = await snapshot(client, scope);
     await client.editor.assetDb.copyAsset(from, to, {
-        overwrite: options.overwrite === true, rename: options.overwrite !== true
+        overwrite: spec.overwrite === true, rename: spec.overwrite !== true
     });
 
     const report = await afterOperation(client, {
         action: `copied from ${from}`, target: to, scope,
         landing: settledReport => copiedAddress(to, settledReport.assets.added)
-    }, before, options);
+    }, before, spec);
 
     return outputOf(report.landedAt === null
         ? { ...report, failure: `no copy of ${from} appeared in the database` }
-        : report, options);
+        : report, spec);
 }
 
 export async function assetRemove(
-    client: Driver, target: string, options: WaitOptions
+    client: Driver, spec: { target: string } & WaitOptions
 ): Promise<Report> {
-    const url = requireAssetUrl(target, 'the asset to delete');
+    const url = requireAssetUrl(spec.target, 'the asset to delete');
     const existing = await requireOne(client, url);
     const before = await snapshot(client, url);
     await client.editor.assetDb.deleteAsset(url);
@@ -278,28 +292,28 @@ export async function assetRemove(
     const report = await afterOperation(client, {
         action: `deleted ${existing.uuid}`, target: url, scope: url,
         landing: () => whereIs(client, existing.uuid)
-    }, before, options);
+    }, before, spec);
 
     return outputOf(report.landedAt === null
         ? report
-        : { ...report, failure: `${existing.uuid} is still at ${report.landedAt}` }, options);
+        : { ...report, failure: `${existing.uuid} is still at ${report.landedAt}` }, spec);
 }
 
 export async function assetMkdir(
-    client: Driver, folder: string, options: WaitOptions
+    client: Driver, spec: { folder: string } & WaitOptions
 ): Promise<Report> {
-    const url = requireAssetUrl(folder, 'the folder to create');
+    const url = requireAssetUrl(spec.folder, 'the folder to create');
     const before = await snapshot(client, url);
     await client.editor.assetDb.createAsset(url, null);
 
     const report = await afterOperation(client, {
         action: 'created', target: url, scope: url, landing: () => addressOf(client, url)
-    }, before, options);
+    }, before, spec);
     if (report.landedAt === null) {
-        return outputOf({ ...report, failure: `${url} did not appear in the database` }, options);
+        return outputOf({ ...report, failure: `${url} did not appear in the database` }, spec);
     }
     const created = await queryOne(client, url);
-    return outputOf(report, options,
+    return outputOf(report, spec,
         created && created.isDirectory === true ? undefined : `${url} is not a folder`);
 }
 
@@ -318,7 +332,8 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
         .option('--field <name>', 'print one field as a bare value')
         .option('--json', 'print the structural form instead of text')
         .action((target: string, options: { field?: string; json?: boolean }) =>
-            withClient(resolve, client => assetGet(client, target, options), { json: options.json }));
+            withClient(resolve, client => assetGet(client, { target, field: options.field }),
+                { json: options.json }));
 
     asset
         .command('ls [folder]')
@@ -331,22 +346,27 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
         .option('--json', 'print the structural form instead of text')
         .action((folder: string | undefined, options: {
             type?: string; name?: string; exact?: boolean; max?: string; json?: boolean
-        }) => withClient(
-            resolve, client => assetList(client, folder || DEFAULT_FOLDER, options),
-            { json: options.json }));
+        }) => withClient(resolve, client => assetList(client, {
+            folder, type: options.type, name: options.name, exact: options.exact,
+            max: numberFlag('--max', options.max)
+        }), { json: options.json }));
 
     waitFlags(asset
         .command('refresh <folder>')
         .description('rescan a folder and wait for the import to finish — this is what carries an edit '
             + 'made past the editor into the project'))
         .action((folder: string, options: { timeout?: string; quietFor?: string }) =>
-            withClient(resolve, client => assetRefresh(client, folder, waitOptions(options))));
+            withClient(resolve, client => assetRefresh(client, {
+                target: folder, ...waitOptions(options)
+            })));
 
     waitFlags(asset
         .command('reimport <path>')
         .description('rerun the importer on one asset and wait for it to finish'))
         .action((target: string, options: { timeout?: string; quietFor?: string }) =>
-            withClient(resolve, client => assetReimport(client, target, waitOptions(options))));
+            withClient(resolve, client => assetReimport(client, {
+                target, ...waitOptions(options)
+            })));
 
     waitFlags(asset
         .command('mv <source> <target>')
@@ -354,8 +374,9 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
         .option('--overwrite', 'replace a taken address instead of renaming'))
         .action((source: string, target: string, options: {
             overwrite?: boolean; timeout?: string; quietFor?: string
-        }) => withClient(resolve, client => assetMove(
-            client, source, target, { ...waitOptions(options), overwrite: options.overwrite })));
+        }) => withClient(resolve, client => assetMove(client, {
+            source, target, overwrite: options.overwrite, ...waitOptions(options)
+        })));
 
     waitFlags(asset
         .command('cp <source> <target>')
@@ -364,28 +385,24 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
         .option('--overwrite', 'replace a taken address instead of renaming'))
         .action((source: string, target: string, options: {
             overwrite?: boolean; timeout?: string; quietFor?: string
-        }) => withClient(resolve, client => assetCopy(
-            client, source, target, { ...waitOptions(options), overwrite: options.overwrite })));
+        }) => withClient(resolve, client => assetCopy(client, {
+            source, target, overwrite: options.overwrite, ...waitOptions(options)
+        })));
 
     waitFlags(asset
         .command('rm <path>')
         .description('delete an asset or a whole folder and wait for the database to settle'))
         .action((target: string, options: { timeout?: string; quietFor?: string }) =>
-            withClient(resolve, client => assetRemove(client, target, waitOptions(options))));
+            withClient(resolve, client => assetRemove(client, { target, ...waitOptions(options) })));
 
     waitFlags(asset
         .command('mkdir <folder>')
         .description('create a folder in the asset database and wait for it to be imported'))
         .action((folder: string, options: { timeout?: string; quietFor?: string }) =>
-            withClient(resolve, client => assetMkdir(client, folder, waitOptions(options))));
+            withClient(resolve, client => assetMkdir(client, { folder, ...waitOptions(options) })));
 
     asset
         .command('ready')
         .description('whether the asset database finished starting up — anything read before that is about a half-imported project')
-        .action(() => withClient(resolve, async client => {
-            const ready = await client.editor.assetDb.queryReady();
-            return ready === true
-                ? { kind: 'action', verdict: 'ok', summary: 'the asset database is ready' }
-                : { kind: 'action', verdict: 'FAILED', summary: 'the asset database is not ready yet' };
-        }));
+        .action(() => withClient(resolve, assetReady));
 }
