@@ -40,6 +40,26 @@ handling a token yourself.
 
 An issue id is `PLY-123`; that id is what a branch name, a commit message and a spec carry.
 
+## Closing a ticket you implemented
+
+Applies to **any** skill that implements a ticket, `/implement` included — not only `/wayfinder`.
+A ticket whose work is committed is not finished until its tracker row says so; leaving the state
+for the human to flip means the frontier query below still offers work that is already done.
+
+Three steps, in order:
+
+1. `yt issues comments add <id> "..."` — what was decided that the ticket body did not carry, and
+   what the verification actually returned. A decision made during the work and recorded nowhere is
+   a decision that gets remade.
+2. `yt issues move <id> --state Done` — `Done` is the resolved state this project offers
+   (`To do` / `In Progress` / `Done`).
+3. If the ticket is a child of a wayfinder map, append a context pointer to the map's
+   Decisions-so-far, and delete from the map's *Not yet specified* anything the ticket settled.
+
+Do not ask permission for any of the three. A refusal to close is only warranted when part of the
+ticket's scope is genuinely unfinished — and then say which part, rather than leaving the state
+ambiguous.
+
 ## Pull requests as a request surface
 
 **No.** Requests are tracked in YouTrack; GitHub PRs and GitHub issues are outside the triage queue.

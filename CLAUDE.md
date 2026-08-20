@@ -300,6 +300,11 @@ command is always reachable — there is no per-primitive or per-command enable/
 Issues live in YouTrack project `PLY`, driven with the `yt` CLI (`youtrack-cli`).
 See `docs/agents/issue-tracker.md`.
 
+**A ticket you implemented gets closed in the same run** — comment, `--state Done`, and a pointer in
+the parent map. `/implement` stops at the commit and says nothing about the tracker, so this step
+belongs to whoever ran it. The procedure is `docs/agents/issue-tracker.md`, *Closing a ticket you
+implemented*; it is not optional and does not need asking.
+
 ### Triage labels
 
 The seven canonical triage roles are YouTrack tags under their default names.
