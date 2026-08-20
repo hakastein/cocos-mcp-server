@@ -131,7 +131,7 @@ export function ctorIsA(ctor: any, base: any): boolean {
 /**
  * The name the engine has a component registered under — `cc.Sprite` for builtins, the
  * `@ccclass` string for user scripts. This is the name the serializer and the editor use,
- * and the one a caller can pass back to any component-addressing tool.
+ * and the one a caller can pass back to `component get`, `component set` or `component rm`.
  *
  * `constructor.name` is only the JS identifier: it is right most of the time but silently
  * disagrees whenever a bundler renames the class or `@ccclass` was given a different

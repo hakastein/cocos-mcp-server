@@ -105,8 +105,10 @@ async function withOverrideVerdict(
     const untyped = outcome.untyped.length
         ? '. The editor recorded none because the two sides hold objects of DIFFERENT CLASSES at '
             + `${outcome.untyped.join('; ')} — a value stored in the prefab without its \`__type__\` loads `
-            + 'as a plain object, and the editor diffs only same-class pairs. Rewrite that property on the '
-            + 'prefab asset with prefab_set_component_property, which stamps the type, then write here again'
+            + 'as a plain object, and the editor diffs only same-class pairs. The property has to be '
+            + 'rewritten on the prefab asset itself, so that it is stored with its `__type__`, and then '
+            + 'written here again — no `cocos` command reaches into a prefab asset, so that first step is '
+            + "the editor's own inspector on the opened prefab"
         : '';
     return addDetail({ ...report, persisted: false },
         'no prefab property override carries this write, so the next load rebuilds '

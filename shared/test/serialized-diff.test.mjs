@@ -1,5 +1,5 @@
 /**
- * The scene-vs-file comparison behind query_scene_dirty.
+ * The scene-vs-file comparison behind `scene dirty`.
  *
  * The editor's own dirty flag reports `_undoMgr.isDirty()`, which a set-property made outside a
  * begin-recording/end-recording pair never moves — so a scene holding a property this bridge wrote

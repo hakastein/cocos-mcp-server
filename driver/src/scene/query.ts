@@ -38,11 +38,10 @@ function compilesAsFunctionBody(code: string): boolean {
 /**
  * A component property's DECLARED type, read off the registered CCClass.
  *
- * The prefab tools rewrite a `.prefab` as JSON in the main process, where no class is loaded
- * and the only clue to a property's type is the value already sitting in the file. That is
- * enough to keep an existing boolean a boolean and no help at all for an unset reference, so
- * this answers from the class itself. `found:false` for a class or property the registry does
- * not know is a normal answer, not an error — plenty of fields carry no CCClass metadata.
+ * The serialized file offers only the value already sitting in it, which keeps an existing
+ * boolean a boolean and says nothing at all about an unset reference — so the answer comes
+ * from the class. `found:false` for a class or property the registry does not know is a normal
+ * answer, not an error: plenty of fields carry no CCClass metadata.
  */
 export const declaredComponentProperty: SceneMethods['declaredComponentProperty'] = (componentType, property) => {
     const absent: SceneResult<DeclaredProperty> = { success: true, data: { found: false } };
@@ -301,7 +300,7 @@ export const nodePrefabLinkage: SceneMethods['nodePrefabLinkage'] = (nodeUuid) =
  *
  * Engine-side because this must see the live tree, including branches under an inactive
  * parent, and because resolving at call time is the entire point: a uuid captured earlier
- * may already name nothing. One walk answers the whole batch, so a tool call carrying
+ * may already name nothing. One walk answers the whole batch, so a command carrying
  * several paths costs one traversal.
  */
 export const resolveNodePaths: SceneMethods['resolveNodePaths'] = (paths) => {

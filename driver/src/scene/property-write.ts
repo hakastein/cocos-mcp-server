@@ -59,7 +59,7 @@ function overrideSource(override: any): any {
 
 /**
  * The overrides that replay onto one component field. A path deeper than `field` or `field.index`
- * addresses something this tool does not write, and is left alone.
+ * addresses something `component set` does not write, and is left alone.
  */
 function referenceOverridesFor(
     scene: any, owner: any, property: string
@@ -219,7 +219,6 @@ export function overlaidReferenceValue(scene: any, owner: any, property: string,
     return (wanted && wanted.slot.uuid) ? { uuid: wanted.slot.uuid } : value;
 }
 
-/** The component a reference tool addressed, by its position in `node.components`. */
 function componentAt(node: any, componentIndex: number): any {
     const owner = (node.components || [])[componentIndex];
     if (!owner) throw new Error(`Node '${node.name}' has no component at index ${componentIndex}`);

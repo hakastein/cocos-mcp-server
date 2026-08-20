@@ -84,10 +84,6 @@ export const dumpSceneNodes: SceneMethods['dumpSceneNodes'] = (options = {}) => 
                     childCount: (child.children || []).length
                 };
                 if (withComps) {
-                    // `type` stays the JS constructor name because scene_checksum keys its
-                    // signature on it — changing it would invalidate every baseline captured
-                    // before this build. `className` is the registered name to address the
-                    // component by, added alongside rather than replacing it.
                     entry.components = (child.components || []).map((c: any) => ({
                         type: c && c.constructor ? c.constructor.name : 'Unknown',
                         className: componentClassName(c),

@@ -2,7 +2,7 @@
  * What a node/component reference field is worth after the next load, and which target overrides
  * the field's current contents contradict.
  *
- * The field failure these lock down: `set_component_ref` assigned `CtaController.targets` on the
+ * The field failure these lock down: a reference write assigned `CtaController.targets` on the
  * live engine object, read the uuids straight back off the object it had just written, and reported
  * success with verified:true. Two of the three targets lived inside the `Packshot_v3` prefab
  * instance, so the scene file held null for them and no target override existed — the buttons were
