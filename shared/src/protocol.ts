@@ -52,9 +52,8 @@ export interface Hello {
 }
 
 export {
-    UUID_OR_PATH_KEY, UuidPathPair, augmentToolDefinition, pairsOf, requestedPaths,
-    PathResolved, PathResolution, ApplyOk, ApplyError, applyResolvedPaths,
-    PathIndexNode, PathIndex, normalizePath, siblingLabels, buildPathIndex, resolvePathInIndex
+    PathResolved, PathResolution, PathIndexNode, PathIndex,
+    normalizePath, siblingLabels, buildPathIndex, resolvePathInIndex
 } from './node-path';
 export { SerializedDiff, BENIGN_DIFF_PATHS, diffSerialized } from './serialized-diff';
 export {

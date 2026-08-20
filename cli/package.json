@@ -15,9 +15,7 @@
         "commander": "^15.0.0",
         "json-rpc-2.0": "^1.7.1",
         "p-wait-for": "^3.2.0",
-        "picocolors": "^1.1.1",
-        "split2": "^4.2.0",
-        "zod": "^3.25.76"
+        "split2": "^4.2.0"
     },
     "devDependencies": {
         "@types/archy": "^0.0.36",

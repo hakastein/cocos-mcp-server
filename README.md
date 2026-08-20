@@ -1,277 +1,86 @@
-# Cocos MCP Server
+# cocos-cli
 
-MCP-сервер (Model Context Protocol), живущий расширением редактора Cocos Creator 3.8.x: AI-клиент
-(Claude Code, Claude Desktop, Cursor) через него управляет сценами, нодами, компонентами,
-префабами, ассетами, сборкой и превью.
-
-Это форк. Поверхность — **89 тулз**, переписанных ради честного ответа, а не широты: запись
-считывается обратно, отказ называет, что именно отказало, а значение, которое редактор потеряет при
-сохранении, докладывается как потеря, а не как успех.
-
-Английская версия: [README.EN.md](README.EN.md). Для агентов — [CLAUDE.md](CLAUDE.md).
-
-## Совместимость
-
-| Cocos Creator | Статус |
-|---|---|
-| 3.8.x | поддерживается (разработка на 3.8.8) |
-| 3.7.x | не проверялось |
-
-## Установка
-
-Скопируйте (или заведите junction на) папку расширения в `extensions` **проекта**:
+Drive an open Cocos Creator 3.8.x editor from the shell. An agent runs `cocos <command>`; the
+answer comes back on stdout.
 
 ```
-{ваш-проект}/
+$ cocos scene tree
+Main Light  [DirectionalLight]
+Main Camera  [Camera,FollowCamera,BuiltinPipelineSettings]
+Environment
+├─┬ cc_scene
+│ └─┬ scene
+│   ├── KB3D_FTW_PropBarrels_A_Main  [MeshRenderer]
+│   └─┬ KB3D_FTW_PropGarageDoor_B_Door  [MeshRenderer]
+│     └── KB3D_FTW_PropGarageDoor_B_Frame  [MeshRenderer]
+```
+
+Three npm workspaces in one repository: `driver/` is an editor extension holding native
+primitives, `cli/` is the `cocos` binary holding every decision, and `shared/` holds the types and
+pure logic both sides need. The driver and the binary talk over a channel private to one project's
+editor — a named pipe on Windows, a unix socket elsewhere. Nothing listens on a network port.
+
+The shell **is** the interface. There is no call-and-response protocol layered on top of it for an
+agent to learn.
+
+## Compatibility
+
+| Cocos Creator | Status |
+|---|---|
+| 3.8.x | Supported (developed against 3.8.8) |
+| 3.7.x | Untested |
+
+## Install
+
+Build all three workspaces and put `cocos` on PATH:
+
+```bash
+npm install && npm run build && npm link --workspace cli
+```
+
+Then install the extension into the **project's** own `extensions` directory: copy `driver/` there
+under the name `cocos-mcp-server`, or make a junction to it under that name.
+
+```
+{your-project}/
 └── extensions/
-    └── cocos-mcp-server/
+    └── cocos-mcp-server/     ← this repo's driver/, renamed
 ```
 
-Глобальный каталог `~/.CocosCreator/extensions/` **не работает**: Cocos грузит расширения только из
-проекта. Дальше **Расширения → Менеджер расширений → Проект**, найти `cocos-mcp-server`, включить.
+The rename is required, not cosmetic: `driver/package.json` declares the name `cocos-mcp-server`,
+Cocos matches it against the folder, and existing installs key off it. The global
+`~/.CocosCreator/extensions/` directory does **not** work — Cocos loads extensions from the project
+only.
 
-### Сборка из исходников
+Enable it under **Extension → Extension Manager → Project**. After any rebuild of `driver/` or
+`shared/`, toggle the extension **off and on by hand** — nothing else busts Node's require cache.
+
+Check that the two halves found each other:
 
 ```bash
-npm install
-npm run build        # tsc → dist/
-npm run watch        # пересборка на изменение
-npm test             # tsc, затем node --test по test/
+cocos instances
 ```
 
-После пересборки расширение нужно **вручную выключить и включить** в менеджере расширений — ничто
-другое не сбрасывает require-кеш Node.
+With several editors open, `--project <substring>` picks one.
 
-## Использование
+## Where to look next
 
-Панель открывается через **Расширения → Cocos MCP Server**, кнопка **Start Server**.
-Адрес по умолчанию: `http://127.0.0.1:4000/mcp`.
+| | |
+|---|---|
+| `skills/cocos/SKILL.md` | The command surface, as an agent reads it. |
+| `CLAUDE.md` | Architecture, invariants and the checkpoint procedure. |
+| `docs/specs/`, `docs/plans/` | The design records this was built from. |
+| `docs/source-inventory.md` | What the pre-CLI `source/` tree held, and where each module went. |
 
-**Claude Code:**
+## Development
+
 ```bash
-claude mcp add --transport http cocos http://127.0.0.1:4000/mcp
+npm test                          # build shared → driver → cli, then run every package's tests
+npm run build --workspace cli     # rebuild only the binary
 ```
 
-**Claude Desktop** (`claude_desktop_config.json`):
-```json
-{
-  "mcpServers": {
-    "cocos": { "url": "http://127.0.0.1:4000/mcp", "transport": "http" }
-  }
-}
-```
+Exit codes: `0` ok, `1` the command failed, `2` bad usage, `3` no editor found, `4` the channel
+broke.
 
-**Cursor / VS Code:** добавить MCP-сервер типа HTTP с адресом `http://127.0.0.1:4000/mcp`.
-
-## Формат ответа
-
-Все тулзы отвечают одной формой; на проводе это один текстовый JSON-блок, а протокольный `isError`
-выставляется из `success`:
-
-```jsonc
-{ "success": true,  "data": { }, "message": "…" }
-{ "success": false, "error": { "code": "…", "message": "…", "hint": "…" }, "data": { } }
-```
-
-`code` стабилен и по нему можно ветвиться: `invalid_args`, `unknown_tool`, `node_path`,
-`tool_throw`, `scene_script`, `batch_failed` плюс частные коды вроде `node_not_found` или
-`write_not_persisted`. Отказ может нести `data` — так отказавшая запись докладывает, что увидела.
-
-### Отчёт о записи
-
-Запись свойства отвечает `WriteReport`:
-
-| поле | смысл |
-|---|---|
-| `written` | запись выдана |
-| `verified` | значение прочитано обратно |
-| `persisted` | `true` — сохранение донесёт, `false` — доказано, что не донесёт, **`null` — никто не смотрел** |
-| `channel` | `editor` (сериализуется) или `live` (только живая сцена) |
-
-`persisted: null` — не «мягкий false»: проверку не просили или она не смогла отработать, и любой
-ответ здесь был бы выдуман. На `channel: "live"` значение `persisted: false` — ожидаемое состояние,
-а не дефект: живой канал по устройству ничего не сериализует.
-
-### Отмена
-
-Записи в сцену обёрнуты в undo-запись редактора, так что **Ctrl+Z забирает правку моста обратно**.
-Если редактор отказался записывать шаг или оставил его открытым, это сказано в `undoNote`.
-Создание ноды с последующей записью трансформа — это **две записи undo**, а не одна.
-
-Не каждый писатель берёт эту скобку: `component_remove_component` и `component_remove_missing_scripts`
-снимают компонент напрямую, и Ctrl+Z его не возвращает — проверено живьём. Для
-`component_remove_missing_scripts` это не мелочь: `apply` дополнительно пишет затронутые префабы на
-диск, так что цена невозвратности — файл, а не только текущая сессия редактора.
-
-### Адресация нод
-
-Любая тулза, берущая uuid ноды, принимает и `nodePath` — тот самый слеш-путь, который печатает
-`scene_dump`, с суффиксами `#1`/`#2` у одноимённых сиблингов. Реестр разворачивает путь в uuid до
-вызова тулзы; путь, не совпавший ни с чем или совпавший с несколькими нодами, громко падает с кодом
-`node_path`.
-
-## Список тулз (89)
-
-### Сцена (15)
-| Тулза | Что делает |
-|---|---|
-| `scene_get_current_scene` | Открытая сцена: имя, uuid, db://-путь, есть ли он на диске, состояние загрузки, число корней |
-| `scene_get_scene_list` | Все `.scene` проекта: имя + путь + uuid |
-| `scene_open_scene` | Открыть сцену по db://-пути вместо текущей |
-| `scene_save_scene` | Записать открытую сцену в её файл |
-| `scene_close_scene` | Закрыть открытую сцену |
-| `scene_create_scene` | Создать `.scene` с пустой сценой — корень и глобальные настройки, без Canvas и камеры |
-| `scene_dump` | Все ноды плоским списком: uuid, имя, полный путь, родитель, active, число детей, компоненты |
-| `scene_checksum` | Подпись состояния сцены (active и классы компонентов по путям + sha1) для регрессионных сверок |
-| `scene_find_component_owners` | Все ноды, несущие компонент указанного класса |
-| `scene_query_dirty` | Есть ли в открытой сцене изменения, которых нет в файле |
-| `scene_query_ready` | Закончил ли редактор загрузку открытой сцены |
-| `scene_soft_reload` | Перезагрузить сцену на месте — так пересобранные скрипты доезжают до неё |
-| `scene_begin_undo_recording` | Открыть шаг undo над нодой и вернуть его id |
-| `scene_end_undo_recording` | Закоммитить шаг: всё записанное с его начала уходит одним Ctrl+Z |
-| `scene_cancel_undo_recording` | Выбросить шаг, не кладя его в стек отмены |
-
-### Ноды (12)
-| Тулза | Что делает |
-|---|---|
-| `node_create_node` | Создать ноду: пустую, с компонентами, из ассета или встроенным примитивом |
-| `node_get_node_info` | Нода целиком плюс вердикт 2D/3D, его основания и вытекающие ограничения трансформа |
-| `node_find_nodes` | Ноды с подходящим именем и сценовый путь, которым каждая адресуется |
-| `node_set_node_property` | Записать name / active / layer / mobility со считыванием обратно и названным каналом |
-| `node_set_node_transform` | Задать локальные позицию, поворот (эйлер) и/или масштаб с учётом ограничений 2D |
-| `node_delete_node` | Удалить ноду со всем поддеревом |
-| `node_move_node` | Сменить родителя ноды |
-| `node_duplicate_node` | Дублировать ноду с поддеревом рядом с оригиналом |
-| `node_list_builtin_meshes` | Встроенные примитивные меши с uuid их саб-ассетов |
-| `node_copy_node` | Положить ноды в буфер редактора под будущую вставку |
-| `node_cut_node` | Положить ноды в буфер с пометкой на перенос |
-| `node_paste_node` | Вставить ноды из буфера под родителя и вернуть выданные uuid |
-
-### Компоненты (7)
-| Тулза | Что делает |
-|---|---|
-| `component_add_component` | Добавить компонент идемпотентно: уже имеющийся тип докладывается, а не дублируется |
-| `component_remove_component` | Снять компонент с ноды |
-| `component_get_components` | Все компоненты ноды: cid, имя класса, enabled и значения свойств |
-| `component_get_component_info` | Компонент подробно: по каждому свойству объявленный тип, вид записи `kind` и текущее значение |
-| `component_set_component_property` | Единственный писатель свойств сцены: сверка, undo-скобка, отчёт о канале и сохранности |
-| `component_execute_component_method` | Вызвать метод у живого компонента в открытой сцене |
-| `component_remove_missing_scripts` | Снять компоненты, чей скрипт удалён из проекта: вердикт даёт база ассетов, а не вид компонента; по умолчанию только отчёт, `apply` пересериализует изменённый префаб целиком — дифф на диске шире одного снятия |
-
-### Префабы (14)
-| Тулза | Что делает |
-|---|---|
-| `prefab_get_prefab_list` | Все `.prefab` под папкой: имя + путь + uuid |
-| `prefab_dump` | Дерево нод **ассета** префаба с разрешёнными именами классов компонентов |
-| `prefab_add_component` | Добавить компонент ноде внутри ассета префаба на диске |
-| `prefab_remove_component` | Снять компонент с ноды внутри ассета префаба |
-| `prefab_get_component_property` | Прочитать сериализованное свойство из ассета префаба так, как его держит файл |
-| `prefab_set_component_property` | Записать сериализованное свойство в ассет префаба |
-| `prefab_validate_prefab` | Структурная проверка `.prefab`: парсится, есть запись `cc.Prefab` и хотя бы одна нода |
-| `prefab_instantiate_prefab` | Инстанцировать префаб в открытую сцену **связанным** инстансом |
-| `prefab_create_prefab` | Записать ассет префаба из ноды сцены собственным сериализатором редактора |
-| `prefab_update_prefab` | Применить состояние инстанса обратно на ассет, который он отслеживает |
-| `prefab_revert_prefab` | Выбросить локальные правки инстанса |
-| `prefab_restore_prefab_node` | Пересобрать ноду-инстанс из ассета — единственная префабная операция с записью в undo |
-| `prefab_list_overrides` | Все оверрайды инстанса: путь свойства, цель, значение и разрешается ли ещё uuid ассета |
-| `prefab_remove_override` | Снять один оверрайд по пути свойства, оставив остальные |
-
-### Операции над сценой (8)
-| Тулза | Что делает |
-|---|---|
-| `sceneAdvanced_reset_node_property` | Сбросить свойство ноды в объявленный дефолт — или, на инстансе, в значение префаба |
-| `sceneAdvanced_reset_node_transform` | Сбросить позицию, поворот и масштаб одним вызовом |
-| `sceneAdvanced_reset_component` | Сбросить все свойства компонента в дефолты |
-| `sceneAdvanced_move_array_element` | Переставить элемент массива по исходному индексу и знаковому смещению |
-| `sceneAdvanced_remove_array_element` | Удалить элемент массива по индексу |
-| `sceneAdvanced_query_scene_classes` | Все зарегистрированные движком классы, опционально только наследники базы |
-| `sceneAdvanced_query_scene_components` | Все доступные типы компонентов: cid, место в меню, uuid скрипта |
-| `sceneAdvanced_query_nodes_by_asset_uuid` | Все ноды, ссылающиеся на uuid ассета — кто использует этот материал/меш/префаб |
-
-### Ассеты (14)
-| Тулза | Что делает |
-|---|---|
-| `project_get_assets` | Список ассетов под папкой с фильтром по типу и имени |
-| `project_get_asset_info` | Всё, что база знает об одном ассете, включая путь на диске, размер и саб-ассеты |
-| `project_create_asset` | Создать файл или папку, `onConflict` = fail / overwrite / rename |
-| `project_delete_asset` | Удалить ассет или целую папку |
-| `project_copy_asset` | Скопировать ассет в другое db://-место |
-| `project_move_asset` | Переместить или переименовать ассет |
-| `project_import_asset` | Скопировать файл с диска в проект и импортировать |
-| `project_reimport_asset` | Прогнать импортёр по одному ассету заново |
-| `project_refresh_assets` | Пересканировать папку, импортировав изменившееся на диске |
-| `project_save_asset` | Перезаписать содержимое существующего ассета и переимпортировать |
-| `assetAdvanced_save_asset_meta` | Записать `.meta` целиком |
-| `assetAdvanced_generate_available_url` | Какой адрес получил бы новый ассет: сам адрес либо нумерованный вариант |
-| `assetAdvanced_query_asset_db_ready` | Закончила ли база ассетов запуск |
-| `assetAdvanced_validate_asset_references` | Вычитать все uuid-ссылки сериализованных ассетов и назвать те, на которые никто не отвечает |
-
-### Проект и сборка (7)
-| Тулза | Что делает |
-|---|---|
-| `project_build_project` | Запустить настоящую сборку и дождаться её конца |
-| `project_check_builder_status` | Готовность билдера и существующие задачи: в очереди, в работе, завершённые |
-| `project_get_build_settings` | Как сборка ведёт себя через мост и поднят ли воркер |
-| `project_open_build_panel` | Открыть панель Build |
-| `project_run_project` | Запустить превью в редакторе — ту самую кнопку Play |
-| `project_get_project_info` | Какой проект открыт: имя, путь, uuid, версия Creator |
-| `project_get_project_settings` | Одна категория настроек: general, physics, render или assets |
-
-### Отладка (7)
-| Тулза | Что делает |
-|---|---|
-| `debug_execute_script` | Выполнить JavaScript в контексте сцены, где доступны `cc`, `director` и `scene` |
-| `debug_project_logs` | Читать `temp/logs/project.log` редактора: без запроса — хвост, с запросом — поиск |
-| `debug_get_preview_logs` | Консоль **запущенного превью**, пересланная мостом со страницы игры |
-| `debug_clear_preview_logs` | Сбросить всё, что набуферено со страницы превью |
-| `debug_validate_scene` | Дешёвая проверка здоровья открытой сцены по числу нод |
-| `debug_get_editor_info` | К какому редактору и проекту подключён мост, плюс память и аптайм процесса |
-| `debug_get_performance_stats` | Счётчики рендера — draw calls, треугольники, память (только в превью) |
-
-### Батч, ECS, скелетная анимация (5)
-| Тулза | Что делает |
-|---|---|
-| `batch_run` | Выполнить список вызовов одним запросом, по порядку, с чтением результатов предыдущих шагов |
-| `ecs_component_census` | Перепись чтений/записей/добавлений/снятий по ключам компонентов, по настоящим синтаксическим деревьям TypeScript |
-| `skeletalAnimation_add_socket` | Повесить сокет `SkeletalAnimation` на кость, сохранив работу запечённой анимации |
-| `skeletalAnimation_list_sockets` | Сокеты `cc.SkeletalAnimation` ноды: путь кости и целевая нода |
-| `skeletalAnimation_remove_socket` | Снять сокет по пути кости, уничтожив его целевую ноду |
-
-## Настройки
-
-Лежат в `{проект}/settings/mcp-server.json`.
-
-| Настройка | По умолчанию | Что значит |
-|---|---|---|
-| Port | `4000` | порт HTTP-сервера |
-| Auto Start | `false` | стартовать сервер при загрузке расширения |
-| Debug Log | `false` | подробный лог моста в консоль редактора |
-| Max Connections | `10` | максимум одновременных клиентов |
-
-Все тулзы всегда включены: пофайлового включения/выключения и конфига менеджера тулз здесь нет.
-
-## HTTP-эндпоинты
-
-- `POST /mcp` — MCP Streamable HTTP, единственный интерфейс тулз; прочие методы отвечают 405
-- `POST /preview-log` — пачки консоли, пересланные страницей запущенного превью
-- `GET /preview-console.js` — скрипт, который страницы превью инжектят ради этой пересылки
-
-## Частые вопросы
-
-**Сервер не стартует, порт занят.** Смените порт в панели и перезапустите сервер.
-
-**Тулза отвечает `scene_script`.** Бандл scene-скрипта не ответил: сцена не открыта либо расширение
-пересобрали, не выключив и не включив его вручную.
-
-**Тулза отвечает `node_path`.** Путь не совпал ни с чем или совпал с несколькими нодами. Берите путь
-дословно из `scene_dump` или `node_find_nodes`, вместе с суффиксом `#1`/`#2`.
-
-**Правки исходников не доезжают.** `npm run build`, затем выключить и включить расширение в
-менеджере. Выключения-включения по IPC недостаточно.
-
-**Расширения нет в менеджере.** Имя папки должно совпадать с полем `name` из `package.json`
-(`cocos-mcp-server`), и лежать она должна в `extensions/` проекта, а не в глобальном каталоге.
-
-## Лицензия
-
-MIT
+Settings live in `{project}/settings/mcp-server.json` and hold one key, `enableDebugLog`. Every
+command is always reachable; there is no per-command enable.

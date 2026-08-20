@@ -13,6 +13,8 @@ call-and-response protocol layered on top of it for an agent to learn.
 This replaced an editor extension that exposed the same capabilities over MCP directly from inside
 the editor process. That transport, and everything that served it, is gone from this repository; the
 reasoning that led to the replacement is recorded in `docs/specs/2026-08-18-cocos-cli-design.md`.
+The MCP-era `source/` tree went with it — `docs/source-inventory.md` says where each of its twelve
+modules landed, so a module buried on purpose does not get proposed back from git history.
 
 Three npm workspaces, one repo:
 
@@ -280,8 +282,8 @@ A write-path change is only checked once the scene has been saved and Ctrl+Z tri
   What is visible from the code and the names does not get restated.
 - One command group per `cli/src/commands/<group>.ts`; one concern per `driver/src/scene/<concern>.ts`.
 - Each of `shared/`, `driver/`, `cli/` carries its own `tsconfig.json` — `strict: true`,
-  `target: ES2017`, `module: CommonJS` in all three — rather than extending a shared base; there is
-  no config file above the package level that any of them draws from. `driver` and `cli` also build a
+  `target: ES2017`, `module: CommonJS` in all three. There is no config file above the package
+  level: `npm run build` over the three workspaces is the whole type-check. `driver` and `cli` also build a
   bundle with `tsup` — `driver` into `dist/` (the extension's actual `main`), `cli` into `bin/cocos.js`
   (the actual `cocos` binary) — alongside the modular `tsc` output the tests import (`lib/` in both,
   `dist/` in `shared`, which has no bundle step of its own).
@@ -290,24 +292,6 @@ A write-path change is only checked once the scene has been saved and Ctrl+Z tri
 
 `{project}/settings/mcp-server.json`: `enableDebugLog` only. Every driver primitive and every CLI
 command is always reachable — there is no per-primitive or per-command enable/disable.
-
-## Leftover: `source/`
-
-`source/` and the root-level `test/` predate this split. They still hold twelve pure modules
-(`asset-json.ts`, `asset-query.ts`, `batch-plan.ts`, `build-task.ts`, `ecs-census.ts`,
-`log-search.ts`, `missing-scripts.ts`, `prefab-json.ts`, `prefab-linkage.ts`, `prefab-value.ts`,
-`project-log.ts`, `reference-scan.ts`) that nothing in `shared/`, `driver/` or `cli/` imports.
-Neither `npm run build` nor `npm test` touches them: the root `tsconfig.json` that once compiled
-`source/` now also matches `cli/`'s and `driver/`'s own `.ts` files by its default include pattern,
-and errors outright if pointed at directly. They are not part of the architecture above; they are
-raw material for a later migration into `cli/src/`, kept only so that migration has something to
-move.
-
-Two of them now have live counterparts and are **superseded, not pending**: `asset-query.ts` was
-rewritten as `cli/src/asset/query.ts` (the editor typings dropped for a local shape, the messages in
-Russian) and `prefab-linkage.ts` as `cli/src/prefab-linkage.ts` (the `Editor.Message` calls dropped,
-the verdict reshaped from MCP result fields into a head word). Do not migrate those two a second
-time — read the `cli/` version. The other ten are still unclaimed.
 
 ## Agent skills
 
