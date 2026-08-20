@@ -1,13 +1,17 @@
 import { EDITOR_METHODS, buildPathIndex, resolvePathInIndex } from '@cocos-cli/shared';
 import type {
     ComponentOwner, ComponentOwnerReport, Driver, DumpedComponent, EditorMethods, NodeDump,
-    NodeInfo, PathIndexNode, PathResolution, PrefabOverrideOutcome, PropertyDump,
-    ReferenceOutcomeReport, ReferencePlanReport, SceneDump, SceneFacade, SceneInfo, SceneMethods,
-    SceneNodeEntry, SceneResult, SerializedValue, Vec3Like
+    NodeInfo, PathIndexNode, PathResolution, PrefabLinkageReport, PrefabOverrideOutcome,
+    PrefabOverrideRecord, PrefabOverrideReport, PropertyDump, ReferenceOutcomeReport,
+    ReferencePlanReport, SceneDump, SceneFacade, SceneInfo, SceneMethods, SceneNodeEntry,
+    SceneResult, SerializedValue, Vec3Like
 } from '@cocos-cli/shared';
 import { isDumpDescriptor, resolveKind } from '../property/kind.ts';
 import { projectValue } from '../property/readers.ts';
+import { NODE_STORAGE } from '../node-write.ts';
+import { MemoryAssetDb } from './memory-assets.ts';
 import type { PropertyDescriptor } from '../property/kind.ts';
+import type { NodeStoredProperty } from '../node-write.ts';
 
 /**
  * A `Driver` over a scene held as data. Writes land in that scene and reads answer from it, which
@@ -22,12 +26,14 @@ export class MemoryDriver implements Driver {
     private readonly spec: MemoryScene | null;
     private readonly roots: LiveNode[] = [];
     private readonly byUuid = new Map<string, LiveNode>();
-    private readonly assets: Record<string, string>;
+    private readonly assets: MemoryAssetDb;
     private readonly refuses: MemoryRefusals;
+    /** Property overrides the editor recorded, keyed by the uuid of the instance root holding them. */
+    private readonly overrides = new Map<string, PrefabOverrideRecord[]>();
 
     constructor(spec?: MemoryScene) {
         this.spec = spec || null;
-        this.assets = (spec && spec.assets) || {};
+        this.assets = new MemoryAssetDb((spec && spec.assets) || {});
         this.refuses = (spec && spec.refuses) || {};
         for (const node of (spec && spec.nodes) || []) this.roots.push(this.adopt(node, null));
 
@@ -60,10 +66,12 @@ export class MemoryDriver implements Driver {
             rotation: spec.rotation || { x: 0, y: 0, z: 0 },
             scale: spec.scale || { x: 1, y: 1, z: 1 },
             prefab: spec.prefab || null,
+            fileId: '',
             parent,
             children: [],
             components: []
         };
+        node.fileId = `${node.uuid}.f`;
         this.byUuid.set(node.uuid, node);
         for (const component of spec.components || []) this.attach(node, component);
         for (const child of spec.children || []) node.children.push(this.adopt(child, node));
@@ -113,6 +121,34 @@ export class MemoryDriver implements Driver {
         return node;
     }
 
+    /**
+     * The prefab instance this node belongs to, which is the node itself when it is the instance
+     * root. A node inside one carries none of its own properties in the scene file.
+     */
+    private instanceOf(node: LiveNode): LiveNode | null {
+        for (let at: LiveNode | null = node; at; at = at.parent) if (at.prefab) return at;
+        return null;
+    }
+
+    /**
+     * Writing any property inside a prefab instance makes the editor record an override on the
+     * instance root — checked live. Without one the next load rebuilds the value from the asset.
+     */
+    private recordOverride(node: LiveNode, property: NodeStoredProperty): void {
+        const instance = this.instanceOf(node);
+        if (!instance || instance.prefab!.recordsOverrides !== true) return;
+        const records = this.overrides.get(instance.uuid) || [];
+        records.push({
+            index: records.length,
+            propertyPath: NODE_STORAGE[property],
+            propertyPathParts: [NODE_STORAGE[property]],
+            localID: [node.fileId],
+            target: { kind: 'node', name: node.name, path: this.pathOf(node), type: 'cc.Node' },
+            valueKind: 'primitive'
+        });
+        this.overrides.set(instance.uuid, records);
+    }
+
     /** The engine holds a fixed set of registered classes; a scene that names none registers any. */
     private registers(type: string): boolean {
         const classes = this.spec && this.spec.classes;
@@ -136,7 +172,7 @@ export class MemoryDriver implements Driver {
     private applyWrite(node: LiveNode, path: string, written: PropertyDump): void {
         const segments = path.split('.');
         if (segments[0] !== '__comps__') {
-            writeNodeField(node, segments, path, written);
+            this.recordOverride(node, writeNodeField(node, segments, path, written));
             return;
         }
         const component = node.components[Number(segments[1])];
@@ -153,7 +189,7 @@ export class MemoryDriver implements Driver {
             position: { value: node.position },
             rotation: { value: node.rotation },
             scale: { value: node.scale },
-            parent: { value: node.parent ? { uuid: node.parent.uuid } : null },
+            parent: { value: { uuid: node.parent ? node.parent.uuid : this.sceneUuid() } },
             __comps__: node.components.map(component => ({
                 __type__: component.type,
                 value: { enabled: { value: component.enabled }, ...component.props }
@@ -181,6 +217,24 @@ export class MemoryDriver implements Driver {
                     parent.children.push(child);
                     return child.uuid;
                 },
+                setParent: async ({ parent, uuids }) => {
+                    const target = this.requireNode(String(parent));
+                    for (const uuid of uuids as string[]) {
+                        const node = this.requireNode(uuid);
+                        const siblings = node.parent ? node.parent.children : this.roots;
+                        siblings.splice(siblings.indexOf(node), 1);
+                        node.parent = target;
+                        target.children.push(node);
+                    }
+                    return uuids as string[];
+                },
+                duplicateNode: async uuid => {
+                    const node = this.requireNode(String(uuid));
+                    const parent = node.parent;
+                    const copy = this.adopt(this.asSpec(node), parent);
+                    (parent ? parent.children : this.roots).push(copy);
+                    return copy.uuid;
+                },
                 createComponent: async options => {
                     const node = this.requireNode(options.uuid);
                     if (this.registers(options.component)) this.attach(node, { type: options.component });
@@ -195,9 +249,30 @@ export class MemoryDriver implements Driver {
                 cancelRecording: async () => { }
             },
             assetDb: {
-                queryUuid: async url => this.assets[url],
-                queryUrl: async uuid =>
-                    Object.keys(this.assets).find(url => this.assets[url] === uuid) as string
+                queryUuid: async url => this.assets.uuidOf(url) as string,
+                queryUrl: async uuid => this.assets.urlOf(uuid) as string,
+                queryAssetInfo: async urlOrUuid => this.assets.find(urlOrUuid) as never,
+                queryAssets: async query => this.assets.under(
+                    (query as { pattern: string }).pattern) as never,
+                queryReady: async () => true,
+                refreshAsset: async () => undefined,
+                reimportAsset: async () => undefined,
+                moveAsset: async (...args) => {
+                    this.assets.move(args[0], args[1], args[2] || {});
+                    return null as never;
+                },
+                copyAsset: async (...args) => {
+                    this.assets.copy(args[0], args[1], args[2] || {});
+                    return null as never;
+                },
+                createAsset: async (...args) => {
+                    this.assets.create(args[0]);
+                    return null as never;
+                },
+                deleteAsset: async url => {
+                    this.assets.remove(url);
+                    return null as never;
+                }
             }
         };
 
@@ -244,7 +319,11 @@ export class MemoryDriver implements Driver {
             applyComponentReference: ([args]) => this.applyReference(args as ReferenceArgs),
             componentReferenceOutcome: ([uuid, index, property]) =>
                 this.referenceOutcome(uuid as string, index as number, property as string),
-            pruneComponentReferenceOverrides: () => ({ success: true, data: { removed: 0, paths: [] } })
+            pruneComponentReferenceOverrides: () => ({ success: true, data: { removed: 0, paths: [] } }),
+            serializedNodeValue: ([uuid, property]) =>
+                this.serializedNode(uuid as string, property as string),
+            nodePrefabLinkage: ([uuid]) => this.prefabLinkage(uuid as string),
+            listPrefabOverrides: ([uuid]) => this.prefabOverrides(uuid as string)
         };
 
         return <K extends keyof SceneMethods>(method: K, ...args: Parameters<SceneMethods[K]>) => {
@@ -268,6 +347,11 @@ export class MemoryDriver implements Driver {
         const resolutions: Record<string, PathResolution> = {};
         for (const path of paths) resolutions[path] = resolvePathInIndex(index, path);
         return { success: true, data: { ...this.sceneHeader(), resolutions } };
+    }
+
+    /** A root node's parent is the scene itself, which the dump names by uuid like any other. */
+    private sceneUuid(): string {
+        return (this.spec && this.spec.uuid) || 'scene-uuid';
     }
 
     private sceneHeader(): { sceneName: string; nodeCount: number } {
@@ -301,7 +385,7 @@ export class MemoryDriver implements Driver {
             success: true,
             data: {
                 name: header.sceneName,
-                uuid: (this.spec && this.spec.uuid) || 'scene-uuid',
+                uuid: this.sceneUuid(),
                 nodeCount: header.nodeCount
             }
         };
@@ -422,6 +506,106 @@ export class MemoryDriver implements Driver {
                     uncovered: [property]
                 }
             };
+    }
+
+    /**
+     * What the serializer emits for a node's own property. Everything inside a prefab instance is
+     * absent from the scene file — except the instance root's `_parent`, which the stub does carry.
+     */
+    private serializedNode(uuid: string, property: string): SceneResult<SerializedValue> {
+        const node = this.requireNode(uuid);
+        const field = STORED_FIELDS[property];
+        if (!field) return { success: true, data: { found: false, value: undefined } };
+
+        const instance = this.instanceOf(node);
+        if (instance && !(node.prefab && field === 'parent')) {
+            return {
+                success: true,
+                data: {
+                    found: false,
+                    value: undefined,
+                    inPrefabInstance: true,
+                    reason: instance === node
+                        ? `'${node.name}' is the root of a prefab instance`
+                        : `'${node.name}' is inside the prefab instance '${instance.name}'`
+                }
+            };
+        }
+        return {
+            success: true,
+            data: { found: true, value: field === 'parent' ? this.serializedParent(node) : node[field] }
+        };
+    }
+
+    /**
+     * A parent NODE is named by uuid; the scene is expanded into its own record, because the
+     * serializer shortens back-references to `cc.Node` entries alone.
+     */
+    private serializedParent(node: LiveNode): unknown {
+        if (node.parent) return { uuid: node.parent.uuid };
+        return {
+            _name: this.sceneHeader().sceneName,
+            _children: this.roots.map(root => ({ uuid: root.uuid })),
+            _id: this.sceneUuid()
+        };
+    }
+
+    private prefabLinkage(uuid: string): SceneResult<PrefabLinkageReport> {
+        const node = this.requireNode(uuid);
+        const instance = this.instanceOf(node);
+        return {
+            success: true,
+            data: {
+                linked: instance !== null,
+                asset: instance ? instance.prefab!.asset : null,
+                fileId: instance ? node.fileId : null,
+                instanceRoot: node.prefab !== null,
+                persistenceChecked: true,
+                persisted: instance !== null,
+                persistedAsset: instance ? instance.prefab!.asset : null
+            }
+        };
+    }
+
+    private prefabOverrides(uuid: string): SceneResult<PrefabOverrideReport> {
+        const node = this.requireNode(uuid);
+        if (!node.prefab) return { success: false, error: `Node '${node.name}' carries no PrefabInstance` };
+        if (node.prefab.readable === false) {
+            return { success: false, error: 'the prefab asset behind this instance could not be read' };
+        }
+        const overrides = this.overrides.get(node.uuid) || [];
+        return {
+            success: true,
+            data: {
+                nodeUuid: node.uuid,
+                nodeName: node.name,
+                prefabAsset: node.prefab.asset,
+                overrideCount: overrides.length,
+                removedComponents: 0,
+                mountedChildren: 0,
+                overrides
+            }
+        };
+    }
+
+    /** A copy is built through `adopt`, so it gets its own uuids and file ids just as the original did. */
+    private asSpec(node: LiveNode): MemoryNode {
+        return {
+            name: node.name,
+            active: node.active,
+            layer: node.layer,
+            position: { ...node.position },
+            rotation: { ...node.rotation },
+            scale: { ...node.scale },
+            prefab: node.prefab || undefined,
+            components: node.components.map(component => ({
+                type: component.type,
+                enabled: component.enabled,
+                props: { ...component.props },
+                serialized: component.serialized || undefined
+            })),
+            children: node.children.map(child => this.asSpec(child))
+        };
     }
 
     // ----- References ------------------------------------------------------------------------
@@ -603,6 +787,8 @@ interface LiveNode {
     children: LiveNode[];
     components: LiveComponent[];
     prefab: MemoryPrefabInstance | null;
+    /** The node's id inside its prefab, which is what an override record points at. */
+    fileId: string;
 }
 
 interface ReferenceArgs {
@@ -629,14 +815,19 @@ function referencedSlots(descriptor: unknown): Array<string | null> {
 
 const NODE_FIELDS = ['name', 'active', 'layer', 'position', 'rotation', 'scale'] as const;
 
+/** The serializer's spelling back to the field the live node holds it in. */
+const STORED_FIELDS: Record<string, NodeStoredProperty> = Object.fromEntries(
+    Object.entries(NODE_STORAGE).map(([field, stored]) => [stored, field as NodeStoredProperty]));
+
 function writeNodeField(
     node: LiveNode, segments: string[], path: string, written: PropertyDump
-): void {
+): NodeStoredProperty {
     const field = NODE_FIELDS.find(known => known === segments[0]);
     if (!field || segments.length > 1) {
         throw new Error(`set-property refused '${path}': a node carries no such property`);
     }
     Object.assign(node, { [field]: written.value });
+    return field;
 }
 
 /**

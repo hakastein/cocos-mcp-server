@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import * as r from '../src/render/asset.ts';
 
 const {
-    assetField, renderAssetInfo, renderAssetList, assetListSummary, renderSettleReport, settleNote,
-    settleVerdict
+    assetField, renderAssetInfo, renderAssetList, assetListSummary, renderAssetReport, assetNote,
+    assetVerdict
 } = r;
 
 const asset = (over = {}) => ({
@@ -14,8 +14,9 @@ const asset = (over = {}) => ({
 });
 
 const report = (over = {}) => ({
-    action: 'refreshed', target: 'db://assets/framework', elapsedMs: 8400, settled: true,
-    assets: { added: [], removed: [], changed: [] }, classes: { added: [], removed: [] }, ...over
+    action: 'refreshed', target: 'db://assets/framework', landedAt: 'db://assets/framework',
+    elapsedMs: 8400, settled: true, assets: { added: [], removed: [], changed: [] },
+    classes: { added: [], removed: [] }, ...over
 });
 
 test('assetField hands back one bare value, the form that goes into a shell variable', () => {
@@ -64,12 +65,12 @@ test('the summary distinguishes the whole set from a cut one', () => {
 
 test('an untouched database is reported as such and not as a bare ok', () => {
     assert.equal(
-        renderSettleReport(report()),
+        renderAssetReport(report()),
         'ok  db://assets/framework  refreshed in 8.4s  no changes');
 });
 
 test('the newly registered class is named — that is what a refresh is run for', () => {
-    const text = renderSettleReport(report({
+    const text = renderAssetReport(report({
         assets: { added: ['db://assets/f/TargetPolicy.ts'], removed: [], changed: [] },
         classes: { added: ['TargetPolicy'], removed: ['Npc'] }
     }));
@@ -79,12 +80,12 @@ test('the newly registered class is named — that is what a refresh is run for'
 });
 
 test('a database that never went quiet does not get the ok head word', () => {
-    const text = renderSettleReport(report({ settled: false }));
+    const text = renderAssetReport(report({ settled: false }));
     assert.equal(text.split('  ')[0], 'TIMEOUT');
 });
 
 test('an operation that did not happen outranks the settle verdict in the head word', () => {
-    const text = renderSettleReport(report({ settled: true, failure: 'the asset stayed where it was' }));
+    const text = renderAssetReport(report({ settled: true, failure: 'the asset stayed where it was' }));
     assert.equal(text.split('  ')[0], 'FAILED');
     assert.match(text, /the asset stayed where it was/);
 });
@@ -92,29 +93,47 @@ test('an operation that did not happen outranks the settle verdict in the head w
 // The database answers before the import ends, so `the command ran` and `the database finished
 // importing` are different news, and the second one has to carry its own word.
 test('a database still working when the timeout ran out is a TIMEOUT, not a FAILED', () => {
-    assert.equal(settleVerdict(report({ settled: false })), 'TIMEOUT');
-    assert.equal(settleVerdict(report({ settled: false, failure: 'the asset stayed where it was' })), 'FAILED');
-    assert.equal(settleVerdict(report()), 'ok');
+    assert.equal(assetVerdict(report({ settled: false })), 'TIMEOUT');
+    assert.equal(assetVerdict(report({ settled: false, failure: 'the asset stayed where it was' })), 'FAILED');
+    assert.equal(assetVerdict(report()), 'ok');
 });
 
 test('a long list is capped and says how many it did not print', () => {
     const urls = Array.from({ length: 5 }, (_unused, index) => `db://assets/${index}.ts`);
-    const text = renderSettleReport(
+    const text = renderAssetReport(
         report({ assets: { added: urls, removed: [], changed: [] } }), 2);
     assert.match(text, /\+ … and 3 more/);
     assert.equal(/db:\/\/assets\/4\.ts/.test(text), false);
 });
 
 test('an unanswered class list is called out, so silence is not read as no change', () => {
-    assert.match(settleNote(report({ classes: null }), 60000), /delta is unknown/);
-    assert.equal(settleNote(report(), 60000), '');
+    assert.match(assetNote(report({ classes: null }), 60000), /delta is unknown/);
+    assert.equal(assetNote(report(), 60000), '');
 });
 
 test('a timeout note names the timeout instead of the class question', () => {
-    assert.match(settleNote(report({ settled: false }), 60000), /60s/);
+    assert.match(assetNote(report({ settled: false }), 60000), /60s/);
 });
 
 test('a failed operation reports its own failure rather than a settle note', () => {
-    assert.equal(settleNote(report({ settled: false, failure: 'not moved', classes: null }), 60000),
+    assert.equal(assetNote(report({ settled: false, failure: 'not moved', classes: null }), 60000),
         'the scene did not answer about registered classes — their delta is unknown');
+});
+
+// The database renames on conflict by default, so the address asked for and the address reached are
+// two different facts and the second one is what a following command has to use.
+test('an asset that landed somewhere other than the address asked for says where', () => {
+    const text = renderAssetReport(report({
+        action: 'moved from db://assets/a.prefab', target: 'db://assets/b.prefab',
+        landedAt: 'db://assets/b-001.prefab'
+    }));
+    assert.match(text, /landed at db:\/\/assets\/b-001\.prefab/);
+});
+
+test('an asset that reached the address asked for does not repeat it', () => {
+    assert.doesNotMatch(renderAssetReport(report()), /landed at/);
+});
+
+test('an asset at no address at all is not passed off as having landed', () => {
+    assert.doesNotMatch(renderAssetReport(report({ landedAt: null })), /landed at/);
 });

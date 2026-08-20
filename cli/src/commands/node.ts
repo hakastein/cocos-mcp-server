@@ -1,4 +1,4 @@
-import type { Driver } from '@cocos-cli/shared';
+import type { Driver, WriteReport } from '@cocos-cli/shared';
 import { Command } from 'commander';
 import { addComponent, unwrap, withClient } from './shared.ts';
 import { withUndoBracket } from '../undo-bracket.ts';
@@ -10,7 +10,9 @@ import {
 } from '../node-transform.ts';
 import type { NodeProperty, NodeSnapshot } from '../node-snapshot.ts';
 import type { TransformKind, Vec3Parts } from '../node-transform.ts';
-import type { NodeWriteReport, Report } from '../render/present.ts';
+import { withNodePersistence } from '../node-write.ts';
+import type { NodeStoredProperty } from '../node-write.ts';
+import type { RenderedWrite, Report } from '../render/present.ts';
 import type { Resolved } from '../resolve.ts';
 
 // Cocos compresses a node/component uuid to exactly 22 chars of standard base64
@@ -88,8 +90,8 @@ export async function nodeCreate(
         kind: 'action',
         verdict: 'ok',
         summary: `created ${spec.parent}/${spec.name}  ${result.createdUuid}`
-            + (result.registered.length ? `  [${result.registered.join(',')}]` : '')
-            + (undoNote ? `  ${undoNote}` : '  undo=1')
+            + (result.registered.length ? `  [${result.registered.join(',')}]` : ''),
+        undoNote
     };
 }
 
@@ -122,7 +124,8 @@ export async function nodeSet(
     const before = await snapshotOf(client, uuid);
     const nodeType = classifyNode(before.componentTypes, before.layer).nodeType;
 
-    const report: NodeWriteReport = { target, applied: [], warnings: [], nodeType };
+    const writes: NodeWrite[] = [];
+    const warnings: string[] = [];
 
     const { undoNote } = await withUndoBracket(client, uuid, async () => {
         const scalars: Array<[NodeProperty, string | boolean | number]> = [];
@@ -137,11 +140,11 @@ export async function nodeSet(
                 observed = nodePropertyOf(await snapshotOf(client, uuid), property);
                 return observed === value;
             }, pollOptions);
-            if (!landed) {
-                report.unapplied = { property, expected: value, observed };
-                return;
-            }
-            report.applied.push({ property, value });
+            writes.push({
+                target, property, value, expected: value,
+                report: readBackReport(landed, property, observed)
+            });
+            if (!landed) return;
         }
 
         for (const kind of TRANSFORM_KINDS) {
@@ -149,7 +152,7 @@ export async function nodeSet(
             if (!given) continue;
             const current = await snapshotOf(client, uuid);
             const normalized = normalizedTransform(given, current[kind], kind, nodeType);
-            if (normalized.warning) report.warnings.push(normalized.warning);
+            if (normalized.warning) warnings.push(normalized.warning);
 
             await client.editor.scene.setProperty({
                 uuid, path: kind, dump: { type: 'cc.Vec3', value: normalized.value }
@@ -159,16 +162,57 @@ export async function nodeSet(
                 observed = (await snapshotOf(client, uuid))[kind];
                 return sameVec3(observed, normalized.value);
             }, pollOptions);
-            if (!landed) {
-                report.unapplied = { property: kind, expected: normalized.value, observed };
-                return;
-            }
-            report.applied.push({ property: kind, value: normalized.value });
+            writes.push({
+                target, property: kind, value: normalized.value, expected: normalized.value,
+                report: readBackReport(landed, kind, observed)
+            });
+            if (!landed) return;
         }
     });
-    if (undoNote) report.undoNote = undoNote;
 
-    return { kind: 'nodeWrite', write: report };
+    return {
+        kind: 'write',
+        target,
+        writes: await judged(client, uuid, writes),
+        undoNote,
+        note: [`${target} is a ${nodeType} node`, ...warnings].join('\n')
+    };
+}
+
+interface NodeWrite extends RenderedWrite {
+    property: NodeStoredProperty;
+    /** What the serializer has to hold for the write to survive, which for a parent is not the path
+     * the line shows but the uuid the file stores. */
+    expected: unknown;
+}
+
+/**
+ * The editor took the message, so the write was issued; a node that still answers the old value is
+ * UNVERIFIED rather than FAILED, for the same reason a component write is.
+ */
+function readBackReport(landed: boolean, property: string, observed: unknown): WriteReport {
+    const report: WriteReport = { written: true, verified: landed, persisted: null, channel: 'editor' };
+    return landed ? report : {
+        ...report,
+        detail: `read-back disagrees — ${property}: the node still answers ${JSON.stringify(observed)}`
+    };
+}
+
+/**
+ * Asked after the bracket closes: reading what the serializer emits is no part of the undo step,
+ * and a write that never landed has nothing to ask about.
+ */
+async function judged(client: Driver, uuid: string, writes: NodeWrite[]): Promise<NodeWrite[]> {
+    const answered: NodeWrite[] = [];
+    for (const write of writes) {
+        answered.push(write.report.verified
+            ? {
+                ...write,
+                report: await withNodePersistence(write.report, client, uuid, write.property, write.expected)
+            }
+            : write);
+    }
+    return answered;
 }
 
 /**
@@ -191,20 +235,23 @@ export async function nodeMove(
         actual = (await snapshotOf(client, uuid)).parent;
         return actual === parentUuid;
     }, pollOptions);
-    if (!moved) {
-        return {
-            kind: 'action',
-            verdict: 'FAILED',
-            summary: `${target} not moved  parent is still ${actual || 'unknown'}`
-                + `, expected ${parentUuid}`
-        };
-    }
+    const write: NodeWrite = {
+        target, property: 'parent', value: parent, expected: { uuid: parentUuid },
+        report: moved
+            ? { written: true, verified: true, persisted: null, channel: 'editor' }
+            : {
+                written: true, verified: false, persisted: null, channel: 'editor',
+                detail: `read-back disagrees — the parent is still ${actual || 'unknown'}, `
+                    + `expected ${parentUuid}`
+            }
+    };
+
     return {
-        kind: 'action',
-        verdict: 'ok',
-        summary: `${target} moved under ${parent}  ${uuid}`
-            + (keepWorldTransform ? '  world transform kept' : '')
-            + (undoNote ? `  ${undoNote}` : '  undo=1')
+        kind: 'write',
+        target,
+        writes: await judged(client, uuid, [write]),
+        undoNote,
+        note: keepWorldTransform ? 'the world transform was kept, so the local one changed' : undefined
     };
 }
 
@@ -224,17 +271,29 @@ export async function nodeDuplicate(
         () => snapshotOf(client, created).then(() => true, () => false), pollOptions);
     if (!appeared) {
         return {
-            kind: 'action',
-            verdict: 'FAILED',
-            summary: `${target} not duplicated  the editor answered uuid ${created}, but no such node is in the scene`
+            kind: 'write',
+            target,
+            writes: [{
+                target, property: 'parent',
+                report: {
+                    written: true, verified: false, persisted: null, channel: 'editor',
+                    detail: `the editor answered uuid ${created}, and no such node is in the scene`
+                }
+            }],
+            undoNote
         };
     }
+
     const copy = await snapshotOf(client, created);
+    const write: NodeWrite = {
+        target: copy.name, property: 'parent', expected: { uuid: copy.parent },
+        report: {
+            written: true, verified: true, persisted: null, channel: 'editor',
+            detail: `copy of ${target}, uuid ${created}`
+        }
+    };
     return {
-        kind: 'action',
-        verdict: 'ok',
-        summary: `${target} duplicated as ${copy.name}  ${created}`
-            + (undoNote ? `  ${undoNote}` : '  undo=1')
+        kind: 'write', target: copy.name, writes: await judged(client, created, [write]), undoNote
     };
 }
 

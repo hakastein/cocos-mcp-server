@@ -1,14 +1,13 @@
 import type {
     ComponentOwnerReport, Hello, MissingScriptDump, PrefabAssetDump, PrefabOverrideReport,
-    SceneDirtyReport, WriteReport
+    SceneDirtyReport
 } from '@cocos-cli/shared';
 import { verdictFailed } from './verdict.ts';
 import {
-    assetField, assetListSummary, renderAssetInfo, renderAssetList, renderSettleReport, settleNote,
-    settleVerdict
+    assetField, assetListSummary, assetNote, assetVerdict, renderAssetInfo, renderAssetList,
+    renderAssetReport
 } from './asset.ts';
-import { nodeWriteNote, nodeWriteVerdict, renderNodeWrite } from './node.ts';
-import { renderWriteReport, writeVerdict } from './report.ts';
+import { renderWrites, undoDetail, writesVerdict } from './report.ts';
 import { renderTree } from './tree.ts';
 import { renderInstances } from './instances.ts';
 import { formatReading, renderComponentReading } from './property.ts';
@@ -17,15 +16,14 @@ import {
     componentOwnersSummary, renderComponentOwners, renderMissingScripts, renderSceneDirty, sceneDirtyNote
 } from './scene.ts';
 import type { Verdict } from './verdict.ts';
-import type { SettleReport } from './asset.ts';
-import type { NodeWriteReport } from './node.ts';
+import type { AssetReport } from '../asset/settle.ts';
+import type { RenderedWrite } from './report.ts';
 import type { DumpNode, TreeOptions } from './tree.ts';
 import type { AssetRecord } from '../asset/query.ts';
 import type { ComponentChoice, PropertyReading } from '../property/component-dump.ts';
 import type { ReferenceLabel } from '../property/reference-index.ts';
 
-export type { SettleReport } from './asset.ts';
-export type { AppliedWrite, NodeWriteReport, UnappliedWrite } from './node.ts';
+export type { RenderedWrite } from './report.ts';
 export type { DumpNode } from './tree.ts';
 
 export interface CommandOutput {
@@ -53,13 +51,10 @@ export interface ComponentAddress {
  */
 export type Report =
     /** An outcome with no structure beyond one line: a verdict and a free-text tail. */
-    | { kind: 'action'; verdict: Verdict; summary: string; note?: string }
-    | {
-        kind: 'propertyWrite'; component: string; property: string; value?: unknown;
-        report: WriteReport; undoNote?: string;
-    }
-    | { kind: 'nodeWrite'; write: NodeWriteReport }
-    | { kind: 'assetSettle'; settle: SettleReport; timeoutMs: number; note?: string }
+    | { kind: 'action'; verdict: Verdict; summary: string; note?: string; undoNote?: string | null }
+    /** Every write of one undo bracket, each judged on whether a save carries it. */
+    | { kind: 'write'; target: string; writes: RenderedWrite[]; undoNote: string | null; note?: string }
+    | { kind: 'asset'; asset: AssetReport; timeoutMs: number; note?: string }
     | { kind: 'assetInfo'; asset: AssetRecord; field?: string }
     | { kind: 'assetList'; assets: AssetRecord[]; total: number }
     | { kind: 'sceneTree'; nodes: DumpNode[]; options: TreeOptions }
@@ -111,25 +106,25 @@ function render(report: Report): Rendered {
         case 'action':
             return {
                 verdict: report.verdict,
-                text: `${report.verdict}  ${report.summary}`,
+                text: joined([
+                    `${report.verdict}  ${report.summary}`,
+                    report.undoNote !== undefined && undoDetail(report.undoNote)
+                ]),
                 note: report.note
             };
 
-        case 'propertyWrite':
-            return { verdict: writeVerdict(report.report), text: renderWriteReport(report) };
-
-        case 'nodeWrite':
+        case 'write':
             return {
-                verdict: nodeWriteVerdict(report.write),
-                text: renderNodeWrite(report.write),
-                note: nodeWriteNote(report.write)
+                verdict: writesVerdict(report.writes),
+                text: renderWrites(report),
+                note: report.note
             };
 
-        case 'assetSettle':
+        case 'asset':
             return {
-                verdict: settleVerdict(report.settle),
-                text: renderSettleReport(report.settle),
-                note: joined([settleNote(report.settle, report.timeoutMs), report.note], '\n')
+                verdict: assetVerdict(report.asset),
+                text: renderAssetReport(report.asset),
+                note: joined([assetNote(report.asset, report.timeoutMs), report.note], '\n')
             };
 
         case 'assetInfo':

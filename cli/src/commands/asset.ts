@@ -6,9 +6,11 @@ import {
     ASSET_TYPES, assetQuery, commonAssetFolder, requireAssetUrl, selectAssets
 } from '../asset/query.ts';
 import type { AssetQuery, AssetRecord, AssetType } from '../asset/query.ts';
-import { diffAssets, diffClasses, fingerprintOf, settled, snapshotKey } from '../asset/settle.ts';
-import type { DbSnapshot, Sample } from '../asset/settle.ts';
-import type { Report, SettleReport } from '../render/present.ts';
+import {
+    copiedAddress, diffAssets, diffClasses, fingerprintOf, settled, snapshotKey
+} from '../asset/settle.ts';
+import type { AssetReport, DbSnapshot, Sample } from '../asset/settle.ts';
+import type { Report } from '../render/present.ts';
 import type { Resolved } from '../resolve.ts';
 
 const DEFAULT_FOLDER = 'db://assets';
@@ -108,23 +110,40 @@ async function settleAssetDb(
     return { settled: reached, elapsedMs: options.now() - started, final };
 }
 
-async function settleAndDiff(
-    client: Driver, action: string, target: string, scope: string,
-    before: DbSnapshot, options: WaitOptions
-): Promise<SettleReport> {
-    const outcome = await settleAssetDb(client, scope, options);
-    return {
-        action,
-        target,
+interface Operation {
+    /** What the editor was told to do, in the past tense. */
+    action: string;
+    /** The address the operation was aimed at. */
+    target: string;
+    /** The folder to wait on, which for a move covers both ends. */
+    scope: string;
+    /** Where the asset is once the database is quiet, asked of the database rather than assumed. */
+    landing: (settled: AssetReport) => Promise<string | null> | string | null;
+}
+
+/**
+ * The operation ran; this is the part that waits for the importer and then asks the database what
+ * actually happened. Every asset command ends here, so `settled` is a real answer for all of them
+ * rather than a constant for some.
+ */
+async function afterOperation(
+    client: Driver, operation: Operation, before: DbSnapshot, options: WaitOptions
+): Promise<AssetReport> {
+    const outcome = await settleAssetDb(client, operation.scope, options);
+    const report: AssetReport = {
+        action: operation.action,
+        target: operation.target,
+        landedAt: null,
         elapsedMs: outcome.elapsedMs,
         settled: outcome.settled,
         assets: diffAssets(before.assets, outcome.final.assets),
         classes: diffClasses(before.classes, outcome.final.classes)
     };
+    return { ...report, landedAt: await operation.landing(report) };
 }
 
-function outputOf(report: SettleReport, options: WaitOptions, extraNote?: string): Report {
-    return { kind: 'assetSettle', settle: report, timeoutMs: options.timeoutMs, note: extraNote };
+function outputOf(report: AssetReport, options: WaitOptions, extraNote?: string): Report {
+    return { kind: 'asset', asset: report, timeoutMs: options.timeoutMs, note: extraNote };
 }
 
 /**
@@ -144,7 +163,15 @@ export async function assetRefresh(
     const url = requireAssetUrl(target, 'the folder to refresh');
     const before = await snapshot(client, url);
     await client.editor.assetDb.refreshAsset(url);
-    return outputOf(await settleAndDiff(client, 'refreshed', url, url, before, options), options);
+    return outputOf(await afterOperation(client, {
+        action: 'refreshed', target: url, scope: url, landing: () => addressOf(client, url)
+    }, before, options), options);
+}
+
+/** The address itself, when the database still knows it; a folder that vanished answers `null`. */
+async function addressOf(client: Driver, url: string): Promise<string | null> {
+    const found = await queryOne(client, url);
+    return found ? found.url : null;
 }
 
 export async function assetReimport(
@@ -157,8 +184,9 @@ export async function assetReimport(
     }
     const before = await snapshot(client, url);
     await client.editor.assetDb.reimportAsset(url);
-    return outputOf(
-        await settleAndDiff(client, 'reimported', url, url, before, options), options);
+    return outputOf(await afterOperation(client, {
+        action: 'reimported', target: url, scope: url, landing: () => addressOf(client, url)
+    }, before, options), options);
 }
 
 export async function assetMove(
@@ -175,16 +203,14 @@ export async function assetMove(
         overwrite: options.overwrite === true, rename: options.overwrite !== true
     });
 
-    const report = await settleAndDiff(client, 'moved', `${from} → ${to}`, scope, before, options);
-    const landed = await whereIs(client, moving.uuid);
-    if (landed === null) {
-        report.failure = `${from} is at no address in the database after the move`;
-    } else if (landed !== to) {
-        report.target = `${from} → ${landed}`;
-        report.failure = landed === from
-            ? `${from} stayed where it was — ${to} is taken and --overwrite was not passed`
-            : undefined;
-    }
+    const settledReport = await afterOperation(client, {
+        action: `moved from ${from}`, target: to, scope,
+        landing: () => whereIs(client, moving.uuid)
+    }, before, options);
+
+    const report: AssetReport = settledReport.landedAt === null
+        ? { ...settledReport, failure: `${from} is at no address in the database after the move` }
+        : settledReport;
     return outputOf(report, options,
         'a uuid survives the move, and absolute db:// paths inside an importer .meta do not: '
             + 'materialDumpDir on a model with dumped materials keeps naming the old folder');
@@ -210,6 +236,71 @@ export async function assetList(
         name: options.name, exactMatch: options.exact === true, maxResults
     });
     return { kind: 'assetList', assets: selection.assets, total: selection.total };
+}
+
+/**
+ * The copy is a new asset the importer has not seen yet, so the wait is part of the command: without
+ * it the next command against the copy is a race. Under the default rename-on-conflict the address
+ * asked for can still hold the original, and the copy is then wherever the database gained one.
+ */
+export async function assetCopy(
+    client: Driver, source: string, target: string,
+    options: WaitOptions & { overwrite?: boolean }
+): Promise<Report> {
+    const from = requireAssetUrl(source, 'the source asset');
+    const to = requireAssetUrl(target, 'the target address');
+    await requireOne(client, from);
+
+    const scope = commonAssetFolder(from, to);
+    const before = await snapshot(client, scope);
+    await client.editor.assetDb.copyAsset(from, to, {
+        overwrite: options.overwrite === true, rename: options.overwrite !== true
+    });
+
+    const report = await afterOperation(client, {
+        action: `copied from ${from}`, target: to, scope,
+        landing: settledReport => copiedAddress(to, settledReport.assets.added)
+    }, before, options);
+
+    return outputOf(report.landedAt === null
+        ? { ...report, failure: `no copy of ${from} appeared in the database` }
+        : report, options);
+}
+
+export async function assetRemove(
+    client: Driver, target: string, options: WaitOptions
+): Promise<Report> {
+    const url = requireAssetUrl(target, 'the asset to delete');
+    const existing = await requireOne(client, url);
+    const before = await snapshot(client, url);
+    await client.editor.assetDb.deleteAsset(url);
+
+    const report = await afterOperation(client, {
+        action: `deleted ${existing.uuid}`, target: url, scope: url,
+        landing: () => whereIs(client, existing.uuid)
+    }, before, options);
+
+    return outputOf(report.landedAt === null
+        ? report
+        : { ...report, failure: `${existing.uuid} is still at ${report.landedAt}` }, options);
+}
+
+export async function assetMkdir(
+    client: Driver, folder: string, options: WaitOptions
+): Promise<Report> {
+    const url = requireAssetUrl(folder, 'the folder to create');
+    const before = await snapshot(client, url);
+    await client.editor.assetDb.createAsset(url, null);
+
+    const report = await afterOperation(client, {
+        action: 'created', target: url, scope: url, landing: () => addressOf(client, url)
+    }, before, options);
+    if (report.landedAt === null) {
+        return outputOf({ ...report, failure: `${url} did not appear in the database` }, options);
+    }
+    const created = await queryOne(client, url);
+    return outputOf(report, options,
+        created && created.isDirectory === true ? undefined : `${url} is not a folder`);
 }
 
 export function registerAsset(program: Command, resolve: () => Promise<Resolved>): void {
@@ -266,77 +357,27 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
         }) => withClient(resolve, client => assetMove(
             client, source, target, { ...waitOptions(options), overwrite: options.overwrite })));
 
-    asset
+    waitFlags(asset
         .command('cp <source> <target>')
-        .description('copy an asset; the copy is a new asset with a new uuid that nothing references')
-        .option('--overwrite', 'replace a taken address instead of renaming')
-        .action((source: string, target: string, options: { overwrite?: boolean }) =>
-            withClient(resolve, async client => {
-                const from = requireAssetUrl(source, 'the source asset');
-                const to = requireAssetUrl(target, 'the target address');
-                const original = await requireOne(client, from);
-                await client.editor.assetDb.copyAsset(from, to, {
-                    overwrite: options.overwrite === true, rename: options.overwrite !== true
-                });
-                const landed = await queryOne(client, to);
-                if (!landed) {
-                    return {
-                        kind: 'action',
-                        verdict: 'FAILED',
-                        summary: `${to} did not appear in the database after the copy`
-                    };
-                }
-                if (landed.uuid === original.uuid) {
-                    return {
-                        kind: 'action',
-                        verdict: 'FAILED',
-                        summary: `${to} holds ${from} itself, and there is no copy`
-                    };
-                }
-                return {
-                    kind: 'action',
-                    verdict: 'ok',
-                    summary: `copied to ${landed.url}  ${landed.uuid}`
-                };
-            }));
+        .description('copy an asset and wait for the import to finish; the copy is a new asset with '
+            + 'a new uuid that nothing references')
+        .option('--overwrite', 'replace a taken address instead of renaming'))
+        .action((source: string, target: string, options: {
+            overwrite?: boolean; timeout?: string; quietFor?: string
+        }) => withClient(resolve, client => assetCopy(
+            client, source, target, { ...waitOptions(options), overwrite: options.overwrite })));
 
-    asset
+    waitFlags(asset
         .command('rm <path>')
-        .description('delete an asset or a whole folder')
-        .action((target: string) => withClient(resolve, async client => {
-            const url = requireAssetUrl(target, 'the asset to delete');
-            const existing = await requireOne(client, url);
-            await client.editor.assetDb.deleteAsset(url);
-            const stillThere = await whereIs(client, existing.uuid);
-            if (stillThere !== null) {
-                return {
-                    kind: 'action',
-                    verdict: 'FAILED',
-                    summary: `${existing.uuid} is still at ${stillThere}`
-                };
-            }
-            return {
-                kind: 'action', verdict: 'ok', summary: `deleted ${url}  ${existing.uuid}`
-            };
-        }));
+        .description('delete an asset or a whole folder and wait for the database to settle'))
+        .action((target: string, options: { timeout?: string; quietFor?: string }) =>
+            withClient(resolve, client => assetRemove(client, target, waitOptions(options))));
 
-    asset
+    waitFlags(asset
         .command('mkdir <folder>')
-        .description('create a folder in the asset database')
-        .action((folder: string) => withClient(resolve, async client => {
-            const url = requireAssetUrl(folder, 'the folder to create');
-            await client.editor.assetDb.createAsset(url, null);
-            const created = await queryOne(client, url);
-            if (!created) {
-                return { kind: 'action', verdict: 'FAILED', summary: `${url} did not appear in the database` };
-            }
-            return {
-                kind: 'action',
-                verdict: 'ok',
-                summary: `created ${created.url}  ${created.uuid}`,
-                note: created.isDirectory === true ? undefined : `${url} is not a folder`
-            };
-        }));
+        .description('create a folder in the asset database and wait for it to be imported'))
+        .action((folder: string, options: { timeout?: string; quietFor?: string }) =>
+            withClient(resolve, client => assetMkdir(client, folder, waitOptions(options))));
 
     asset
         .command('ready')

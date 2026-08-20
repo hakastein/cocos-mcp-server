@@ -124,12 +124,15 @@ export async function componentSet(client: Driver, spec: SetSpec): Promise<Repor
         throw new Error(`nothing can write property '${spec.property}' of kind '${kind}'`);
     }
 
+    const written = await verifiedWrite(target, value, client, verificationFor(kind));
     return {
-        kind: 'propertyWrite',
-        component: component.className,
-        property: spec.property,
-        value: spec.value,
-        report: await verifiedWrite(target, value, client, verificationFor(kind))
+        kind: 'write',
+        target: component.className,
+        writes: [{
+            target: component.className, property: spec.property, value: spec.value,
+            report: written.report
+        }],
+        undoNote: written.undoNote
     };
 }
 

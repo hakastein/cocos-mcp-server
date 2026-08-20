@@ -12,29 +12,37 @@ export interface VerifiedWriteOptions {
     verify?: 'readback' | 'disk' | 'serializer';
 }
 
+export interface VerifiedWrite {
+    report: WriteReport;
+    /** The bracket's own outcome, which the presenter spells; `null` is a step that held. */
+    undoNote: string | null;
+}
+
 export async function verifiedWrite(
     target: WriteTarget,
     value: unknown,
     ctx: Driver,
     opts: VerifiedWriteOptions = {}
-): Promise<WriteReport> {
+): Promise<VerifiedWrite> {
     const writer = writerFor(target, value);
     if (!writer) {
         return {
-            written: false, verified: false, persisted: false,
-            detail: `no writer claims ${componentPath(target)} (kind '${kindOf(target)}')`
+            report: {
+                written: false, verified: false, persisted: false,
+                detail: `no writer claims ${componentPath(target)} (kind '${kindOf(target)}')`
+            },
+            undoNote: null
         };
     }
 
-    const bracketed = await withUndoBracket(ctx, target.nodeUuid,
+    const { result, undoNote } = await withUndoBracket(ctx, target.nodeUuid,
         () => writer.write(target, value, ctx));
-    let report = bracketed.undoNote === null
-        ? bracketed.result
-        : addDetail(bracketed.result, bracketed.undoNote);
 
-    if (opts.verify === 'disk') return addDetail(report, await diskVerdict(ctx));
-    if (opts.verify === 'serializer') return await withSerializerVerdict(report, target, ctx);
-    return report;
+    if (opts.verify === 'disk') return { report: addDetail(result, await diskVerdict(ctx)), undoNote };
+    if (opts.verify === 'serializer') {
+        return { report: await withSerializerVerdict(result, target, ctx), undoNote };
+    }
+    return { report: result, undoNote };
 }
 
 /**

@@ -107,15 +107,17 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/discovery.ts` | enumerates channels, probes each with `hello`, `selectInstance` narrows by `--project` |
 | `cli/src/resolve.ts` | `resolveClient` — discovery, selection and connect, in the shape every command's `resolve` thunk needs |
 | `cli/src/driver/client.ts` | `DriverClient implements Driver` — the `editor.*`/`scene.*` facades over JSON-RPC; `editor` is generated from `EDITOR_METHODS` and typed by `EditorMethods`, `scene.call` by `SceneMethods` |
-| `cli/src/driver/memory.ts` | `MemoryDriver implements Driver` — the same seam over a scene held as data, so a command's writes read back. The scene is the test's own input: nodes with components, descriptors in the editor's dump shape, `classes` for what the engine registers, `refuses` for a message that says no, and a node's `prefab` block for what the next load rebuilds. A primitive it does not model refuses by name |
+| `cli/src/driver/memory.ts` | `MemoryDriver implements Driver` — the same seam over a scene held as data, so a command's writes read back. The scene is the test's own input: nodes with components, descriptors in the editor's dump shape, `classes` for what the engine registers, `refuses` for a message that says no, and a node's `prefab` block for what the next load rebuilds — a write inside an instance records the override the editor would record. A primitive it does not model refuses by name |
+| `cli/src/driver/memory-assets.ts` | `MemoryAssetDb` — the asset half of that seam, a database held as data: the `db://` glob, and the move/copy/create/delete that rename on conflict the way the editor does |
 | `cli/src/commands/shared.ts` | `withClient` (resolve → run → present → close) and `emit`, the one place command output touches `stdout`/`stderr`; plus `unwrap` (`SceneResult<T>` → value or thrown error) |
 | `cli/src/undo-bracket.ts` | `withUndoBracket` — one write wrapped in one undo step, `undoNote` when the editor refused or left it open |
 | `cli/src/node-snapshot.ts` | the editor's descriptor-wrapped node dump projected to what a write reads back |
 | `cli/src/node-transform.ts` | `parseVec3` (an empty axis keeps its value), and the 2D-node clamp that zeroes `position.z` / `rotation.x,y` and says which value it destroyed |
+| `cli/src/node-write.ts` | `NODE_STORAGE` (a node property → the name the serializer emits it under) and `withNodePersistence` — whether a save carries a write to a node's own property, including the prefab-override route |
 | `cli/src/prefab-linkage.ts` | the `type: 'cc.Prefab'` that separates a linked instance from a flat copy, and the two-sided linkage verdict (live node vs serializer) |
-| `cli/src/asset/` | the asset-database decisions: the `db://` glob and the name/limit cut a listing takes (`query.ts`), and the quiescence verdict a refresh waits on — snapshot fingerprint, `settled`, the asset and component-class deltas (`settle.ts`) |
+| `cli/src/asset/` | the asset-database decisions: the `db://` glob and the name/limit cut a listing takes (`query.ts`), and the quiescence verdict every asset command waits on — snapshot fingerprint, `settled`, the asset and component-class deltas, `AssetReport` and `copiedAddress` (`settle.ts`) |
 | `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`), the read side of a component dump — class selection, property rows, default comparison (`component-dump.ts`), uuid → scene name (`reference-index.ts`) and the spelling a reference value is written in — path, `db://` url or uuid (`reference-target.ts`) |
-| `cli/src/render/` | `verdict.ts` (the five head words and their exit codes) and `present.ts` (the `Report` union and `present`) over eight formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `node.ts`, `scene.ts`, `instances.ts`. Only `present.ts` is imported from outside `render/` |
+| `cli/src/render/` | `verdict.ts` (the five head words, their exit codes and `worstVerdict`) and `present.ts` (the `Report` union and `present`) over seven formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `scene.ts`, `instances.ts`. Only `present.ts` is imported from outside `render/` |
 
 Everything a command decides that does not need a live editor lives in a pure module beside
 `commands/`: `property/`, `render/`, `asset/`, `node-type.ts`, `node-snapshot.ts`, `node-transform.ts`,
@@ -126,7 +128,9 @@ Those and the command bodies are what the test suite covers — a command runs a
 
 ## Write Honesty and Undo Brackets
 
-A property write answers a `WriteReport` (`shared/src/scene-contract.ts`):
+Every write into the scene answers a `WriteReport` (`shared/src/scene-contract.ts`) — a component
+property, a node's own property, a reparent, a duplicate. One vocabulary, so the same situation gets
+the same word wherever it happens:
 
 - `written` — the write was issued; `verified` — the value was read back;
 - `persisted: boolean | null` — **three-state**. `true` proven a save carries it, `false` proven it
@@ -144,9 +148,22 @@ a `db://` url or a uuid; `commands/component.ts` turns it into a uuid **before**
 because an address that resolves to nothing must be refused rather than set as a value the editor
 silently turns into `null`.
 
+`node set`, `node mv` and `node dup` (`cli/src/commands/node.ts`) get their `persisted` from
+`cli/src/node-write.ts`'s `withNodePersistence`, which asks `serializedNodeValue` under the name the
+serializer emits the property by (`NODE_STORAGE`: `position` → `_lpos`, `rotation` → `_euler`, and
+so on — the file carries `_lrot` as well, and comparing a write against the quaternion would report
+every rotation as dropped). A node inside a prefab instance carries nothing of its own in the scene
+file, so there the verdict comes from the instance's property overrides instead: `nodePrefabLinkage`
+up the parent chain for the instance root and the node's `fileId`, then `listPrefabOverrides` for a
+record naming that `fileId` and that stored property.
+
 `cli/src/render/report.ts`'s `writeVerdict` turns a `WriteReport` into one of the five words below
 and `renderWriteReport` prints it — `persisted: null` prints as `unknown`, never as `false`, and
 `persisted: false` on the editor channel is `UNPERSISTED` rather than `ok` with a caveat in the tail.
+One bracket can carry several writes (`node set --name X --pos 1,2,3`); `renderWrites` then leads
+with a head line carrying `worstVerdict` of them, because a reader takes the head word off the first
+line and an `ok` there over an `UNPERSISTED` further down is exactly the lie this report exists to
+stop.
 
 ## Verdicts and the Presenter
 
@@ -175,19 +192,25 @@ dropped as a global in `bfb4d01`, because it promised structure where there is n
 bodies. A report with no structural form — `kind: 'action'`, a verdict plus a free-text tail —
 prints its text under `--json` too.
 
-The eight `render/*` formatters are internal to the presenter: nothing outside `render/` imports
+The seven `render/*` formatters are internal to the presenter: nothing outside `render/` imports
 them.
 
 **Undo brackets.** `withUndoBracket(client, nodeUuid, write)` (`cli/src/undo-bracket.ts`) wraps a
 write in the driver's begin/end-recording pair so Ctrl+Z takes it back, and returns an `undoNote`
-when the editor refused to record or left the step open. `driver/src/pipe-server.ts` backs this with
-a bracket gate: while one connection holds an open bracket, every other connection's calls wait for
-it, and a socket that closes mid-bracket has its dangling recording cancelled instead of left open.
+when the editor refused to record or left the step open. A command carries that `undoNote` to the
+presenter untouched: `render/report.ts`'s `undoDetail` is the one place it becomes words (`undo=1`
+when the bracket held, the note when it did not), and before that it was spelled out in three.
+`driver/src/pipe-server.ts` backs this with a bracket gate: while one connection holds an open
+bracket, every other connection's calls wait for it, and a socket that closes mid-bracket has its
+dangling recording cancelled instead of left open.
 
 ## Asset-Database Honesty
 
-Two facts about `asset-db` shape every command in `cli/src/commands/asset.ts`, and both were
-established live rather than read out of the typings:
+An asset operation answers an `AssetReport` (`cli/src/asset/settle.ts`), which is a different type
+from `WriteReport` and carries no `persisted`: an asset file is written at once and outside the undo
+stack, so a three-state field that is always inapplicable would be a lie in the type. Its verdicts
+are `ok` / `FAILED` / `TIMEOUT` only. Three facts about `asset-db` shape it, all established live
+rather than read out of the typings:
 
 - **`refresh-asset` and `reimport-asset` return before the import finishes.** So does the editor's
   own answer to `query-ready`, which flips back to `true` between two phases of one import. Waiting
@@ -195,13 +218,20 @@ established live rather than read out of the typings:
   fingerprint of the asset tree (uuid, url, mtime, `imported`) plus the registered component-class
   list, and `cli/src/asset/settle.ts`'s `settled()` calls it done only once the database reports
   ready **and** that fingerprint has held unchanged for `--quiet-for` (1.5 s by default). A run that
-  never goes quiet inside `--timeout` prints `TIMEOUT` and exits non-zero.
+  never goes quiet inside `--timeout` prints `TIMEOUT` and exits non-zero. **Every** asset command
+  that changes the database waits — `mv`, `cp`, `mkdir`, `rm` as well as `refresh` and `reimport` —
+  so `settled` is a real answer for all of them rather than a constant for some.
 - **`move-asset`, `copy-asset`, `create-asset` and `delete-asset` answer `null` on success.**
   Checked live 2026-08-20: a move that landed the file in its new folder with its uuid intact still
   answered `null`. Their return value is therefore never read. What happened is asked of the database
-  afterwards — `queryUrl(uuid)` for a move or a delete, `queryAssetInfo(url)` for a copy or a mkdir —
-  and the report names the address the asset actually reached, which under the default
-  rename-on-conflict is not always the one that was asked for.
+  afterwards and lands in `landedAt` — `queryUrl(uuid)` for a move or a delete, the settle diff's
+  `added` for a copy, `queryAssetInfo(url)` for a mkdir. `target` stays the address that was asked
+  for, and the line says `landed at …` only when the two differ.
+- **A taken address is renamed around, not refused.** Checked live 2026-08-20: `move-asset` of
+  `a.txt` onto an existing `b.txt` with `rename: true` (the default when `--overwrite` is absent)
+  landed it at `b-001.txt` with its uuid intact — it did not stay where it was. So a copy's address
+  is read off what the database GAINED (`copiedAddress`) rather than asked of the target url, which
+  would answer with whatever asset already sat there.
 
 The component-class delta is in the report for one reason: a refresh is run because the editor is
 serving a stale `@ccclass`, so `component classes: +TargetPolicy -Npc` is the answer to the

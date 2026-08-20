@@ -1,5 +1,5 @@
 import type { AssetRecord } from '../asset/query.ts';
-import type { AssetDiff, ClassDiff } from '../asset/settle.ts';
+import type { AssetReport } from '../asset/settle.ts';
 import { assetDiffEmpty } from '../asset/settle.ts';
 import type { Verdict } from './verdict.ts';
 
@@ -69,18 +69,6 @@ export function assetListSummary(shown: number, total: number): string {
         : `assets: ${total}, showing ${shown} — raise --max or narrow the search`;
 }
 
-export interface SettleReport {
-    /** What the editor was told to do, in the past tense: `refreshed`, `reimported`. */
-    action: string;
-    target: string;
-    elapsedMs: number;
-    settled: boolean;
-    /** The operation's own failure, apart from `did not go quiet`: what was promised did not happen. */
-    failure?: string;
-    assets: AssetDiff;
-    classes: ClassDiff | null;
-}
-
 const DEFAULT_LIST_CAP = 40;
 
 function listed(urls: readonly string[], mark: string, cap: number): string[] {
@@ -93,19 +81,22 @@ function listed(urls: readonly string[], mark: string, cap: number): string[] {
  * `refresh` and `reimport` return before the import finishes, so `the command ran` and `the database
  * finished importing` are two different pieces of news, and the second decides the verdict.
  */
-export function settleVerdict(report: SettleReport): Verdict {
+export function assetVerdict(report: AssetReport): Verdict {
     if (report.failure) return 'FAILED';
     return report.settled ? 'ok' : 'TIMEOUT';
 }
 
-export function renderSettleReport(report: SettleReport, cap: number = DEFAULT_LIST_CAP): string {
-    const head = settleVerdict(report);
+export function renderAssetReport(report: AssetReport, cap: number = DEFAULT_LIST_CAP): string {
+    const head = assetVerdict(report);
     const seconds = (report.elapsedMs / 1000).toFixed(1);
     const { added, removed, changed } = report.assets;
     const quiet = assetDiffEmpty(report.assets);
+    const elsewhere = report.landedAt !== null && report.landedAt !== report.target
+        ? `  landed at ${report.landedAt}`
+        : '';
 
     const lines = [
-        `${head}  ${report.target}  ${report.action} in ${seconds}s${quiet ? '  no changes' : ''}`
+        `${head}  ${report.target}  ${report.action} in ${seconds}s${elsewhere}${quiet ? '  no changes' : ''}`
     ];
     if (!quiet) {
         lines.push(`assets: +${added.length}  -${removed.length}  ~${changed.length}`);
@@ -127,7 +118,7 @@ export function renderSettleReport(report: SettleReport, cap: number = DEFAULT_L
  * delta are different answers, and the first has to be named — otherwise `the class never showed up`
  * reads as `the class did not change`.
  */
-export function settleNote(report: SettleReport, timeoutMs: number): string {
+export function assetNote(report: AssetReport, timeoutMs: number): string {
     if (!report.settled && !report.failure) {
         return `asset database did not go quiet in ${(timeoutMs / 1000).toFixed(0)}s — the import may still be running`;
     }

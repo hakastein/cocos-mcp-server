@@ -114,3 +114,41 @@ export function diffClasses(
         removed: Array.from(new Set(before.filter(name => !now.has(name))))
     };
 }
+
+/**
+ * What an asset-database operation did. There is no `persisted` here: an asset file is written at
+ * once and outside the scene's undo stack, so a three-state field that is always inapplicable would
+ * be a lie in the type. `landedAt` is what takes its place — under the default rename-on-conflict
+ * the address an asset reaches is not always the one it was sent to.
+ */
+export interface AssetReport {
+    /** What the editor was told to do, in the past tense: `refreshed`, `moved from db://…`. */
+    action: string;
+    /** The address the operation was aimed at. */
+    target: string;
+    /** Where the asset is now, asked of the database afterwards; `null` is at no address at all. */
+    landedAt: string | null;
+    settled: boolean;
+    elapsedMs: number;
+    assets: AssetDiff;
+    classes: ClassDiff | null;
+    /** The operation's own failure, apart from `did not go quiet`: what was promised did not happen. */
+    failure?: string;
+}
+
+/**
+ * Where a copy landed, read off what the database gained. Asking the target address instead would
+ * answer with whatever asset already sat there: `copy-asset` renames on conflict by default,
+ * checked live 2026-08-20 — `a.txt` onto a taken `b.txt` lands at `b-001.txt`. Only additions
+ * carrying the target's own stem are considered, so an unrelated import finishing in the same
+ * folder is not mistaken for the copy.
+ */
+export function copiedAddress(to: string, added: readonly string[]): string | null {
+    if (added.includes(to)) return to;
+    const dot = to.lastIndexOf('.');
+    const stem = dot > to.lastIndexOf('/') ? to.slice(0, dot) : to;
+    const renamed = added.filter(url => url.startsWith(`${stem}-`));
+    return renamed.length
+        ? renamed.reduce((shortest, url) => url.length < shortest.length ? url : shortest)
+        : null;
+}

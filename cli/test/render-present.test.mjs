@@ -25,11 +25,15 @@ test('an empty note does not become an empty line on stderr', () => {
 });
 
 const writeReport = (over = {}) => ({
-    kind: 'propertyWrite',
-    component: 'cc.Sprite',
-    property: 'color',
-    value: '#ffffff',
-    report: { written: true, verified: true, persisted: true, channel: 'editor', ...over }
+    kind: 'write',
+    target: 'cc.Sprite',
+    undoNote: null,
+    writes: [{
+        target: 'cc.Sprite',
+        property: 'color',
+        value: '#ffffff',
+        report: { written: true, verified: true, persisted: true, channel: 'editor', ...over }
+    }]
 });
 
 // The verdict is computed from the report's data: a command never passes it and so cannot drift
@@ -47,10 +51,11 @@ test('on the live channel persisted=false stays ok', () => {
 });
 
 const settle = (over = {}) => ({
-    kind: 'assetSettle',
-    settle: {
-        action: 'refreshed', target: 'db://assets/f', elapsedMs: 60000, settled: true,
-        assets: { added: [], removed: [], changed: [] }, classes: { added: [], removed: [] }, ...over
+    kind: 'asset',
+    asset: {
+        action: 'refreshed', target: 'db://assets/f', landedAt: 'db://assets/f', elapsedMs: 60000,
+        settled: true, assets: { added: [], removed: [], changed: [] },
+        classes: { added: [], removed: [] }, ...over
     },
     timeoutMs: 60000
 });
