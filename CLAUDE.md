@@ -19,9 +19,11 @@ modules landed, so a module buried on purpose does not get proposed back from gi
 Three npm workspaces, one repo:
 
 - `shared/` — types and pure logic both sides need.
-- `driver/` — the editor extension. Its `package.json` name is still `cocos-mcp-server` (existing
-  installs key off it); nothing else in this repo calls it that. It holds native primitives and
-  decides nothing, plus a small Vue settings panel that is unrelated to the primitive surface.
+- `driver/` — the editor extension, `cocos-cli-driver`. That name is declared once, in
+  `driver/src/extension-name.ts`, and the editor keys three separate things off it: the folder under
+  `{project}/extensions/`, `Editor.Panel.open`/`Editor.Message.request`, and the `name` of the scene
+  script. It holds native primitives and decides nothing, plus a small Vue settings panel that is
+  unrelated to the primitive surface.
 - `cli/` — the `cocos` binary. Command parsing, node-path resolution, undo brackets, verified writes,
   rendering — everything an agent-facing decision needs lives here.
 
@@ -473,8 +475,8 @@ A write-path change is only checked once the scene has been saved and Ctrl+Z tri
 
 ## Settings
 
-`{project}/settings/mcp-server.json`: `enableDebugLog` only. Every driver primitive and every CLI
-command is always reachable — there is no per-primitive or per-command enable/disable.
+`{project}/settings/cocos-cli-driver.json`: `enableDebugLog` only. Every driver primitive and every
+CLI command is always reachable — there is no per-primitive or per-command enable/disable.
 
 ## Agent skills
 

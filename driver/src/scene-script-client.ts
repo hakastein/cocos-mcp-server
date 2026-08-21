@@ -1,7 +1,8 @@
 import type { EditorApi } from './editor-api.ts';
 import type { SceneMethods } from '@cocos-cli/shared';
+import { EXTENSION_NAME } from './extension-name.ts';
 
-export const SCENE_SCRIPT_NAME = 'cocos-mcp-server';
+export const SCENE_SCRIPT_NAME = EXTENSION_NAME;
 
 export class SceneScriptClient {
     private readonly editor: EditorApi;

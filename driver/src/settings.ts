@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { DriverSettings } from './types/index.ts';
+import { EXTENSION_NAME } from './extension-name.ts';
+
+export const SETTINGS_FILE = `${EXTENSION_NAME}.json`;
 
 export const DEFAULT_SETTINGS: DriverSettings = {
     enableDebugLog: false
@@ -18,7 +21,7 @@ function ensureSettingsDir(): void {
 }
 
 function getSettingsPath(): string {
-    return path.join(getSettingsDir(), 'mcp-server.json');
+    return path.join(getSettingsDir(), SETTINGS_FILE);
 }
 
 export function readSettings(): DriverSettings {

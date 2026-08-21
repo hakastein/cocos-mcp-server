@@ -5,6 +5,7 @@ import { join } from 'path';
 import { createApp, defineComponent, ref, computed, onMounted, watch } from 'vue';
 import type { App } from 'vue';
 import type { DriverSettings } from '../../types/index.ts';
+import { EXTENSION_NAME } from '../../extension-name.ts';
 
 const panelDataMap = new WeakMap<any, App>();
 
@@ -25,7 +26,7 @@ module.exports = Editor.Panel.define({
         const app = createApp({});
         app.config.compilerOptions.isCustomElement = (tag) => tag.startsWith('ui-');
 
-        app.component('McpServerApp', defineComponent({
+        app.component('DriverApp', defineComponent({
             setup() {
                 const listening = ref(false);
                 const pipePath = ref('');
@@ -41,7 +42,7 @@ module.exports = Editor.Panel.define({
                 const saveSettings = async () => {
                     try {
                         await Editor.Message.request(
-                            'cocos-mcp-server', 'update-settings', { ...settings.value });
+                            EXTENSION_NAME, 'update-settings', { ...settings.value });
                         settingsChanged.value = false;
                     } catch (error) {
                         console.error('[cocos-cli Panel] Failed to save settings:', error);
@@ -61,7 +62,7 @@ module.exports = Editor.Panel.define({
                 const poll = async () => {
                     try {
                         const status = await Editor.Message.request(
-                            'cocos-mcp-server', 'get-driver-status');
+                            EXTENSION_NAME, 'get-driver-status');
                         if (!status) return;
                         listening.value = status.listening;
                         pipePath.value = status.pipePath;
@@ -79,7 +80,7 @@ module.exports = Editor.Panel.define({
                     statusClass, saveSettings, copyPipePath
                 };
             },
-            template: readFileSync(join(__dirname, '../../../static/template/vue/mcp-server-app.html'), 'utf-8'),
+            template: readFileSync(join(__dirname, '../../../static/template/vue/driver-app.html'), 'utf-8'),
         }));
 
         app.mount(this.$.app);

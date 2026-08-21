@@ -1,10 +1,10 @@
 {
   "package_version": 2,
-  "name": "cocos-mcp-server",
+  "name": "cocos-cli-driver",
   "version": "1.0.0",
-  "author": "CocosMCPPlugin",
+  "author": "hakastein",
   "editor": ">=3.8.0",
-  "description": "i18n:cocos-mcp-server.description",
+  "description": "i18n:cocos-cli-driver.description",
   "main": "./dist/main.js",
   "scripts": {
     "build": "tsc && tsup",
@@ -25,7 +25,7 @@
   },
   "panels": {
     "default": {
-      "title": "i18n:cocos-mcp-server.panel_title",
+      "title": "i18n:cocos-cli-driver.panel_title",
       "type": "dockable",
       "main": "dist/panels/default",
       "icon": "./static/icon.png",
@@ -40,8 +40,8 @@
   "contributions": {
     "menu": [
       {
-        "path": "i18n:menu.extension/Cocos MCP Server",
-        "label": "i18n:cocos-mcp-server.open_panel",
+        "path": "i18n:menu.extension/Cocos CLI Driver",
+        "label": "i18n:cocos-cli-driver.open_panel",
         "message": "open-panel"
       }
     ],

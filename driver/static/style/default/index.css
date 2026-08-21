@@ -1,4 +1,4 @@
-.mcp-server-panel {
+.driver-panel {
     padding: 20px;
     display: flex;
     flex-direction: column;
@@ -15,7 +15,7 @@ header h2 {
 }
 
 /* Vue3 app styles */
-.mcp-app {
+.driver-app {
     display: flex;
     flex-direction: column;
     height: 100%;

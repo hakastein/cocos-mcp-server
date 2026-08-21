@@ -7,7 +7,7 @@ description: Cocos Creator, open project — what nodes and components a scene h
 
 The open editor is the source of truth about the scene. The `cocos` binary asks it directly: one command in the shell, the answer on stdout.
 
-The bridge lives in the `hakastein/cocos-mcp-server` repository: `driver/` is the editor extension, `cli/` is the binary itself.
+The bridge lives in the `hakastein/cocos-cli-driver` repository: `driver/` is the editor extension, `cli/` is the binary itself.
 
 ## Searching `.scene` answers false-negative
 

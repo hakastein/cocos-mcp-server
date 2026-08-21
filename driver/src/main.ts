@@ -3,13 +3,14 @@ import type { DriverSettings } from './types/index.ts';
 import { EditorApi } from './editor-api.ts';
 import { SceneScriptClient } from './scene-script-client.ts';
 import { PipeServer } from './pipe-server.ts';
+import { EXTENSION_NAME } from './extension-name.ts';
 
 let settings: DriverSettings = readSettings();
 let server: PipeServer | null = null;
 
 export const methods: { [key: string]: (...any: any) => any } = {
     openPanel() {
-        Editor.Panel.open('cocos-mcp-server');
+        Editor.Panel.open(EXTENSION_NAME);
     },
 
     getDriverStatus() {

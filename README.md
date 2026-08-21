@@ -39,21 +39,21 @@ npm install && npm run build && npm link --workspace cli
 ```
 
 Then install the extension into the **project's** own `extensions` directory: copy `driver/` there
-under the name `cocos-mcp-server`, or make a junction to it under that name.
+under the name `cocos-cli-driver`, or make a junction to it under that name.
 
 ```
 {your-project}/
 └── extensions/
-    └── cocos-mcp-server/     ← this repo's driver/, renamed
+    └── cocos-cli-driver/     ← this repo's driver/, renamed
 ```
 
-The rename is required, not cosmetic: `driver/package.json` declares the name `cocos-mcp-server`,
-Cocos matches it against the folder, and existing installs key off it. The global
+The name has to match: `driver/package.json` declares `cocos-cli-driver` and Cocos matches it
+against the folder, so a folder under any other name drops out of the Extension Manager. The global
 `~/.CocosCreator/extensions/` directory does **not** work — Cocos loads extensions from the project
 only.
 
 Enable it under **Extension → Extension Manager → Project**. After any rebuild of `driver/` or
-`shared/`, toggle the extension **off and on by hand** — nothing else busts Node's require cache.
+`shared/`, **restart the editor** — toggling the extension off and on leaves the old bundle running.
 
 Check that the two halves found each other:
 
@@ -82,5 +82,5 @@ npm run build --workspace cli     # rebuild only the binary
 Exit codes: `0` ok, `1` the command failed, `2` bad usage, `3` no editor found, `4` the channel
 broke.
 
-Settings live in `{project}/settings/mcp-server.json` and hold one key, `enableDebugLog`. Every
+Settings live in `{project}/settings/cocos-cli-driver.json` and hold one key, `enableDebugLog`. Every
 command is always reachable; there is no per-command enable.
