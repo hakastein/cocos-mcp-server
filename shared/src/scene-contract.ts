@@ -57,7 +57,7 @@ export interface NodePropertyWrite {
 }
 
 export interface ComponentSummary {
-    type: string;
+    className: string;
     enabled: boolean;
 }
 
@@ -86,7 +86,6 @@ export interface DumpOptions {
 }
 
 export interface DumpedComponent {
-    type: string;
     className: string;
     uuid: string;
     enabled: boolean;

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { renderTree } from '../src/render/tree.ts';
 
 const node = (uuid, name, parentUuid, components = [], active = true) =>
-    ({ uuid, name, parentUuid, active, components: components.map(type => ({ type })) });
+    ({ uuid, name, parentUuid, active, components: components.map(className => ({ className })) });
 
 const scene = [
     node('u_canvas', 'Canvas', 'u_root', ['UITransform', 'Canvas']),
@@ -23,7 +23,7 @@ test('a node whose parent is absent from the list becomes a root', () => {
     assert.match(text.split('\n')[0], /^Canvas/);
 });
 
-test('component types go in brackets, comma-separated', () => {
+test('the registered class name goes in brackets, comma-separated', () => {
     assert.match(renderTree(scene), /Canvas {2}\[UITransform,Canvas\]/);
 });
 

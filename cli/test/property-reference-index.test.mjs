@@ -6,10 +6,7 @@ import { buildReferenceIndex, referencedUuids } from '../src/property/reference-
 const nodes = () => [
     {
         uuid: 'node-game', name: 'Game', path: 'Game',
-        components: [
-            { uuid: 'comp-root', className: 'GameRoot', type: 'GameRoot' },
-            { uuid: 'comp-boot', className: '', type: 'GameBootstrap' }
-        ]
+        components: [{ uuid: 'comp-root', className: 'GameRoot' }]
     },
     { uuid: 'node-hero', name: 'cc_hero', path: 'Characters/cc_hero', components: [] }
 ];
@@ -26,10 +23,6 @@ test('a component is indexed by the node address and its own class', () => {
     assert.deepEqual(buildReferenceIndex(nodes()).get('comp-root'), {
         kind: 'component', path: 'Game', className: 'GameRoot'
     });
-});
-
-test('a component with no registered name falls back to the JS class name', () => {
-    assert.equal(buildReferenceIndex(nodes()).get('comp-boot').className, 'GameBootstrap');
 });
 
 test('a node with no address is called by its name', () => {

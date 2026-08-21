@@ -18,7 +18,7 @@ export const getNodeInfo: SceneMethods['getNodeInfo'] = (nodeUuid) => {
                 parent: node.parent?.uuid,
                 children: node.children.map((child: any) => child.uuid),
                 components: node.components.map((comp: any) => ({
-                    type: comp.constructor.name,
+                    className: componentClassName(comp),
                     enabled: comp.enabled
                 }))
             }
@@ -85,7 +85,6 @@ export const dumpSceneNodes: SceneMethods['dumpSceneNodes'] = (options = {}) => 
                 };
                 if (withComps) {
                     entry.components = (child.components || []).map((c: any) => ({
-                        type: c && c.constructor ? c.constructor.name : 'Unknown',
                         className: componentClassName(c),
                         uuid: c && c.uuid,
                         enabled: c ? c.enabled !== false : false

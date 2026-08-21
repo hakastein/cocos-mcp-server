@@ -6,7 +6,7 @@ export interface DumpNode {
     name: string;
     parentUuid: string;
     active: boolean;
-    components?: { type: string }[];
+    components?: { className: string }[];
 }
 
 export interface TreeOptions {
@@ -36,7 +36,7 @@ export function renderTree(nodes: DumpNode[], options: TreeOptions = {}): string
     }
 
     const label = (node: DumpNode): string => {
-        const types = (node.components || []).map(component => component.type).join(',');
+        const types = (node.components || []).map(component => component.className).join(',');
         return (addressed.get(node) || node.name)
             + (types ? `  [${types}]` : '')
             + (node.active ? '' : '  (off)')

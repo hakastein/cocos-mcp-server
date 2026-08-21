@@ -29,7 +29,7 @@ export function buildReferenceIndex(nodes: SceneNodeEntry[]): Map<string, Refere
             index.set(component.uuid, {
                 kind: 'component',
                 path,
-                className: component.className || component.type
+                className: component.className
             });
         }
     }

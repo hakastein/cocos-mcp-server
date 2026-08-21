@@ -39,7 +39,8 @@ export async function nodeGet(client: Driver, spec: { target: string }): Promise
     const uuid = await resolveNode(client, spec.target);
     const info = await unwrap(client.scene.call('getNodeInfo', uuid), 'getNodeInfo');
     const components = (info.components || [])
-        .map(component => component.enabled === false ? `${component.type}(off)` : component.type)
+        .map(component => component.enabled === false
+            ? `${component.className}(off)` : component.className)
         .join(',');
     return {
         kind: 'action',

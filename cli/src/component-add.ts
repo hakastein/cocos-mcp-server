@@ -25,8 +25,6 @@ export async function queryComponents(client: Driver, nodeUuid: string): Promise
     return ((node && node.__comps__) as ComponentDump[] | undefined) || [];
 }
 
-/** Registered class names — `cc.MeshRenderer`, `GameBootstrap` — the way every other subcommand
- * names a component. `getNodeInfo` would answer the bare JS class instead. */
 async function componentNamesNow(client: Driver, nodeUuid: string): Promise<string[]> {
     return componentClassNames(await queryComponents(client, nodeUuid));
 }

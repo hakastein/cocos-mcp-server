@@ -519,7 +519,7 @@ export class MemoryDriver implements Driver {
                 parent: node.parent ? node.parent.uuid : undefined,
                 children: node.children.map(child => child.uuid),
                 components: node.components.map(component => ({
-                    type: component.type, enabled: component.enabled
+                    className: component.type, enabled: component.enabled
                 }))
             }
         };
@@ -547,8 +547,7 @@ export class MemoryDriver implements Driver {
             activeInHierarchy: node.active,
             childCount: node.children.length,
             components: node.components.map((component): DumpedComponent => ({
-                type: component.type, className: component.type,
-                uuid: component.uuid, enabled: component.enabled
+                className: component.type, uuid: component.uuid, enabled: component.enabled
             })),
             position: node.position, rotation: node.rotation, scale: node.scale
         }));
