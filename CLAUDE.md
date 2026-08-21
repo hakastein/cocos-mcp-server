@@ -85,8 +85,9 @@ are not: `component types` is the editor's Add Component menu (`scene:query-comp
 live 2026-08-21: 203 offered against 260 registered under `cc.Component`, the extra ones being
 abstract bases and deprecated aliases; `query-classes` with no `extends` answers `[]`, so the base is
 an argument rather than a filter, and `cc.Asset` is a legal base whose answers are no components at
-all. That is why they are two subcommands in two groups rather than one flag. A `project` group and a raw
-`evalInScene` escape hatch are future work, not yet wired to any command.
+all. That is why they are two subcommands in two groups rather than one flag. A `project` group is future
+work; the raw `evalInScene` escape hatch is implemented in the scene script and reachable from no
+command on purpose — [ADR-0002](docs/adr/0002-eval-in-scene-stays-unreachable.md).
 
 Three commands ask the driver nothing and open no connection: `ecs census`, `log tail` and
 `log search` resolve through `resolveProject`/`withProject`, which answers which project is open
@@ -498,3 +499,6 @@ See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 Single-context — `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+`CONTEXT.md` is the glossary: the term it defines is the term to use in an issue title, a test name
+or a report. `docs/adr/` holds what would otherwise be reopened — the burial of offline `.prefab` /
+`.meta` parsing (0001) and the deliberately unreachable `evalInScene` (0002).

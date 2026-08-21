@@ -31,9 +31,10 @@ Recover any of them with `git show 0e43954:source/<name>.ts`.
 ## Buried — the decision was that the question should not be answered this way
 
 Offline parsing of `.prefab` / `.meta` is buried on one reason: the live editor answers more
-precisely, and grepping serialized files answers false-negative. That reasoning is also in
-`skills/cocos/SKILL.md`. PLY-17 turns it into an ADR under `docs/adr/`; until that lands, this
-section is where the reason is written down.
+precisely, and grepping serialized files answers false-negative. The decision is
+[ADR-0001](adr/0001-offline-parsing-of-prefab-and-meta-is-buried.md), which also carries the
+`reference-scan.ts` exception; the same reasoning is in `skills/cocos/SKILL.md`. This table is the
+per-module manifest under it.
 
 | Module | Lines | What it decided | Why buried |
 |---|---|---|---|
