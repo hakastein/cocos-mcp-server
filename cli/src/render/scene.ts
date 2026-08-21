@@ -25,10 +25,6 @@ export function componentOwnersSummary(report: ComponentOwnerReport): string {
         + `, nodes scanned ${report.nodesScanned}`;
 }
 
-/**
- * The editor's own dirty flag counts undo steps, so a write made outside a bracket is invisible to
- * it; this report compares what the serializer would emit against what the file already holds.
- */
 export function renderSceneDirty(report: SceneDirtyReport): string {
     if (!report.differsFromDisk) {
         return `matches disk  ${report.scenePath || 'path unknown'}`;

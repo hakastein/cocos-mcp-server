@@ -1,10 +1,11 @@
 /**
  * The scene-vs-file comparison behind `scene dirty`.
  *
- * The editor's own dirty flag reports `_undoMgr.isDirty()`, which a set-property made outside a
- * begin-recording/end-recording pair never moves — so a scene holding a property this bridge wrote
- * was reported as clean. This walk is what answers instead, and its two load-bearing behaviours are
- * pinned here: the SceneAsset name is ignored, everything else is not.
+ * The editor's own dirty flag reports `_undoMgr.isDirty()`, which counts undo steps rather than
+ * file contents: it stays set once a write has been undone by writing the old value back, and a
+ * write the undo bracket did not carry never moves it. This walk is what answers instead, and its
+ * two load-bearing behaviours are pinned here: the SceneAsset name is ignored, everything else is
+ * not.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';

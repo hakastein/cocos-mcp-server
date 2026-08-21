@@ -41,7 +41,7 @@ cocos asset get <db://path>         # uuid, type, importer — see Assets below
 
 `scene owners` is the check before deleting a script: it walks the open scene and names every node carrying the class, marking `(off)` for a node switched off itself and `(under an off parent)` for one killed by a parent. Checked live 2026-08-20 — `cc.MeshRenderer` answered 169 owners out of 425 nodes scanned.
 
-`scene missing` exits 1 when it finds anything; a component whose script no longer resolves is the slot that crashes preview on scene load. `scene dirty` compares what the serializer would emit against the file, so it sees writes the editor's own dirty flag misses — it names the differing paths with both values.
+`scene missing` exits 1 when it finds anything; a component whose script no longer resolves is the slot that crashes preview on scene load. `scene dirty` compares what the serializer would emit against the file, so it answers about the file rather than about the undo stack the editor's own dirty flag counts — it names the differing paths with both values.
 
 `scene tree` is one call for the whole scene, and ordinary text grep works on it from there. Once the node is known, `node get` is cheaper.
 

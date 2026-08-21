@@ -390,10 +390,9 @@ export const resolveNodePaths: SceneMethods['resolveNodePaths'] = (paths) => {
  * the save path does and diffing that against the file's contents.
  *
  * The editor's own `query-dirty` cannot answer this. It reports `_undoMgr.isDirty()` — the undo
- * cursor's distance from the last save — and a `set-property` issued outside a
- * begin-recording/end-recording pair moves the scene without moving that cursor. Every write
- * this bridge makes is such a write, so the editor calls the scene clean while it holds changes
- * the file does not have.
+ * cursor's distance from the last save — so it is set by a write the undo bracket carried and
+ * stays set once that write has been undone by writing the old value back, while a write the
+ * bracket did not carry never moves it at all.
  *
  * `querySceneSerializedData` is the facade call whose output `save()` writes verbatim, so its
  * result and the file agree entry for entry on a saved scene — except for the SceneAsset's

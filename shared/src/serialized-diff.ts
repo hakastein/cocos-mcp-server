@@ -1,10 +1,10 @@
 /**
  * Comparing a scene's serialized form against the file that holds it.
  *
- * The editor's dirty flag counts undo steps, so it cannot see a write made outside a
- * begin-recording/end-recording pair — which is every write this bridge makes. Diffing what the
- * save path would emit against what the file already holds answers the same question without
- * depending on how the change was made.
+ * The editor's dirty flag counts undo steps, not file contents: it stays set once a write has been
+ * undone by writing the old value back, and a write the undo bracket did not carry never moves it.
+ * Diffing what the save path would emit against what the file already holds does not depend on how
+ * the change was made.
  */
 
 export interface SerializedDiff {
