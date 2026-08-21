@@ -8,7 +8,12 @@ import {
 } from '../prefab-linkage.ts';
 import { requireAssetUrl } from '../asset/query.ts';
 import { resolveNode } from './node.ts';
+import { misplacedDetail, placementHeld, placementOf } from '../node-placement.ts';
+import { settle } from '../settle.ts';
+import { worstVerdict } from '../render/verdict.ts';
 import type { AssetRecord } from '../asset/query.ts';
+import type { PollOptions } from '../component-add.ts';
+import type { NodePlacement } from '../node-placement.ts';
 import type { Vec3 } from '../node-transform.ts';
 import type { CreateNodeOptions } from '../prefab-linkage.ts';
 import type { Report } from '../render/present.ts';
@@ -78,6 +83,32 @@ export interface InstantiateSpec {
     name?: string;
     pos?: Vec3;
     unlink?: boolean;
+    /** How long the new node is looked for before it counts as never having appeared. */
+    poll?: PollOptions;
+}
+
+interface SettledPlacement {
+    placement: NodePlacement | null;
+    /** What the scene answered instead, when it refused to say where the node is. */
+    refusal?: string;
+}
+
+async function settledPlacement(
+    client: Driver, uuid: string, poll?: PollOptions
+): Promise<SettledPlacement> {
+    let placement: NodePlacement | null = null;
+    let refusal: string | undefined;
+    await settle(async () => {
+        const dump = await client.scene.call('dumpSceneNodes');
+        if (!dump.success) {
+            refusal = dump.error;
+            return false;
+        }
+        refusal = undefined;
+        placement = placementOf(dump.data.nodes, uuid);
+        return placement !== null;
+    }, poll);
+    return { placement, refusal };
 }
 
 export async function prefabInstantiate(client: Driver, spec: InstantiateSpec): Promise<Report> {
@@ -99,14 +130,30 @@ export async function prefabInstantiate(client: Driver, spec: InstantiateSpec): 
                 : '; an FBX/glTF main asset does not instantiate, and no gltf-scene sub-asset was found'));
     }
 
+    const source = `${payload.name} from ${url}  ${uuid}`
+        + (target.fromModel ? '  (through the gltf-scene sub-asset)' : '');
+    const { placement, refusal } = await settledPlacement(client, uuid, spec.poll);
+    if (!placement) {
+        return {
+            kind: 'action',
+            verdict: 'FAILED',
+            summary: source,
+            note: refusal
+                ? `the scene did not answer where the node is: ${refusal}`
+                : 'the editor answered that uuid and no such node is in the scene'
+        };
+    }
+
     const linkage = await unwrap(client.scene.call('nodePrefabLinkage', uuid), 'nodePrefabLinkage');
     const verdict = linkageVerdict(linkage, target.type, unlink);
+    const held = placementHeld(placement, payload.parent);
     return {
         kind: 'action',
-        verdict: verdict.verdict,
-        summary: `${payload.name} from ${url}  ${uuid}`
-            + (target.fromModel ? '  (through the gltf-scene sub-asset)' : ''),
-        note: verdict.detail
+        verdict: worstVerdict([verdict.verdict, held ? 'ok' : 'FAILED']),
+        summary: `${source}  at ${placement.path}`,
+        note: held
+            ? verdict.detail
+            : `${misplacedDetail(placement, spec.parent || 'the scene root')}\n${verdict.detail}`
     };
 }
 

@@ -233,17 +233,22 @@ export class MemoryDriver implements Driver {
                     return true;
                 },
                 createNode: async options => {
-                    const parent = options.parent === undefined
+                    const asked = options.parent === undefined
                         ? null
                         : this.requireNode(String(options.parent));
                     // `createNodeFromAsset` keeps the PrefabInfo only on the `cc.Prefab` branch that
                     // was not asked to unlink; every other call gets a flat copy, silently.
                     const linked = options.assetUuid !== undefined
                         && options.type === 'cc.Prefab' && options.unlinkPrefab !== true;
+                    const gained = options.assetUuid === undefined
+                        ? []
+                        : this.prefabRootComponents(String(options.assetUuid));
+                    const parent = this.canvasHome(asked, gained) || asked;
                     const child = this.adopt({
                         name: String(options.name || 'New Node'),
                         prefab: linked ? { asset: String(options.assetUuid) } : undefined,
-                        position: dumpedPosition(options)
+                        position: dumpedPosition(options),
+                        components: gained.map(type => ({ type }))
                     }, parent);
                     (parent ? parent.children : this.roots).push(child);
                     return child.uuid;
@@ -806,6 +811,27 @@ export class MemoryDriver implements Driver {
         const dump = ((this.spec && this.spec.prefabAssets) || {})[prefabUuid];
         if (!dump) return { success: false, error: `no prefab asset ${prefabUuid} could be read` };
         return { success: true, data: dump };
+    }
+
+    private prefabRootComponents(assetUuid: string): string[] {
+        const dump = ((this.spec && this.spec.prefabAssets) || {})[assetUuid];
+        const root = dump && dump.nodes.find(node => node.path === '');
+        return root ? root.components.map(component => component.className) : [];
+    }
+
+    /**
+     * `createNodeFromAsset` reparents a node carrying `cc.UITransform` under the nearest Canvas and
+     * drops the parent it was given — checked live 2026-08-21, a UI prefab asked for under
+     * `Environment` landed at `Environment/Canvas`. A parent already inside a Canvas keeps the node.
+     */
+    private canvasHome(parent: LiveNode | null, components: string[]): LiveNode | null {
+        if (!components.includes('cc.UITransform')) return null;
+        for (let at = parent; at; at = at.parent) if (this.isCanvas(at)) return null;
+        return this.everyNode().find(node => this.isCanvas(node)) || null;
+    }
+
+    private isCanvas(node: LiveNode): boolean {
+        return node.components.some(component => component.type === 'cc.Canvas');
     }
 
     /** A copy is built through `adopt`, so it gets its own uuids and file ids just as the original did. */

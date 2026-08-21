@@ -139,6 +139,7 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/node-snapshot.ts` | the editor's descriptor-wrapped node dump projected to what a write reads back |
 | `cli/src/node-transform.ts` | `parseVec3` (an empty axis keeps its value), and the 2D-node clamp that zeroes `position.z` / `rotation.x,y` and says which value it destroyed |
 | `cli/src/node-write.ts` | `NODE_STORAGE` (a node property → the name the serializer emits it under) and `withNodePersistence` — whether a save carries a write to a node's own property, including the prefab-override route |
+| `cli/src/node-placement.ts` | where a created node actually ended up, read off the scene's own node list: its path, its parent, and whether that parent is the one that was asked for — the scene root being read off the path, since a root node's parent is the scene itself |
 | `cli/src/prefab-linkage.ts` | the `type: 'cc.Prefab'` that separates a linked instance from a flat copy, and the two-sided linkage verdict (live node vs serializer) |
 | `cli/src/asset/` | the asset database, whole: the `db://` glob and the name/limit cut a listing takes (`query.ts`), the quiescence verdict every asset command waits on — snapshot fingerprint, `settled`, the asset and component-class deltas, `AssetReport` and `copiedAddress` (`settle.ts`), and the half that asks the editor — the reads, the tree snapshot and the `settleAssetDb` poll built on them (`db.ts`) |
 | `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`), the read side of a component dump — class selection, property rows, default comparison (`component-dump.ts`), uuid → scene name (`reference-index.ts`) and the spelling a reference value is written in — path, `db://` url or uuid (`reference-target.ts`) |
@@ -149,7 +150,7 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 
 Everything a command decides that does not need a live editor lives in a pure module beside
 `commands/`: `property/`, `render/`, `ecs/census.ts`, `log/`, `build-task.ts`, `asset/query.ts`, `asset/settle.ts`, `node-type.ts`,
-`node-snapshot.ts`, `node-transform.ts`, `prefab-linkage.ts`, `settle.ts`, `discovery.ts`'s
+`node-snapshot.ts`, `node-transform.ts`, `node-placement.ts`, `prefab-linkage.ts`, `settle.ts`, `discovery.ts`'s
 `selectInstance`. Those and the command bodies are what the test suite covers — a command runs against
 `cli/src/driver/memory.ts`, which answers as the seam does. What drives the editor without being a
 command sits beside those modules under its own name — `asset/db.ts`, `component-add.ts`,
@@ -338,6 +339,17 @@ is a link that dies on save — so `linkageVerdict` has four outcomes, not two, 
 serializer could not be reached is `UNVERIFIED` rather than a `false`. The other three map onto the
 same five words as a property write: no PrefabInfo is `FAILED`, a link the serializer drops is
 `UNPERSISTED`, a link confirmed on both sides is `ok`.
+
+**The parent is asked for and not obeyed.** `createNodeFromAsset` reparents a node carrying
+`cc.UITransform` under the nearest Canvas and drops the `parent` it was given — checked live
+2026-08-21 on `CyberCore`: a 2D prefab asked for under `Environment` landed at
+`Environment/Canvas/PLY21Applied`, and `cocos node get Environment/PLY21Applied` then answered
+`does not resolve`. So `prefab instantiate` waits for the node to appear in `dumpSceneNodes`, reads
+the path it actually has, and answers `FAILED` when that parent is not the one that was asked for —
+the node was created and linked, and the placement was not done. The tail names the real path, which
+is what the next command has to address it by. The node is left where the editor put it: a 2D node
+outside a Canvas draws nothing, so moving it back would break what the editor did on purpose.
+`cli/src/node-placement.ts` holds that comparison.
 
 `prefab create` writes the asset from `createPrefabFromNode2`, which is the editor's own serializer.
 A hand-rolled one was tried and dropped mesh and material references, producing prefabs that

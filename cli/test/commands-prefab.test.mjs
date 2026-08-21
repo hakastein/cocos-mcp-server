@@ -29,10 +29,32 @@ const RIFLE_DUMP = {
     ]
 };
 
+const PROBE_DUMP = {
+    prefabUuid: 'u-probe',
+    rootName: 'Probe',
+    nodeCount: 1,
+    componentCount: 1,
+    missingCount: 0,
+    nodes: [
+        {
+            path: '', name: 'Probe', active: true, fileId: 'f-probe',
+            components: [
+                { className: 'cc.UITransform', cid: null, fileId: 'f-ui', enabled: true, missing: false }
+            ]
+        }
+    ]
+};
+
+const FAST = { timeoutMs: 30, intervalMs: 5 };
+
 const project = (extra = {}) => new MemoryDriver({
-    nodes: [{ name: 'Environment' }],
-    assets: { 'db://assets/props': 'u-props', 'db://assets/props/rifle.prefab': 'u-rifle' },
-    prefabAssets: { 'u-rifle': RIFLE_DUMP },
+    nodes: [{ name: 'Environment', children: [{ name: 'Canvas', components: [{ type: 'cc.Canvas' }] }] }],
+    assets: {
+        'db://assets/props': 'u-props',
+        'db://assets/props/rifle.prefab': 'u-rifle',
+        'db://assets/ui/probe.prefab': 'u-probe'
+    },
+    prefabAssets: { 'u-rifle': RIFLE_DUMP, 'u-probe': PROBE_DUMP },
     ...extra
 });
 
@@ -62,8 +84,51 @@ test('instantiate puts the node under the named parent as a linked instance', as
         asset: 'db://assets/props/rifle.prefab', parent: 'Environment', name: 'Rifle'
     }));
     assert.match(output.stdout, /^ok {2}Rifle from db:\/\/assets\/props\/rifle\.prefab/);
+    assert.match(output.stdout, /at Environment\/Rifle$/);
     assert.match(output.stderr, /linked to u-rifle/);
     assert.ok(driver.uuidOf('Environment/Rifle'));
+});
+
+// `createNodeFromAsset` moves a node carrying `cc.UITransform` under the nearest Canvas and drops
+// the parent it was given, so `ok` here would send the next command at a path that resolves to
+// nothing.
+test('a node the editor hung elsewhere is FAILED, and the tail names the path it has', async () => {
+    const driver = project();
+    const output = present(await prefabInstantiate(driver, {
+        asset: 'db://assets/ui/probe.prefab', parent: 'Environment', name: 'Probe'
+    }));
+    assert.match(output.stdout, /^FAILED {2}Probe from db:\/\/assets\/ui\/probe\.prefab/);
+    assert.match(output.stdout, /at Environment\/Canvas\/Probe$/);
+    assert.match(output.stderr, /asked for under Environment.+cc\.UITransform/s);
+    assert.equal(output.failed, true);
+    assert.ok(driver.uuidOf('Environment/Canvas/Probe'));
+});
+
+test('a node asked for at the scene root and hung under a Canvas is FAILED too', async () => {
+    const output = present(await prefabInstantiate(project(), {
+        asset: 'db://assets/ui/probe.prefab', name: 'Probe'
+    }));
+    assert.match(output.stdout, /^FAILED/);
+    assert.match(output.stderr, /asked for under the scene root/);
+});
+
+test('a node that stayed at the scene root is not read as moved', async () => {
+    const output = present(await prefabInstantiate(project(), {
+        asset: 'db://assets/props/rifle.prefab', name: 'Rifle'
+    }));
+    assert.match(output.stdout, /^ok/);
+    assert.match(output.stdout, /at Rifle$/);
+});
+
+// `create-node` answers before the node is in the scene, so the uuid it names is not itself proof.
+test('a uuid the scene never shows is FAILED rather than reported as placed', async () => {
+    const driver = project();
+    driver.editor.scene.createNode = async () => 'ghostuuid';
+    const output = present(await prefabInstantiate(driver, {
+        asset: 'db://assets/props/rifle.prefab', parent: 'Environment', poll: FAST
+    }));
+    assert.match(output.stdout, /^FAILED/);
+    assert.match(output.stderr, /no such node is in the scene/);
 });
 
 // `create-node` forwards `type` verbatim and strips the PrefabInfo for anything but `cc.Prefab`,
