@@ -1,0 +1,7 @@
+Editor startup banner, written before the first timestamp
+27.07.2026 09:05:10 - log: [Scene] built on Thug
+27.07.2026 09:05:11 - error: Module "../Joystick" not found
+    at SkinnedMeshRenderer._tryBindAnimation (index.js:115295:23)
+    at Scene._activate (index.js:63356:44)
+27.07.2026 09:05:12 - warn: texture not compressed
+27.07.2026 09:05:13 - log: Use preview template

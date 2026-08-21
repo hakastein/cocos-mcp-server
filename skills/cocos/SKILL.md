@@ -259,6 +259,38 @@ Read the arrow's right side, not the argument you typed. `--overwrite` replaces 
 
 **Asset commands are outside the scene's undo stack.** Ctrl+Z does not take back an `asset rm`, `mv` or `cp`.
 
+## The editor's own log
+
+`temp/logs/project.log` is where the editor writes imports, compile errors and scene errors. Reading it needs no connection to the editor — only which project is open — so both commands work while the editor is busy.
+
+```bash
+cocos log tail                          # the most recent entries
+cocos log tail -n 20 --level warn       # only warnings and errors
+cocos log tail --since 15m --detail     # the last 15 minutes, stack frames printed
+cocos log search "_sealed"              # matching lines with the lines around each
+cocos log search "at .*\.ts:" --regex   # regex is opt-in; without it the pattern is literal text
+```
+
+An entry is a header line plus the stack frames under it, and the severity comes off the header — so a frame is never counted as an error of its own, and `--level error` keeps the frames belonging to a real error. Without `--detail` an entry says `+57 lines` instead of printing them.
+
+`log search` takes its pattern as a required argument: there is no call that searches for nothing and returns the head of the file. `--level` and `--since` narrow the search to the entries that survive them, and the summary line reports the true total when `-n` capped the page.
+
+## Building
+
+```bash
+cocos build status                      # is the build worker up, and what rows the Build panel holds
+cocos build run --platform web-mobile   # rebuild that platform's existing task, and wait
+cocos build panel                       # open the Build panel for whoever is at the editor
+```
+
+`build run` rebuilds the platform's **existing** Build-panel row with the settings that row holds, because building writes its options back onto the task. An override (`--debug`, `--options`) that disagrees with the saved task would edit that row permanently, so the call refuses and changes nothing; `--allow-task-edit` is the way to really make the change, and `--new-task` builds a separate row instead. A platform with more than one task refuses to be picked for — pass `--task <id>` from `build status`. Checked live 2026-08-21 on `CyberCore`: `--debug true` against a task saved with `debug=false` refused and built nothing, and a `--task` id belonging to another platform said so.
+
+The verdict comes from the builder's exit code first: 36 is the code for a build that succeeded, and anything else is `FAILED`. `UNVERIFIED` is only for a build whose task could not be read back at all; a task state that contradicts a successful exit code is `FAILED`. Checked live: rebuilding an existing web-mobile task answered `ok  BUILD_SUCCESS(36)  state=success  12.8s`.
+
+`--timeout` bounds the *wait*, not the build — the editor keeps building past it, and the command then answers `TIMEOUT` with `state=unknown` because the driver serves one request at a time and any read-back would queue behind the build. Watch it with `build status` afterwards.
+
+**Builds are outside the undo stack** and write to disk. A `--new-task` whose output path matches an existing row replaces that row's artefacts; the report names the task it landed on.
+
 ## Undo
 
 Every scene-writing command is wrapped in one undo bracket. Checked live: `node create` with a component and a position comes back with a single Ctrl+Z, whole, and the report prints `undo=1`. `node set` behaves the same with several properties named at once. Silence about undo means the bracket closed cleanly; a separate sentence appears when the editor refused to record the step or left it open.

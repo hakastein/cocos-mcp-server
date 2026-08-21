@@ -1,6 +1,7 @@
 import { EDITOR_METHODS, buildPathIndex, resolvePathInIndex } from '@cocos-cli/shared';
 import type {
-    AddedSkeletalSocket, ComponentOwner, ComponentOwnerReport, Driver, DumpedComponent,
+    AddedSkeletalSocket, BuildTask, BuildTaskOptions, BuildTasksInfo, ComponentOwner,
+    ComponentOwnerReport, Driver, DumpedComponent,
     EditorMethods, GeneratedPrefab, MissingScriptEntry, NodeDump, NodeInfo, PathIndexNode,
     PathResolution, PrefabAssetDump, PrefabLinkageReport, PrefabOverrideOutcome,
     PrefabOverrideRecord, PrefabOverrideRemoval, PrefabOverrideReport, PrefabSyncReport,
@@ -29,6 +30,7 @@ export class MemoryDriver implements Driver {
     private readonly roots: LiveNode[] = [];
     private readonly byUuid = new Map<string, LiveNode>();
     private readonly assets: MemoryAssetDb;
+    private readonly builder: MemoryBuilder;
     private readonly refuses: MemoryRefusals;
     /** Property overrides the editor recorded, keyed by the uuid of the instance root holding them. */
     private readonly overrides = new Map<string, PrefabOverrideRecord[]>();
@@ -36,6 +38,7 @@ export class MemoryDriver implements Driver {
     constructor(spec?: MemoryScene) {
         this.spec = spec || null;
         this.assets = new MemoryAssetDb((spec && spec.assets) || {});
+        this.builder = (spec && spec.builder) || {};
         this.refuses = (spec && spec.refuses) || {};
         for (const node of (spec && spec.nodes) || []) this.roots.push(this.adopt(node, null));
 
@@ -356,6 +359,25 @@ export class MemoryDriver implements Driver {
                     this.assets.remove(url);
                     return null as never;
                 }
+            },
+            builder: {
+                queryWorkerReady: async () => this.builder.ready !== false,
+                openPanel: async () => { },
+                queryTasksInfo: async (): Promise<BuildTasksInfo> => {
+                    if (this.refuses.queryTasksInfo) throw new Error(this.refuses.queryTasksInfo);
+                    return { list: this.buildTasks(), free: this.builder.idle };
+                },
+                queryTask: async taskId =>
+                    this.buildTasks().find(task => String(task.id) === String(taskId)) || null,
+                checkAndCompleteOptions: async options =>
+                    this.builder.completesOptions === false ? null : options,
+                addTask: async options => {
+                    if (this.builder.buildTakesMs) await sleep(this.builder.buildTakesMs);
+                    return this.runBuild(options);
+                }
+            },
+            project: {
+                profile: async (platform, key) => (this.builder.profile || {})[`${platform}.${key}`]
             }
         };
 
@@ -372,6 +394,27 @@ export class MemoryDriver implements Driver {
             }
         }
         return groups as unknown as EditorMethods;
+    }
+
+    // ----- The build panel as data -------------------------------------------------------------
+
+    private buildTasks(): BuildTask[] {
+        return this.builder.tasks || (this.builder.tasks = []);
+    }
+
+    /**
+     * Building a task writes the options it was given back onto that task — the fact the whole
+     * conflict refusal exists for, so the scene models it rather than answering an exit code alone.
+     */
+    private runBuild(options: BuildTaskOptions): number {
+        const tasks = this.buildTasks();
+        const existing = tasks.find(task => String(task.id) === String(options.taskId));
+        const task = existing || { id: options.taskId || `task-${tasks.length + 1}` };
+        if (!existing) tasks.push(task);
+        task.options = { ...task.options, ...options };
+        task.state = this.builder.finalState === undefined ? 'success' : this.builder.finalState;
+        task.message = this.builder.message;
+        return this.builder.exitCode === undefined ? 36 : this.builder.exitCode;
     }
 
     private logged(
@@ -1086,8 +1129,27 @@ export interface MemoryNode {
 /** Editor messages that refuse, each carrying the refusal it answers with. */
 export interface MemoryRefusals {
     setProperty?: string;
+    queryTasksInfo?: string;
     beginRecording?: string;
     endRecording?: string;
+}
+
+/** The Build panel held as data: the worker, its rows, and what a build of one resolves with. */
+export interface MemoryBuilder {
+    ready?: boolean;
+    idle?: boolean;
+    tasks?: BuildTask[];
+    /** What `add-task` resolves with; 36 is the editor's BUILD_SUCCESS. */
+    exitCode?: number;
+    /** The state the built task carries afterwards. */
+    finalState?: string;
+    /** How long `add-task` takes to resolve, for a build the caller stops waiting for. */
+    buildTakesMs?: number;
+    message?: string;
+    /** `check-and-complete-options` is outside the public typings and may answer nothing. */
+    completesOptions?: boolean;
+    /** `<platform>.<key>` → what `Editor.Profile.getProject` answers for it. */
+    profile?: Record<string, unknown>;
 }
 
 export interface MemoryScene {
@@ -1110,6 +1172,7 @@ export interface MemoryScene {
     registeredClasses?: Record<string, string[]>;
     /** What `close-scene` answers; the editor says `false` when it will not close the scene. */
     closeScene?: boolean;
+    builder?: MemoryBuilder;
 }
 
 interface LiveComponent {
@@ -1156,6 +1219,10 @@ type ModelledEditor = { [G in keyof EditorMethods]?: Partial<EditorMethods[G]> }
 function dumpedPosition(options: unknown): Vec3Like | undefined {
     const dump = (options as { dump?: { position?: { value?: Vec3Like } } }).dump;
     return dump && dump.position && dump.position.value ? dump.position.value : undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /** 1 << 30, the value of cc.Layers.Enum.DEFAULT. */

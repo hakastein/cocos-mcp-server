@@ -7,7 +7,11 @@ import {
     assetField, assetListSummary, assetNote, assetUsersSummary, assetVerdict, renderAssetInfo,
     renderAssetList, renderAssetReport, renderAssetUsers
 } from './asset.ts';
+import {
+    buildRunSummary, buildVerdict, builderStatusSummary, renderBuildRun, renderBuilderStatus
+} from './build.ts';
 import { censusSummary, censusVerdict, renderCensus } from './census.ts';
+import { logSearchSummary, logTailSummary, renderLogEntries, renderLogMatches } from './log.ts';
 import { classListSummary, renderClassList, renderSockets, socketsSummary } from './component.ts';
 import { renderWrites, undoDetail, writesVerdict } from './report.ts';
 import { renderTree } from './tree.ts';
@@ -24,6 +28,10 @@ import type { ClassEntry } from './component.ts';
 import type { RenderedWrite } from './report.ts';
 import type { DumpNode, TreeOptions } from './tree.ts';
 import type { AssetRecord } from '../asset/query.ts';
+import type { BuildRunReport, BuilderStatus } from '../build-task.ts';
+import type { LogWindow, ProjectLogEntry } from '../log/entries.ts';
+import type { LogFileInfo } from '../log/file.ts';
+import type { LogSearchResult } from '../log/search.ts';
 import type { CensusResult } from '../ecs/census.ts';
 import type { UnreadableFile } from '../ecs/kit.ts';
 import type { ComponentChoice, PropertyReading } from '../property/component-dump.ts';
@@ -82,6 +90,15 @@ export type Report =
     | { kind: 'prefabDump'; dump: PrefabAssetDump }
     | { kind: 'prefabOverrides'; overrides: PrefabOverrideReport }
     | { kind: 'instances'; instances: Hello[] }
+    /** The build worker and the rows of the editor's Build panel. */
+    | { kind: 'builderStatus'; status: BuilderStatus }
+    /** One build that ran to its end, judged on the builder's exit code and the task's own state. */
+    | { kind: 'buildRun'; run: BuildRunReport }
+    | {
+        kind: 'logTail'; file: LogFileInfo; window: LogWindow; entries: ProjectLogEntry[];
+        detail: boolean;
+    }
+    | { kind: 'logSearch'; file: LogFileInfo; window: LogWindow; result: LogSearchResult }
     /** The ECS kit read off disk: what reads each component key, and what writes it. */
     | {
         kind: 'census'; root: string; result: CensusResult; narrowed: boolean;
@@ -274,6 +291,38 @@ function render(report: Report): Rendered {
                 verdict: 'ok',
                 text: renderInstances(report.instances),
                 json: report.instances
+            };
+
+        case 'builderStatus':
+            return {
+                verdict: 'ok',
+                text: renderBuilderStatus(report.status),
+                json: report.status,
+                note: builderStatusSummary(report.status)
+            };
+
+        case 'buildRun':
+            return {
+                verdict: buildVerdict(report.run),
+                text: renderBuildRun(report.run),
+                json: report.run,
+                note: buildRunSummary(report.run)
+            };
+
+        case 'logTail':
+            return {
+                verdict: 'ok',
+                text: renderLogEntries(report.entries, report.detail),
+                json: { file: report.file, window: report.window, entries: report.entries },
+                note: logTailSummary(report.file, report.window, report.entries.length)
+            };
+
+        case 'logSearch':
+            return {
+                verdict: 'ok',
+                text: renderLogMatches(report.result),
+                json: { file: report.file, window: report.window, ...report.result },
+                note: logSearchSummary(report.file, report.window, report.result)
             };
 
         case 'census':

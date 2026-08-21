@@ -77,19 +77,23 @@ that is what lets the memory adapter drive a command body.
 them goes through `scene.*`, never through `editor.*`.
 
 Command groups implemented in `cli/src/commands/` today: `scene`, `node`, `component`, `prefab`,
-`asset`, `ecs`, plus the top-level `instances`. Two listings there answer questions that look like one and
+`asset`, `ecs`, `build`, `log`, plus the top-level `instances`. Two listings there answer questions that look like one and
 are not: `component types` is the editor's Add Component menu (`scene:query-components`), and
 `scene classes <base>` is the engine's class registry under a base (`scene:query-classes`). Measured
 live 2026-08-21: 203 offered against 260 registered under `cc.Component`, the extra ones being
 abstract bases and deprecated aliases; `query-classes` with no `extends` answers `[]`, so the base is
 an argument rather than a filter, and `cc.Asset` is a legal base whose answers are no components at
-all. That is why they are two subcommands in two groups rather than one flag. More groups (build, project, log, a raw `evalInScene`
-escape hatch) are future work, not yet wired to any command.
+all. That is why they are two subcommands in two groups rather than one flag. A `project` group and a raw
+`evalInScene` escape hatch are future work, not yet wired to any command.
 
-`ecs census` is the one command that asks the driver nothing. Its question — which component key a
+Three commands ask the driver nothing and open no connection: `ecs census`, `log tail` and
+`log search` resolve through `resolveProject`/`withProject`, which answers which project is open
+without connecting to it. Their questions are about files the editor does not answer for — the
+project's TypeScript, and `{projectPath}/temp/logs/project.log`.
+
+`ecs census`'s question — which component key a
 system reads and nothing writes — is about the project's TypeScript, which the editor does not
-answer; it needs only the open project's path, so it resolves through `resolveProject`/`withProject`
-and opens no connection. Its verdict is `ok` or `UNVERIFIED` only, because a census is not a write
+answer. Its verdict is `ok` or `UNVERIFIED` only, because a census is not a write
 and cannot fail halfway: `UNVERIFIED` is what a sweep that did not read the whole kit answers, and a
 `--kit` narrower than `db://assets` counts as exactly that — the writer the census did not look for
 leaves a key reading as starved, and the caller having asked for the narrowing does not confirm it.
@@ -136,10 +140,12 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/asset/` | the asset database, whole: the `db://` glob and the name/limit cut a listing takes (`query.ts`), the quiescence verdict every asset command waits on — snapshot fingerprint, `settled`, the asset and component-class deltas, `AssetReport` and `copiedAddress` (`settle.ts`), and the half that asks the editor — the reads, the tree snapshot and the `settleAssetDb` poll built on them (`db.ts`) |
 | `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`), the read side of a component dump — class selection, property rows, default comparison (`component-dump.ts`), uuid → scene name (`reference-index.ts`) and the spelling a reference value is written in — path, `db://` url or uuid (`reference-target.ts`) |
 | `cli/src/ecs/` | the ECS kit read off disk, no driver in either half: `census.ts` — the per-key sweep over the TypeScript parser's own syntax trees, moved from the MCP-era `source/ecs-census.ts` unchanged; `kit.ts` — the `db://assets` → directory mapping and the walk that feeds it, which follows the directory junction a shared kit is mounted into `assets/` by |
-| `cli/src/render/` | `verdict.ts` (the five head words, their exit codes and `worstVerdict`) and `present.ts` (the `Report` union and `present`) over nine formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `scene.ts`, `component.ts` (the class registry and a node's bone sockets, both listings), `instances.ts`, `census.ts`, over `columns.ts`'s `padRight`/`columnWidth`. Only `present.ts` is imported from outside `render/` |
+| `cli/src/build-task.ts` | the builder's own vocabulary, kept because the editor's typings do not carry it: `BuildExitCode` (the builder answers 36 for a build that succeeded), `BUILD_PLATFORMS`, `describeTask`, and `settingConflicts` — which overrides would overwrite a Build-panel row's saved settings; plus `BuilderStatus` and `BuildRunReport`, the two shapes `render/build.ts` prints |
+| `cli/src/log/` | `{projectPath}/temp/logs/project.log`, no driver in any of the three: `entries.ts` — entry-level parsing, where the level is read from the line's own `- <level>:` field and continuation lines fold into the entry that owns them; `search.ts` — literal-by-default line search, where a blank pattern throws and regex is opt-in; `file.ts` — the read off disk, splitting the text on CRLF as well as LF because the editor writes CRLF |
+| `cli/src/render/` | `verdict.ts` (the five head words, their exit codes and `worstVerdict`) and `present.ts` (the `Report` union and `present`) over eleven formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `scene.ts`, `component.ts` (the class registry and a node's bone sockets, both listings), `instances.ts`, `census.ts`, `build.ts`, `log.ts`, over `columns.ts`'s `padRight`/`columnWidth`. Only `present.ts` is imported from outside `render/` |
 
 Everything a command decides that does not need a live editor lives in a pure module beside
-`commands/`: `property/`, `render/`, `ecs/census.ts`, `asset/query.ts`, `asset/settle.ts`, `node-type.ts`,
+`commands/`: `property/`, `render/`, `ecs/census.ts`, `log/`, `build-task.ts`, `asset/query.ts`, `asset/settle.ts`, `node-type.ts`,
 `node-snapshot.ts`, `node-transform.ts`, `prefab-linkage.ts`, `settle.ts`, `discovery.ts`'s
 `selectInstance`. Those and the command bodies are what the test suite covers — a command runs against
 `cli/src/driver/memory.ts`, which answers as the seam does. What drives the editor without being a
@@ -278,6 +284,37 @@ changed".
 
 Asset operations are outside the scene's undo stack; Ctrl+Z does not take them back.
 
+## Builds and the Editor Log
+
+`build run` rebuilds the platform's EXISTING Build-panel row, because `add-task` writes the options
+it was given back onto the task it names: an override that disagrees with that row is a permanent
+edit to it, indistinguishable from editing the field in the panel. So every check runs before
+`add-task` and a refusal leaves the panel exactly as it found it — an ambiguous platform, an
+override the task disagrees with, a `--task` belonging to another platform. `--allow-task-edit` is
+how the edit is actually asked for, and `modifiedTaskSettings` then names the fields it wrote.
+
+The verdict comes from `cli/src/render/build.ts`'s `buildVerdict`, on the same three-state reasoning
+as `persisted`: the editor's own exit-code table is the authority (36 is BUILD_SUCCESS, declared in
+`builtin/builder/@types/protected/options.d.ts`, outside the public typings — hence the hand-written
+table in `cli/src/build-task.ts`), and the task's state reads the build back. `unknown` — no row
+could be read — is the only `UNVERIFIED`; a row saying anything other than `success` has read the
+build back and contradicted it, which is `FAILED`. Checked live 2026-08-21 on `CyberCore`: rebuilding
+`cc_action_1a` in place answered `BUILD_SUCCESS(36) state=success 12.8s` and exit 0.
+
+**A timeout asks the driver nothing more.** `driver/src/pipe-server.ts` serves one request at a time,
+so a read-back issued after `--timeout` ran out would queue behind the build still running and the
+wait would not end after all. Checked live 2026-08-21: `--timeout 2000` returned in 2.0 s with
+`TIMEOUT  no exit code  state=unknown`, and the build finished in the editor regardless. Builds are
+outside the undo stack and write to disk.
+
+`log tail` and `log search` read `{projectPath}/temp/logs/project.log` and open no connection at
+all, so they answer while the editor is busy. Two facts shape them, both from the file rather than
+from any typing: an entry is a header line plus the stack frames under it — 84% of the lines are
+frames — so the severity is read off the header and `--level error` carries the frames of a real
+error with it; and the editor writes CRLF, so `cli/src/log/file.ts` splits the text on CRLF as
+well as LF (checked live 2026-08-21: without it every line reached `--json` with a trailing carriage
+return and a `$`-anchored `--regex` search matched nothing).
+
 ## Prefab Linkage
 
 A node made from a prefab asset is either an INSTANCE that tracks the asset or a flat copy that
@@ -327,7 +364,8 @@ rendered empty.
    A command that asks the driver nothing takes no client: its body is `(spec) => Promise<Report>`,
    its group is registered against `resolveProject` rather than `resolveClient`, and the action hands
    it to `withProject(resolve, hello => xxx({ projectPath: hello.projectPath, ... }))`, which does
-   the same four things without opening a connection. `ecs census` is the one such command today.
+   the same four things without opening a connection. `ecs census`, `log tail` and `log search` are
+   the commands of that shape today.
 3. Call a primitive as `client.editor.<group>.<method>(...)` or `client.scene.call('<method>', ...)`
    — the latter is typed against `SceneMethods`, so a signature drift is a compile error. Use
    `unwrap()` from `commands/shared.ts` when the command needs the scene script's `data` rather than
