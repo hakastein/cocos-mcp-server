@@ -1,7 +1,7 @@
 import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
 import { unwrap, withClient } from './shared.ts';
-import { addComponent, queryComponents } from '../component-add.ts';
+import { addComponent, queryComponents, unverifiedAddNote } from '../component-add.ts';
 import { jsonFlag, requiredNumberFlag } from './flags.ts';
 import { verifiedWrite, withSerializerVerdict } from '../property/verified-write.ts';
 import { readBack, readBackMismatches, componentPath, writerFor } from '../property/writers.ts';
@@ -207,6 +207,13 @@ export interface AddSpec {
 export async function componentAdd(client: Driver, spec: AddSpec): Promise<Report> {
     const uuid = await resolveNode(client, spec.node);
     const outcome = await addComponent(client, uuid, spec.component, spec.poll);
+    if (!outcome.verified) {
+        return {
+            kind: 'action',
+            verdict: 'UNVERIFIED',
+            summary: `${spec.component} added to ${spec.node}  ${unverifiedAddNote(outcome)}`
+        };
+    }
     return {
         kind: 'action',
         verdict: 'ok',

@@ -1,14 +1,14 @@
 import type { Driver, WriteReport } from '@cocos-cli/shared';
 import { Command } from 'commander';
 import { unwrap, withClient } from './shared.ts';
-import { addComponent } from '../component-add.ts';
+import { addComponent, unverifiedAddNote } from '../component-add.ts';
 import { booleanFlag, numberFlag, vec3Flag, vec3PartsFlag } from './flags.ts';
 import { withUndoBracket } from '../undo-bracket.ts';
 import { settle } from '../settle.ts';
 import { classifyNode } from '../node-type.ts';
 import { nodePropertyOf, nodeSnapshotOf } from '../node-snapshot.ts';
 import { TRANSFORM_KINDS, normalizedTransform, sameVec3 } from '../node-transform.ts';
-import type { PollOptions } from '../component-add.ts';
+import type { ComponentAddOutcome, PollOptions } from '../component-add.ts';
 import type { NodeProperty, NodeSnapshot } from '../node-snapshot.ts';
 import type { TransformKind, Vec3, Vec3Parts } from '../node-transform.ts';
 import { withNodePersistence } from '../node-write.ts';
@@ -71,9 +71,9 @@ export async function nodeCreate(client: Driver, spec: CreateSpec): Promise<Repo
         const createdUuid = await client.editor.scene.createNode({
             parent: parentUuid, name: spec.name
         }) as string;
-        const registered: string[] = [];
+        const added: ComponentAddOutcome[] = [];
         for (const type of spec.components) {
-            registered.push((await addComponent(client, createdUuid, type, spec.poll)).type);
+            added.push(await addComponent(client, createdUuid, type, spec.poll));
         }
         if (spec.pos) {
             await client.editor.scene.setProperty({
@@ -82,14 +82,22 @@ export async function nodeCreate(client: Driver, spec: CreateSpec): Promise<Repo
                 dump: { type: 'cc.Vec3', value: spec.pos }
             });
         }
-        return { createdUuid, registered };
+        return { createdUuid, added };
     });
+
+    const registered: string[] = [];
+    const unnamed: string[] = [];
+    for (const outcome of result.added) {
+        if (outcome.verified) registered.push(outcome.type);
+        else unnamed.push(unverifiedAddNote(outcome));
+    }
 
     return {
         kind: 'action',
-        verdict: 'ok',
+        verdict: unnamed.length ? 'UNVERIFIED' : 'ok',
         summary: `created ${spec.parent}/${spec.name}  ${result.createdUuid}`
-            + (result.registered.length ? `  [${result.registered.join(',')}]` : ''),
+            + (registered.length ? `  [${registered.join(',')}]` : '')
+            + (unnamed.length ? `  ${unnamed.join('  ')}` : ''),
         undoNote
     };
 }

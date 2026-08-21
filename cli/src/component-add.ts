@@ -30,19 +30,20 @@ async function componentNamesNow(client: Driver, nodeUuid: string): Promise<stri
 }
 
 /**
- * The first type in `after` a running count from `before` cannot account for. A growing
- * multiset rather than a set difference, because a node can already carry several components of
- * the same type — the only way to tell an old instance from the one just added is by count.
+ * Every type in `after` a running count from `before` cannot account for. A growing multiset rather
+ * than a set difference, because a node can already carry several components of the same type — the
+ * only way to tell an old instance from the one just added is by count.
  */
-function newlyAppearedType(before: string[], after: string[]): string | null {
+function newlyAppearedTypes(before: string[], after: string[]): string[] {
     const remaining = new Map<string, number>();
     for (const type of before) remaining.set(type, (remaining.get(type) || 0) + 1);
+    const appeared: string[] = [];
     for (const type of after) {
         const left = remaining.get(type) || 0;
         if (left > 0) { remaining.set(type, left - 1); continue; }
-        return type;
+        appeared.push(type);
     }
-    return null;
+    return appeared;
 }
 
 export interface PollOptions {
@@ -50,21 +51,60 @@ export interface PollOptions {
     intervalMs?: number;
 }
 
-async function pollForNewComponent(
-    client: Driver, nodeUuid: string, before: string[], pollOptions?: PollOptions
-): Promise<string | null> {
-    let found: string | null = null;
-    await settle(async () => {
-        found = newlyAppearedType(before, await componentNamesNow(client, nodeUuid));
-        return found !== null;
-    }, pollOptions);
-    return found;
+interface Appearance {
+    matched: string | null;
+    appeared: string[];
 }
 
-export interface ComponentAddOutcome {
-    /** The name the component actually registered under — never the spelling the caller typed. */
+/**
+ * A class declaring a requirement makes the editor attach that requirement AHEAD of it, so the
+ * first component to appear is not the one that was asked for. The wait therefore runs until a
+ * spelling of the asked-for type appears, and what else the node gained comes back with it.
+ */
+async function pollForNewComponent(
+    client: Driver, nodeUuid: string, before: string[], spellings: string[], pollOptions?: PollOptions
+): Promise<Appearance> {
+    let appeared: string[] = [];
+    await settle(async () => {
+        appeared = newlyAppearedTypes(before, await componentNamesNow(client, nodeUuid));
+        return appeared.some(type => spellings.includes(type));
+    }, pollOptions);
+    return { matched: appeared.find(type => spellings.includes(type)) || null, appeared };
+}
+
+/** An add whose component was read back: `type` is the name it actually registered under. */
+export interface ComponentRegistered {
+    verified: true;
     type: string;
     alreadyPresent: boolean;
+}
+
+/**
+ * The node gained several components and no spelling of the type asked for names any of them, so
+ * every registered name on offer is a guess — which is the choice this outcome refuses to make.
+ */
+export interface ComponentUnverified {
+    verified: false;
+    spellings: string[];
+    appeared: string[];
+}
+
+export type ComponentAddOutcome = ComponentRegistered | ComponentUnverified;
+
+/** What an add with no registered name to report says in place of naming one. */
+export function unverifiedAddNote(outcome: ComponentUnverified): string {
+    return `the node gained ${outcome.appeared.join(', ')}`
+        + `, nothing named ${outcome.spellings.join(' or ')}`;
+}
+
+/**
+ * A spelling of the type asked for names the component; failing that, a single new component is the
+ * one the add produced and there is nothing to choose between.
+ */
+function outcomeOf(spellings: string[], seen: Appearance): ComponentAddOutcome {
+    const named = seen.matched || (seen.appeared.length === 1 ? seen.appeared[0] : null);
+    if (named) return { verified: true, type: named, alreadyPresent: false };
+    return { verified: false, spellings, appeared: seen.appeared };
 }
 
 /** Neither add path is trusted on its own word — each spelling is tried, then polled for. Shared by
@@ -74,18 +114,20 @@ export async function addComponent(
 ): Promise<ComponentAddOutcome> {
     const components = await queryComponents(client, nodeUuid);
     const present = selectComponent(components, type);
-    if (present) return { type: present.className, alreadyPresent: true };
+    if (present) return { verified: true, type: present.className, alreadyPresent: true };
     const before = componentClassNames(components);
+    const spellings = spellingCandidates(type);
 
-    for (const candidate of spellingCandidates(type)) {
+    for (const candidate of spellings) {
         await client.editor.scene.createComponent({ uuid: nodeUuid, component: candidate }).catch(() => undefined);
-        let found = await pollForNewComponent(client, nodeUuid, before, pollOptions);
-        if (found) return { type: found, alreadyPresent: false };
+        let seen = await pollForNewComponent(client, nodeUuid, before, spellings, pollOptions);
+        // Anything at all on the node is this add's doing; a further add would only pile up a copy.
+        if (seen.appeared.length) return outcomeOf(spellings, seen);
 
         const fallback = await client.scene.call('addComponentToNode', nodeUuid, candidate);
         if (fallback.success) {
-            found = await pollForNewComponent(client, nodeUuid, before, pollOptions);
-            if (found) return { type: found, alreadyPresent: false };
+            seen = await pollForNewComponent(client, nodeUuid, before, spellings, pollOptions);
+            if (seen.appeared.length) return outcomeOf(spellings, seen);
         }
     }
 

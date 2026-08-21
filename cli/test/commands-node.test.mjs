@@ -85,6 +85,23 @@ test('the report names the registered component name rather than the one asked f
     assert.match(text, /\[cc\.MeshRenderer\]/);
 });
 
+// The editor attaches a declared requirement ahead of the class asked for, so the dependency is
+// the first component to appear on the created node.
+test('the report names the component asked for, not the dependency attached ahead of it', async () => {
+    const driver = scene({ classes: [], attaches: { 'cc.Sprite': ['cc.UITransform', 'cc.Sprite'] } });
+    const text = await printed(nodeCreate(
+        driver, { parent: 'Canvas/Bg', name: 'New', components: ['cc.Sprite'], poll: FAST }));
+    assert.match(text, /^ok {2}created Canvas\/Bg\/New {2}\S+ {2}\[cc\.Sprite\]/);
+});
+
+test('a created node whose component appeared under no spelling asked for is UNVERIFIED', async () => {
+    const driver = scene({ classes: [], attaches: { '2f3aRk1': ['cc.UITransform', 'cc.Sprite'] } });
+    const text = await printed(nodeCreate(
+        driver, { parent: 'Canvas/Bg', name: 'New', components: ['2f3aRk1'], poll: FAST }));
+    assert.match(text,
+        /^UNVERIFIED {2}created Canvas\/Bg\/New {2}\S+ {2}the node gained cc\.UITransform, cc\.Sprite, nothing named 2f3aRk1 or cc\.2f3aRk1/);
+});
+
 test('a component the engine never registered is refused rather than passed off as ok', async () => {
     await assert.rejects(
         () => nodeCreate(scene({ classes: [] }),

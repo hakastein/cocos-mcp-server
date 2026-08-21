@@ -158,8 +158,22 @@ export class MemoryDriver implements Driver {
 
     /** The engine holds a fixed set of registered classes; a scene that names none registers any. */
     private registers(type: string): boolean {
+        if (this.gainedFor(type)) return true;
         const classes = this.spec && this.spec.classes;
         return !classes || classes.includes(type);
+    }
+
+    private gainedFor(spelling: string): string[] | undefined {
+        const attaches = this.spec && this.spec.attaches;
+        return attaches ? attaches[spelling] : undefined;
+    }
+
+    private attachRequested(node: LiveNode, spelling: string): void {
+        for (const type of this.gainedFor(spelling) || [spelling]) {
+            if (!node.components.some(component => component.type === type)) {
+                this.attach(node, { type });
+            }
+        }
     }
 
     private attach(node: LiveNode, component: MemoryComponent): void {
@@ -254,7 +268,7 @@ export class MemoryDriver implements Driver {
                 },
                 createComponent: async options => {
                     const node = this.requireNode(options.uuid);
-                    if (this.registers(options.component)) this.attach(node, { type: options.component });
+                    if (this.registers(options.component)) this.attachRequested(node, options.component);
                 },
                 removeComponent: async ({ uuid }) => {
                     for (const node of this.everyNode()) {
@@ -557,7 +571,7 @@ export class MemoryDriver implements Driver {
     private addComponentToNode(uuid: string, type: string): SceneResult<{ componentId: string }> {
         const node = this.requireNode(uuid);
         if (!this.registers(type)) return { success: false, error: `Component type not found: ${type}` };
-        this.attach(node, { type });
+        this.attachRequested(node, type);
         return { success: true, data: { componentId: node.components[node.components.length - 1].uuid } };
     }
 
@@ -1159,6 +1173,12 @@ export interface MemoryScene {
     assets?: Record<string, string>;
     /** The class names the engine registers; a scene naming none registers every spelling. */
     classes?: string[];
+    /**
+     * What a node GAINS when an add is given this spelling, in the order the editor attaches it: a
+     * class that declares a requirement gets that requirement attached ahead of itself. A spelling
+     * absent from here attaches itself alone, and one present here registers whatever `classes` says.
+     */
+    attaches?: Record<string, string[]>;
     refuses?: MemoryRefusals;
     /** What the scene answers when asked how it differs from the file on disk. */
     dirty?: SceneDirtyReport;

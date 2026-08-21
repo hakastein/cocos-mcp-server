@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { addComponent } from '../src/component-add.ts';
+import { addComponent, unverifiedAddNote } from '../src/component-add.ts';
 import { MemoryDriver } from '../src/driver/memory.ts';
 
 const FAST = { timeoutMs: 30, intervalMs: 5 };
@@ -58,4 +58,35 @@ test('already on the node is recognized by the bare spelling too, not only by th
     assert.equal(outcome.alreadyPresent, true);
     assert.equal(outcome.type, 'cc.Sprite');
     assert.deepEqual(tried(driver), []);
+});
+
+// A class that declares a requirement makes the editor attach that requirement AHEAD of it, so the
+// first component to appear on the node is the dependency rather than the one asked for.
+const withDependency = (attaches, classes = []) => new MemoryDriver({
+    nodes: [{ name: 'Hero' }], classes, attaches
+});
+
+test('the dependency attached ahead of the component does not take its place in the report', async () => {
+    const driver = withDependency({ 'cc.Sprite': ['cc.UITransform', 'cc.Sprite'] });
+    const outcome = await addComponent(driver, driver.uuidOf('Hero'), 'cc.Sprite', FAST);
+    assert.equal(outcome.type, 'cc.Sprite');
+    assert.deepEqual(driver.componentsOf(driver.uuidOf('Hero')).map(one => one.type),
+        ['cc.UITransform', 'cc.Sprite']);
+});
+
+// `create-component` takes a cid as well as a class name, and the class then registers under its
+// own name — which no spelling of the cid names.
+test('one component under a name no spelling asked for is still the one the add produced', async () => {
+    const driver = withDependency({ '2f3aRk1': ['cc.Sprite'] });
+    const outcome = await addComponent(driver, driver.uuidOf('Hero'), '2f3aRk1', FAST);
+    assert.equal(outcome.verified, true);
+    assert.equal(outcome.type, 'cc.Sprite');
+});
+
+test('several components and no spelling naming any of them is UNVERIFIED, not a guess', async () => {
+    const driver = withDependency({ '2f3aRk1': ['cc.UITransform', 'cc.Sprite'] });
+    const outcome = await addComponent(driver, driver.uuidOf('Hero'), '2f3aRk1', FAST);
+    assert.equal(outcome.verified, false);
+    assert.equal(unverifiedAddNote(outcome),
+        'the node gained cc.UITransform, cc.Sprite, nothing named 2f3aRk1 or cc.2f3aRk1');
 });

@@ -211,6 +211,31 @@ test('add names the class the engine registered, not the spelling that was typed
     assert.ok(driver.componentsOf(driver.uuidOf('Guard')).some(one => one.type === 'cc.Camera'));
 });
 
+// The editor attaches a declared requirement ahead of the class asked for, so the dependency is
+// the first component to appear on the node.
+const withDependency = (attaches) => new MemoryDriver({
+    nodes: [{ name: 'Guard' }], classes: [], attaches
+});
+
+test('add names the class asked for, not the dependency attached ahead of it', async () => {
+    const driver = withDependency({ 'cc.Sprite': ['cc.UITransform', 'cc.Sprite'] });
+    const output = present(await componentAdd(driver, {
+        node: 'Guard', component: 'cc.Sprite', poll: FAST
+    }));
+    assert.match(output.stdout, /^ok {2}cc\.Sprite added to Guard/);
+});
+
+test('an add no spelling of which names what appeared is UNVERIFIED, naming what did', async () => {
+    const driver = withDependency({ '2f3aRk1': ['cc.UITransform', 'cc.Sprite'] });
+    const output = present(await componentAdd(driver, {
+        node: 'Guard', component: '2f3aRk1', poll: FAST
+    }));
+    assert.equal(output.stdout,
+        'UNVERIFIED  2f3aRk1 added to Guard  the node gained cc.UITransform, cc.Sprite'
+        + ', nothing named 2f3aRk1 or cc.2f3aRk1');
+    assert.equal(output.failed, false);
+});
+
 test('a class already on the node is said to be already there rather than added twice', async () => {
     const driver = withGuard();
     const output = present(await componentAdd(driver, {
