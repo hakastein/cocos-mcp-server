@@ -74,6 +74,47 @@ export async function sceneSave(client: Driver): Promise<Report> {
     return { kind: 'action', verdict: 'ok', summary: 'scene saved' };
 }
 
+export async function sceneClose(client: Driver): Promise<Report> {
+    const closed = await client.editor.scene.closeScene();
+    return closed === true
+        ? { kind: 'action', verdict: 'ok', summary: 'scene closed' }
+        : {
+            kind: 'action',
+            verdict: 'FAILED',
+            summary: 'the editor did not close the scene',
+            note: 'checked live 2026-08-21 on a scene carrying unsaved changes: `close-scene` '
+                + 'answered false and left the scene open'
+        };
+}
+
+/**
+ * A soft reload rebuilds the live components and keeps the scene around them. Checked live
+ * 2026-08-21: a position written and not saved was still there afterwards, uuids and all.
+ */
+export async function sceneReload(client: Driver): Promise<Report> {
+    await client.editor.scene.softReload();
+    return {
+        kind: 'action',
+        verdict: 'ok',
+        summary: 'components of the open scene reloaded',
+        note: 'the scene itself is kept: node uuids and writes not yet saved both survive this'
+    };
+}
+
+/**
+ * The class registry of the engine the scene runs. It is a wider set than the Add Component menu
+ * `component types` answers — abstract bases and deprecated aliases are registered and not offered
+ * — and a base outside `cc.Component` answers classes that are no components at all.
+ */
+export async function sceneClasses(client: Driver, spec: { base: string }): Promise<Report> {
+    const classes = await client.editor.scene.queryClasses({ extends: spec.base });
+    return {
+        kind: 'classList',
+        classes: (classes || []).map(entry => ({ name: entry.name })),
+        base: spec.base
+    };
+}
+
 export function registerScene(program: Command, resolve: () => Promise<Resolved>): void {
     const scene = program.command('scene').description('the open scene as a whole');
 
@@ -124,4 +165,23 @@ export function registerScene(program: Command, resolve: () => Promise<Resolved>
         .command('save')
         .description('save the open scene')
         .action(() => withClient(resolve, sceneSave));
+
+    scene
+        .command('close')
+        .description('close the open scene, leaving the editor with none')
+        .action(() => withClient(resolve, sceneClose));
+
+    scene
+        .command('reload')
+        .description('rebuild the live components of the open scene — what carries a recompiled '
+            + 'script into it without reopening; the scene itself is kept')
+        .action(() => withClient(resolve, sceneReload));
+
+    scene
+        .command('classes <base>')
+        .description('classes the engine registers under a base class; the other listing is '
+            + `'component types', what the editor offers to add`)
+        .option('--json', 'print the structural form instead of text')
+        .action((base: string, options: { json?: boolean }) =>
+            withClient(resolve, client => sceneClasses(client, { base }), { json: options.json }));
 }

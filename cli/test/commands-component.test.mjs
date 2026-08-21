@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
-    componentAdd, componentGet, componentRemove, componentSet
+    componentAdd, componentArrayMove, componentArrayRemove, componentGet, componentRemove,
+    componentReset, componentSet, componentTypes
 } from '../src/commands/component.ts';
 import { present } from '../src/render/present.ts';
 import { MemoryDriver } from '../src/driver/memory.ts';
@@ -262,4 +263,132 @@ test('a property the component does not declare is refused, naming the ones it h
         () => componentGet(new MemoryDriver(spriteScene()),
             { node: 'Canvas/Bg', component: 'Sprite', property: 'tint' }),
         /no property 'tint'.*color/s);
+});
+
+const band = (upTo) => ({ name: 'upTo', type: 'Number', value: upTo, default: 0 });
+
+const bandsProp = () => ({
+    name: 'bands', type: 'Number', isArray: true, default: [], visible: true, extends: [],
+    value: [band(1), band(2), band(3)]
+});
+
+const banded = () => new MemoryDriver({
+    nodes: [{ name: 'Hero', components: [{ type: 'ClipBands', props: { bands: bandsProp() } }] }]
+});
+
+const bandsOf = (driver) =>
+    driver.componentsOf(driver.uuidOf('Hero'))[0].props.bands.value.map(entry => entry.value);
+
+test('moving an element forward puts it where the offset asked and reports the new order', async () => {
+    const driver = banded();
+    const output = present(await componentArrayMove(driver,
+        { node: 'Hero', component: 'ClipBands', property: 'bands', index: 0, offset: 1 }));
+    assert.deepEqual(bandsOf(driver), [2, 1, 3]);
+    assert.match(output.stdout, /^ok/);
+    assert.match(output.stdout, /element 0 moved to 1/);
+});
+
+test('a negative offset moves an element towards the front', async () => {
+    const driver = banded();
+    await componentArrayMove(driver,
+        { node: 'Hero', component: 'ClipBands', property: 'bands', index: 2, offset: -2 });
+    assert.deepEqual(bandsOf(driver), [3, 1, 2]);
+});
+
+// `move-array-element` answers `true` for an index it then ignores, so an out-of-range ask has to
+// be refused here; forwarded, it would come back as a success that moved nothing.
+test('an index outside the array is refused, naming how long the array is', async () => {
+    await assert.rejects(
+        () => componentArrayMove(banded(),
+            { node: 'Hero', component: 'ClipBands', property: 'bands', index: 5, offset: 1 }),
+        /3 element/);
+});
+
+test('an offset that would land outside the array is refused too', async () => {
+    await assert.rejects(
+        () => componentArrayMove(banded(),
+            { node: 'Hero', component: 'ClipBands', property: 'bands', index: 2, offset: 1 }),
+        /--offset 1/);
+});
+
+test('a property that is not an array is refused rather than moved as one', async () => {
+    const driver = new MemoryDriver(spriteScene());
+    await assert.rejects(
+        () => componentArrayMove(driver,
+            { node: 'Canvas/Bg', component: 'Sprite', property: 'color', index: 0, offset: 1 }),
+        /not an array/);
+});
+
+test('removing an element drops it and reports what is left', async () => {
+    const driver = banded();
+    const output = present(await componentArrayRemove(driver,
+        { node: 'Hero', component: 'ClipBands', property: 'bands', index: 1 }));
+    assert.deepEqual(bandsOf(driver), [1, 3]);
+    assert.match(output.stdout, /2 left/);
+    assert.match(output.stdout, /persisted=true/);
+});
+
+test('an array edit is wrapped in an undo bracket', async () => {
+    const driver = banded();
+    await componentArrayRemove(driver,
+        { node: 'Hero', component: 'ClipBands', property: 'bands', index: 1 });
+    const names = driver.calls.map(call => call.name);
+    assert.ok(names.indexOf('scene.beginRecording') < names.indexOf('scene.removeArrayElement'));
+    assert.ok(names.indexOf('scene.removeArrayElement') < names.indexOf('scene.endRecording'));
+});
+
+const resettable = () => new MemoryDriver({
+    nodes: [{ name: 'Canvas', children: [{ name: 'Bg', components: [
+        { type: 'cc.Sprite', props: { color: white(), sizeMode: { name: 'sizeMode', type: 'Number', value: 2, default: 0 } } }
+    ] }] }]
+});
+
+test('reset answers for the properties whose value moved, and for no others', async () => {
+    const output = present(await componentReset(resettable(), { node: 'Canvas/Bg', component: 'Sprite' }));
+    assert.match(output.stdout, /^ok {2}cc\.Sprite\.sizeMode = 0/);
+    assert.doesNotMatch(output.stdout, /color/);
+});
+
+test('a component already at its defaults says so rather than listing nothing', async () => {
+    const driver = resettable();
+    await componentReset(driver, { node: 'Canvas/Bg', component: 'Sprite' });
+    const output = present(await componentReset(driver, { node: 'Canvas/Bg', component: 'Sprite' }));
+    assert.match(output.stdout, /nothing to write/);
+    assert.equal(output.failed, false);
+});
+
+// Checked live on a prefab instance: `reset-component` moved the value and recorded no override,
+// so the next load rebuilds the prefab's and the reset is gone.
+test('a reset inside an instance that records no override is UNPERSISTED', async () => {
+    const driver = new MemoryDriver({
+        nodes: [{
+            name: 'Hero',
+            prefab: { asset: 'prefab-uuid', recordsOverrides: false },
+            components: [{ type: 'Health', props: {
+                maxHp: { name: 'maxHp', type: 'Number', value: 7, default: 1 }
+            } }]
+        }]
+    });
+    const output = present(await componentReset(driver, { node: 'Hero', component: 'Health' }));
+    assert.match(output.stdout, /^UNPERSISTED {2}Health\.maxHp = 1/);
+    assert.equal(output.failed, true);
+});
+
+test('reset is wrapped in an undo bracket', async () => {
+    const driver = resettable();
+    await componentReset(driver, { node: 'Canvas/Bg', component: 'Sprite' });
+    const names = driver.calls.map(call => call.name);
+    assert.ok(names.indexOf('scene.beginRecording') < names.indexOf('scene.resetComponent'));
+    assert.ok(names.indexOf('scene.resetComponent') < names.indexOf('scene.endRecording'));
+});
+
+test('types lists what the editor offers to add, with the menu path it offers it under', async () => {
+    const driver = new MemoryDriver({
+        nodes: [],
+        offeredComponents: [{ name: 'cc.Camera', cid: 'cc.Camera', path: 'Rendering/Camera' }]
+    });
+    const output = present(await componentTypes(driver));
+    assert.match(output.stdout, /cc\.Camera/);
+    assert.match(output.stdout, /Rendering\/Camera/);
+    assert.match(output.stderr, /components offered: 1/);
 });

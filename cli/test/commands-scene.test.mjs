@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    sceneDirty, sceneInfo, sceneMissing, sceneOpen, sceneOwners, sceneSave, sceneTree
+    sceneClasses, sceneClose, sceneDirty, sceneInfo, sceneMissing, sceneOpen, sceneOwners,
+    sceneReload, sceneSave, sceneTree
 } from '../src/commands/scene.ts';
 import { present } from '../src/render/present.ts';
 import { MemoryDriver } from '../src/driver/memory.ts';
@@ -114,4 +115,42 @@ test('save goes through the editor rather than writing the file itself', async (
     const driver = new MemoryDriver({ nodes: [] });
     assert.match(present(await sceneSave(driver)).stdout, /^ok {2}scene saved/);
     assert.equal(driver.calls.filter(call => call.name === 'scene.saveScene').length, 1);
+});
+
+test('close says so when the editor closed the scene', async () => {
+    const output = present(await sceneClose(new MemoryDriver({ nodes: [] })));
+    assert.match(output.stdout, /^ok/);
+    assert.equal(output.failed, false);
+});
+
+// `close-scene` answers a boolean and the editor says `false` when it keeps the scene open; an
+// unread answer would print `ok` over a scene that is still there.
+test('close refused by the editor is a failure, not an ok', async () => {
+    const output = present(await sceneClose(new MemoryDriver({ nodes: [], closeScene: false })));
+    assert.match(output.stdout, /^FAILED/);
+    assert.equal(output.failed, true);
+});
+
+test('reload says the scene is kept, since the name reads like a reopen and it is not one', async () => {
+    const output = present(await sceneReload(new MemoryDriver({ nodes: [] })));
+    assert.match(output.stdout, /^ok {2}components of the open scene reloaded$/);
+    assert.match(output.stderr, /node uuids and writes not yet saved both survive/);
+});
+
+const registry = () => new MemoryDriver({
+    nodes: [],
+    registeredClasses: { 'cc.Component': ['cc.Component', 'cc.Sprite', 'cc.SpriteComponent'] }
+});
+
+test('classes lists what the engine registers under the base, the base included', async () => {
+    const output = present(await sceneClasses(registry(), { base: 'cc.Component' }));
+    assert.match(output.stdout, /cc\.SpriteComponent/);
+    assert.match(output.stdout, /cc\.Component/);
+    assert.match(output.stderr, /cc\.Component: 3/);
+});
+
+test('a base nothing extends answers an empty listing rather than the whole registry', async () => {
+    const output = present(await sceneClasses(registry(), { base: 'cc.Asset' }));
+    assert.equal(output.stdout, 'no class matched');
+    assert.match(output.stderr, /cc\.Asset: 0/);
 });

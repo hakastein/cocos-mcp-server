@@ -2,9 +2,10 @@ import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
 import { unwrap, withClient } from './shared.ts';
 import { addComponent, queryComponents } from '../component-add.ts';
-import { jsonFlag } from './flags.ts';
-import { verifiedWrite } from '../property/verified-write.ts';
-import { writerFor } from '../property/writers.ts';
+import { jsonFlag, requiredNumberFlag } from './flags.ts';
+import { verifiedWrite, withSerializerVerdict } from '../property/verified-write.ts';
+import { readBack, readBackMismatches, componentPath, writerFor } from '../property/writers.ts';
+import { withUndoBracket } from '../undo-bracket.ts';
 import {
     componentClassNames, descriptorOf, findProperty, propertyNames, readComponentProperties,
     selectComponent
@@ -14,7 +15,8 @@ import { isReferenceKind, referenceRequest } from '../property/reference-target.
 import { resolveKind } from '../property/kind.ts';
 import { resolveNode } from './node.ts';
 import type { PollOptions } from '../component-add.ts';
-import type { ComponentAddress, Report } from '../render/present.ts';
+import type { WriteReport } from '@cocos-cli/shared';
+import type { ComponentAddress, RenderedWrite, Report } from '../render/present.ts';
 import type { Resolved } from '../resolve.ts';
 import type { PropertyKind } from '../property/kind.ts';
 import type { WriteTarget } from '../property/writers.ts';
@@ -214,28 +216,222 @@ export async function componentAdd(client: Driver, spec: AddSpec): Promise<Repor
     };
 }
 
-/**
- * The uuid `remove-component` takes is the component's own, which the node dump does not carry —
- * only the class-owner listing does. A class visible on the node and absent from that listing is
- * refused rather than turned into a removal of some other node's component.
- */
 export async function componentRemove(
     client: Driver, spec: { node: string; component: string }
 ): Promise<Report> {
     const uuid = await resolveNode(client, spec.node);
     const component = await findComponent(client, uuid, spec.component);
-    const owners = await unwrap(
-        client.scene.call('findComponentOwners', { className: component.className }),
-        'findComponentOwners');
-    const owner = owners.owners.find(entry => entry.nodeUuid === uuid);
-    if (!owner) {
-        throw new Error(`component '${component.className}' is visible on the node, but its uuid is `
-            + 'not among the owners of the class');
-    }
-    await client.editor.scene.removeComponent({ uuid: owner.componentUuid });
+    await client.editor.scene.removeComponent({
+        uuid: await componentUuid(client, uuid, component.className)
+    });
     return {
         kind: 'action', verdict: 'ok',
         summary: `${component.className} removed from ${spec.node}`
+    };
+}
+
+/**
+ * `remove-component` and `reset-component` both take the component's OWN uuid, which the node dump
+ * does not carry — only the class-owner listing does.
+ */
+async function componentUuid(
+    client: Driver, nodeUuid: string, className: string
+): Promise<string> {
+    const owners = await unwrap(
+        client.scene.call('findComponentOwners', { className }), 'findComponentOwners');
+    const owner = owners.owners.find(entry => entry.nodeUuid === nodeUuid);
+    if (!owner) {
+        throw new Error(`component '${className}' is visible on the node, but its uuid is not `
+            + 'among the owners of the class');
+    }
+    return owner.componentUuid;
+}
+
+function changedProperties(before: PropertyReading[], after: PropertyReading[]): PropertyReading[] {
+    const was = new Map(before.map(reading => [reading.name, JSON.stringify(reading.value)]));
+    return after.filter(reading =>
+        was.has(reading.name) && was.get(reading.name) !== JSON.stringify(reading.value));
+}
+
+/**
+ * The editor answers nothing at all for `reset-component`, so what it did is read off the dump:
+ * the properties whose value moved are the whole outcome, and each of them is then asked of the
+ * serializer. That question is not idle here — checked live 2026-08-21 on `cc_hero`, a prefab
+ * instance: resetting `Health.maxHp` moved the live value and recorded NO override, so the next
+ * load rebuilds the prefab's value and the reset is gone. That reads as `UNPERSISTED`.
+ */
+export async function componentReset(
+    client: Driver, spec: { node: string; component: string }
+): Promise<Report> {
+    const nodeUuid = await resolveNode(client, spec.node);
+    const component = await findComponent(client, nodeUuid, spec.component);
+    const uuid = await componentUuid(client, nodeUuid, component.className);
+    const before = readComponentProperties(component.dump).readings;
+
+    const { undoNote } = await withUndoBracket(client, nodeUuid,
+        () => client.editor.scene.resetComponent({ uuid }));
+
+    const reset = await findComponent(client, nodeUuid, spec.component);
+    const changed = changedProperties(before, readComponentProperties(reset.dump).readings);
+
+    const writes: RenderedWrite[] = [];
+    for (const reading of changed) {
+        const descriptor = descriptorOf(reset.dump, reading.name);
+        const report: WriteReport = {
+            written: true, verified: true, persisted: null, channel: 'editor'
+        };
+        writes.push({
+            target: component.className,
+            property: reading.name,
+            value: reading.value,
+            report: descriptor === null ? report : await withSerializerVerdict(report, {
+                nodeUuid,
+                componentType: component.className,
+                componentIndex: component.index,
+                propertyPath: reading.name,
+                descriptor
+            }, client)
+        });
+    }
+
+    return { kind: 'write', target: component.className, writes, undoNote };
+}
+
+export interface ArraySpec {
+    node: string;
+    component: string;
+    property: string;
+    index: number;
+}
+
+export interface ArrayMoveSpec extends ArraySpec {
+    offset: number;
+}
+
+interface ArrayEdit {
+    target: WriteTarget;
+    className: string;
+    elements: unknown[];
+}
+
+async function arrayEdit(client: Driver, spec: ArraySpec): Promise<ArrayEdit> {
+    const nodeUuid = await resolveNode(client, spec.node);
+    const component = await findComponent(client, nodeUuid, spec.component);
+    const descriptor = descriptorOf(component.dump, spec.property);
+    if (!descriptor) {
+        throw new Error(`component '${component.className}' has no property '${spec.property}'; it has: ${
+            propertyNames(component.dump).join(', ') || '(the live dump is unavailable)'}`);
+    }
+    const target: WriteTarget = {
+        nodeUuid,
+        componentType: component.className,
+        componentIndex: component.index,
+        propertyPath: spec.property,
+        descriptor
+    };
+    const elements = await readBack(target, client);
+    if (!Array.isArray(elements)) {
+        throw new Error(`'${component.className}.${spec.property}' is not an array`);
+    }
+    if (!Number.isInteger(spec.index) || spec.index < 0 || spec.index >= elements.length) {
+        throw new Error(`--index ${spec.index} is outside '${component.className}.${spec.property}', `
+            + `which holds ${elements.length} element(s)`);
+    }
+    return { target, className: component.className, elements };
+}
+
+/**
+ * Both array messages answer `true` for an index they then ignore — checked live 2026-08-21, a
+ * remove at index 99 of a three-element array answered `true` and removed nothing. So the answer
+ * is not read: the array is read back and compared against the order this edit asked for.
+ */
+interface ArrayOutcome {
+    /** The order the array holds if the edit landed, which is what the read-back is judged against. */
+    expected: unknown[];
+    /** What the edit did, in the past tense, for the tail of the printed line. */
+    detail: string;
+    issue: () => Promise<unknown>;
+}
+
+async function arrayWrite(
+    client: Driver, edit: ArrayEdit, outcome: ArrayOutcome
+): Promise<Report> {
+    const { undoNote } = await withUndoBracket(client, edit.target.nodeUuid, outcome.issue);
+
+    const observed = await readBack(edit.target, client);
+    const mismatches = readBackMismatches(outcome.expected, observed, edit.target.propertyPath);
+    const written: WriteReport = mismatches.length === 0
+        ? { written: true, verified: true, persisted: null, channel: 'editor', detail: outcome.detail }
+        : {
+            written: true, verified: false, persisted: null, channel: 'editor',
+            detail: `${outcome.detail}; read-back disagrees — ${mismatches.join('; ')}`
+        };
+
+    return {
+        kind: 'write',
+        target: edit.className,
+        writes: [{
+            target: edit.className,
+            property: edit.target.propertyPath,
+            report: written.verified
+                ? await withSerializerVerdict(written, edit.target, client)
+                : written
+        }],
+        undoNote
+    };
+}
+
+export async function componentArrayMove(client: Driver, spec: ArrayMoveSpec): Promise<Report> {
+    const edit = await arrayEdit(client, spec);
+    const landing = spec.index + spec.offset;
+    if (landing < 0 || landing >= edit.elements.length) {
+        throw new Error(`--offset ${spec.offset} takes element ${spec.index} outside `
+            + `'${edit.className}.${spec.property}', which holds ${edit.elements.length} element(s)`);
+    }
+    const expected = edit.elements.slice();
+    expected.splice(landing, 0, expected.splice(spec.index, 1)[0]);
+
+    return arrayWrite(client, edit, {
+        expected,
+        detail: `element ${spec.index} moved to ${landing} of ${edit.elements.length}`,
+        issue: () => client.editor.scene.moveArrayElement({
+            uuid: edit.target.nodeUuid,
+            path: componentPath(edit.target),
+            target: spec.index,
+            offset: spec.offset
+        })
+    });
+}
+
+export async function componentArrayRemove(client: Driver, spec: ArraySpec): Promise<Report> {
+    const edit = await arrayEdit(client, spec);
+    const expected = edit.elements.filter((unused, at) => at !== spec.index);
+
+    return arrayWrite(client, edit, {
+        expected,
+        detail: `element ${spec.index} removed, ${expected.length} left`,
+        issue: () => client.editor.scene.removeArrayElement({
+            uuid: edit.target.nodeUuid,
+            path: componentPath(edit.target),
+            index: spec.index
+        })
+    });
+}
+
+/**
+ * What the editor offers in its Add Component menu. `scene classes` answers the class registry,
+ * which is a wider set: abstract bases and deprecated aliases are registered and not offered.
+ */
+export async function componentTypes(client: Driver): Promise<Report> {
+    const offered = await client.editor.scene.queryComponents();
+    return {
+        kind: 'classList',
+        classes: (offered || []).map(entry => ({
+            name: entry.name,
+            ...(entry.cid ? { cid: entry.cid } : {}),
+            ...(entry.path ? { path: entry.path } : {}),
+            ...(entry.assetUuid ? { assetUuid: entry.assetUuid } : {})
+        }))
     };
 }
 
@@ -263,6 +459,47 @@ export function registerComponent(program: Command, resolve: () => Promise<Resol
         .description('remove a component from a node')
         .action((target: string, type: string) =>
             withClient(resolve, client => componentRemove(client, { node: target, component: type })));
+
+    component
+        .command('reset <path> <type>')
+        .description('return every property of a component to its default, in one undo step')
+        .action((target: string, type: string) =>
+            withClient(resolve, client => componentReset(client, { node: target, component: type })));
+
+    component
+        .command('types')
+        .description('what the editor offers to add; the class registry is a wider set, and '
+            + `'cocos scene classes cc.Component' is what answers it`)
+        .option('--json', 'print the structural form instead of text')
+        .action((options: { json?: boolean }) =>
+            withClient(resolve, componentTypes, { json: options.json }));
+
+    const array = component.command('array').description('elements of an array property');
+
+    array
+        .command('mv <path> <type>')
+        .description('move one element of an array property and check the new order')
+        .requiredOption('--prop <name>', 'the array property')
+        .requiredOption('--index <n>', 'which element to move')
+        .requiredOption('--offset <n>', 'how far to move it; negative moves it towards the front')
+        .action((target: string, type: string,
+            options: { prop: string; index: string; offset: string }) =>
+            withClient(resolve, client => componentArrayMove(client, {
+                node: target, component: type, property: options.prop,
+                index: requiredNumberFlag('--index', options.index),
+                offset: requiredNumberFlag('--offset', options.offset)
+            })));
+
+    array
+        .command('rm <path> <type>')
+        .description('remove one element of an array property and check what is left')
+        .requiredOption('--prop <name>', 'the array property')
+        .requiredOption('--index <n>', 'which element to remove')
+        .action((target: string, type: string, options: { prop: string; index: string }) =>
+            withClient(resolve, client => componentArrayRemove(client, {
+                node: target, component: type, property: options.prop,
+                index: requiredNumberFlag('--index', options.index)
+            })));
 
     component
         .command('set <path> <type>')

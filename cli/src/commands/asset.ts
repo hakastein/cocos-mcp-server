@@ -1,6 +1,6 @@
 import type { Driver } from '@cocos-cli/shared';
 import { Command } from 'commander';
-import { withClient } from './shared.ts';
+import { unwrap, withClient } from './shared.ts';
 import { numberFlag } from './flags.ts';
 import {
     ASSET_TYPES, assetQuery, commonAssetFolder, requireAssetUrl, selectAssets
@@ -149,6 +149,25 @@ export async function assetList(client: Driver, spec: ListSpec): Promise<Report>
         maxResults: spec.max === undefined ? DEFAULT_MAX_RESULTS : spec.max
     });
     return { kind: 'assetList', assets: selection.assets, total: selection.total };
+}
+
+/**
+ * The editor answers node uuids, and it answers for both ways a node can depend on an asset: an
+ * instance of a prefab, and a component field holding the uuid. The scene dump is what turns those
+ * uuids into paths; a uuid it does not name still counts as a user and prints by uuid alone.
+ */
+export async function assetUsers(client: Driver, spec: { target: string }): Promise<Report> {
+    const asset = await requireOne(client, spec.target);
+    const uuids = await client.editor.scene.queryNodesByAssetUuid(asset.uuid);
+    const dump = await unwrap(client.scene.call('dumpSceneNodes'), 'dumpSceneNodes');
+    const paths = new Map((dump.nodes || []).map(node => [node.uuid, node.path]));
+    return {
+        kind: 'assetUsers',
+        users: {
+            asset: asset.url,
+            nodes: (uuids || []).map(uuid => ({ path: paths.get(uuid) ?? null, uuid }))
+        }
+    };
 }
 
 export async function assetReady(client: Driver): Promise<Report> {
@@ -305,6 +324,14 @@ export function registerAsset(program: Command, resolve: () => Promise<Resolved>
         .description('create a folder in the asset database and wait for it to be imported'))
         .action((folder: string, options: { timeout?: string; quietFor?: string }) =>
             withClient(resolve, client => assetMkdir(client, { folder, ...waitOptions(options) })));
+
+    asset
+        .command('users <path>')
+        .description('nodes of the open scene that depend on an asset — as an instance of it, or '
+            + 'through a component field holding it')
+        .option('--json', 'print the structural form instead of text')
+        .action((target: string, options: { json?: boolean }) =>
+            withClient(resolve, client => assetUsers(client, { target }), { json: options.json }));
 
     asset
         .command('ready')

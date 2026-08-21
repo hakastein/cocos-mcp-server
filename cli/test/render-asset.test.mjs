@@ -5,7 +5,7 @@ import * as r from '../src/render/asset.ts';
 
 const {
     assetField, renderAssetInfo, renderAssetList, assetListSummary, renderAssetReport, assetNote,
-    assetVerdict
+    assetVerdict, renderAssetUsers, assetUsersSummary
 } = r;
 
 const asset = (over = {}) => ({
@@ -136,4 +136,30 @@ test('an asset that reached the address asked for does not repeat it', () => {
 
 test('an asset at no address at all is not passed off as having landed', () => {
     assert.doesNotMatch(renderAssetReport(report({ landedAt: null })), /landed at/);
+});
+
+const users = (list) => ({ asset: 'db://assets/weapon/prefab/rifle.prefab', nodes: list });
+
+test('a using node prints its path and its uuid', () => {
+    const text = renderAssetUsers(users([{ path: 'Characters/cc_hero', uuid: 'n-1' }]));
+    assert.match(text, /Characters\/cc_hero/);
+    assert.match(text, /n-1/);
+});
+
+// The scene dump is what turns a uuid into a path; a node the dump does not carry still gets named,
+// because dropping it would understate how much of the scene depends on the asset.
+test('a node the scene dump did not name still prints, by uuid', () => {
+    const text = renderAssetUsers(users([{ path: null, uuid: 'n-2' }]));
+    assert.match(text, /n-2/);
+    assert.match(text, /path unknown/);
+});
+
+test('an asset nothing uses is said outright rather than printed as an empty list', () => {
+    assert.match(renderAssetUsers(users([])), /no node/);
+});
+
+test('the summary carries the count and the asset it is about', () => {
+    const text = assetUsersSummary(users([{ path: 'Characters/cc_hero', uuid: 'n-1' }]));
+    assert.match(text, /nodes: 1/);
+    assert.match(text, /rifle\.prefab/);
 });

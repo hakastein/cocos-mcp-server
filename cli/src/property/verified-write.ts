@@ -49,7 +49,7 @@ export async function verifiedWrite(
  * Save writes exactly what `EditorExtends.serialize` emits, so a property the Inspector dump shows
  * and the serializer does not is a write that reads back perfectly and reaches no file.
  */
-async function withSerializerVerdict(
+export async function withSerializerVerdict(
     report: WriteReport, target: WriteTarget, ctx: Driver
 ): Promise<WriteReport> {
     const cid = await componentCid(target, ctx);

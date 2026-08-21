@@ -1,3 +1,4 @@
+import { columnWidth, padRight } from './columns.ts';
 import type { AssetRecord } from '../asset/query.ts';
 import type { AssetReport } from '../asset/settle.ts';
 import { assetDiffEmpty } from '../asset/settle.ts';
@@ -27,10 +28,6 @@ export function assetField(asset: AssetRecord, field: string): string {
     }
 }
 
-function padRight(text: string, width: number): string {
-    return text.length >= width ? text : text + ' '.repeat(width - text.length);
-}
-
 export function renderAssetInfo(asset: AssetRecord): string {
     const rows: Array<[string, string]> = [
         ['name', asset.name],
@@ -50,10 +47,6 @@ export function renderAssetInfo(asset: AssetRecord): string {
     return rows.map(([key, value]) => `${padRight(key, width)}  ${value}`).join('\n');
 }
 
-/**
- * Columns are padded with spaces rather than boxed: an asset listing is read with grep, and a box
- * border lands in every line pulled out of it.
- */
 export function renderAssetList(assets: readonly AssetRecord[]): string {
     if (!assets.length) return 'no asset matched';
     const typeWidth = assets.reduce((widest, asset) => Math.max(widest, (asset.type || '').length), 0);
@@ -125,4 +118,29 @@ export function assetNote(report: AssetReport, timeoutMs: number): string {
     return report.classes === null
         ? 'the scene did not answer about registered classes — their delta is unknown'
         : '';
+}
+
+/** A node of the open scene that depends on an asset, whether by instance or by a component field. */
+export interface AssetUser {
+    /** `null` when the scene dump did not name the uuid: the node still counts as a user. */
+    path: string | null;
+    uuid: string;
+}
+
+export interface AssetUsers {
+    asset: string;
+    nodes: AssetUser[];
+}
+
+export function renderAssetUsers(report: AssetUsers): string {
+    if (!report.nodes.length) return `no node in the scene uses ${report.asset}`;
+    const rows = report.nodes.map(node => [node.path || UNNAMED_PATH, node.uuid]);
+    const width = columnWidth(rows, 0);
+    return rows.map(row => `${padRight(row[0], width)}  ${row[1]}`).join('\n');
+}
+
+const UNNAMED_PATH = '(path unknown)';
+
+export function assetUsersSummary(report: AssetUsers): string {
+    return `${report.asset}  nodes: ${report.nodes.length}`;
 }

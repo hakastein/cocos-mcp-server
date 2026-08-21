@@ -307,6 +307,176 @@ export async function nodeDuplicate(client: Driver, spec: DuplicateSpec): Promis
     };
 }
 
+/**
+ * Checked live 2026-08-21 on `cc_hero/mixamorig_Hips`, whose prefab holds y=1.11: a reset there
+ * wrote y=0 and left an override carrying it. So the editor resets to the DECLARED CLASS DEFAULT
+ * inside an instance as much as outside one, and the asset's value is reached by dropping the
+ * override instead — `prefab revert` drops every override the instance has, so it is the wrong
+ * tool for one property.
+ */
+const PREFAB_RESET_NOTE = 'the node is inside a prefab instance, and a reset writes the declared '
+    + 'class default there too, recorded as an override; what returns one property to the prefab\'s '
+    + `own value is 'cocos prefab rm-override <path> <stored-name>', and the value comes back on the `
+    + 'next load rather than at once'
+
+/**
+ * `name` and `active` are out because the editor's own node dump declares `default: null` for both,
+ * and `reset-property` has nothing to reach for — checked live 2026-08-21: it answered `true` and
+ * left `active` as it was, and threw on `name`. Writing either back is `node set`.
+ */
+const UNRESETTABLE = ['name', 'active'] as const;
+
+const RESETTABLE = ['position', 'rotation', 'scale', 'layer'] as const;
+
+type ResettableProperty = typeof RESETTABLE[number];
+
+export interface ResetSpec {
+    target: string;
+    property?: string;
+    transform?: boolean;
+}
+
+function resetValues(
+    snapshot: NodeSnapshot, properties: readonly ResettableProperty[]
+): Record<string, unknown> {
+    const values: Record<string, unknown> = {};
+    for (const property of properties) values[property] = snapshot[property];
+    return values;
+}
+
+/**
+ * A reset is a write like any other, so it answers `WriteReport`: the value it landed on is read
+ * back and then asked of the serializer, which inside a prefab instance means asking the instance's
+ * overrides. The old value goes in the detail — a reset that changed nothing and one that undid a
+ * write read the same without it.
+ */
+export async function nodeReset(client: Driver, spec: ResetSpec): Promise<Report> {
+    const bothNamed = spec.transform === true && spec.property !== undefined;
+    const neitherNamed = spec.transform !== true && spec.property === undefined;
+    if (bothNamed || neitherNamed) {
+        throw new Error('pass one of --prop <name> and --transform');
+    }
+    const wholeTransform = spec.property === undefined;
+    const properties: readonly ResettableProperty[] = spec.property === undefined
+        ? TRANSFORM_KINDS
+        : [requireResettable(spec.property)];
+
+    const uuid = await resolveNode(client, spec.target);
+    const before = resetValues(await snapshotOf(client, uuid), properties);
+
+    const { undoNote } = await withUndoBracket(client, uuid, async () => {
+        if (wholeTransform) {
+            await client.editor.scene.resetNode({ uuid });
+            return;
+        }
+        // `reset-property` reads the uuid and the path alone — checked live 2026-08-21: a dump
+        // carrying nothing but a null resets as well as the property's own descriptor does. The
+        // message declares a dump anyway, so a placeholder goes rather than a value that would
+        // read as the one being written.
+        await client.editor.scene.resetProperty({
+            uuid, path: properties[0], dump: { value: null }
+        });
+    });
+
+    const after = resetValues(await snapshotOf(client, uuid), properties);
+    const writes: NodeWrite[] = properties.map(property => ({
+        target: spec.target,
+        property,
+        value: after[property],
+        expected: after[property],
+        report: {
+            written: true, verified: true, persisted: null, channel: 'editor',
+            detail: JSON.stringify(before[property]) === JSON.stringify(after[property])
+                ? 'already at the value it resets to'
+                : `was ${JSON.stringify(before[property])}`
+        }
+    }));
+
+    return {
+        kind: 'write',
+        target: spec.target,
+        writes: await judged(client, uuid, writes),
+        undoNote,
+        note: await inPrefabInstance(client, uuid)
+    };
+}
+
+/**
+ * The note is advisory, so a scene that will not answer gets said out loud rather than read as a
+ * node outside every instance — silence and `no` are different answers.
+ */
+async function inPrefabInstance(client: Driver, uuid: string): Promise<string | undefined> {
+    const linkage = await client.scene.call('nodePrefabLinkage', uuid).catch(() => null);
+    if (!linkage || linkage.success !== true) {
+        return 'the scene did not answer whether this node is inside a prefab instance';
+    }
+    return linkage.data.linked ? PREFAB_RESET_NOTE : undefined;
+}
+
+function requireResettable(property: string): ResettableProperty {
+    const known = RESETTABLE.find(name => name === property);
+    if (known) return known;
+    if (UNRESETTABLE.some(name => name === property)) {
+        throw new Error(`the editor declares no default for '${property}', so a reset of it does `
+            + `nothing; write the value you want with 'cocos node set'`);
+    }
+    throw new Error(`a node has no resettable property '${property}'; it has: ${RESETTABLE.join(', ')}`);
+}
+
+/**
+ * Sockets are written on the live `cc.SkeletalAnimation` component rather than through the editor's
+ * own property channel — the only path that can create the tracked target node — so no undo step
+ * covers them.
+ */
+const SOCKET_NOTE = 'a socket is written on the live component, outside the undo stack: Ctrl+Z does '
+    + 'not take it back, and the scene has to be saved for it to last';
+
+export async function nodeSocketList(client: Driver, spec: { target: string }): Promise<Report> {
+    const uuid = await resolveNode(client, spec.target);
+    return {
+        kind: 'nodeSockets',
+        sockets: await unwrap(client.scene.call('listSkeletalSockets', uuid), 'listSkeletalSockets')
+    };
+}
+
+export interface SocketAddSpec {
+    target: string;
+    bone: string;
+    name?: string;
+}
+
+export async function nodeSocketAdd(client: Driver, spec: SocketAddSpec): Promise<Report> {
+    const uuid = await resolveNode(client, spec.target);
+    const added = await unwrap(
+        client.scene.call('addSkeletalSocket', uuid, spec.bone, spec.name), 'addSkeletalSocket');
+    return {
+        kind: 'action',
+        verdict: 'ok',
+        summary: [
+            added.created ? 'socket added' : 'socket already there',
+            added.bonePath,
+            `${added.targetName}  ${added.targetUuid}`,
+            `sockets: ${added.socketCount}`
+        ].join('  '),
+        note: SOCKET_NOTE
+    };
+}
+
+export async function nodeSocketRemove(
+    client: Driver, spec: { target: string; bone: string }
+): Promise<Report> {
+    const uuid = await resolveNode(client, spec.target);
+    const removed = await unwrap(
+        client.scene.call('removeSkeletalSocket', uuid, spec.bone), 'removeSkeletalSocket');
+    return {
+        kind: 'action',
+        verdict: 'ok',
+        summary: `socket removed  ${removed.bonePath}  target ${removed.removedTargetUuid || 'none'}`
+            + `  sockets: ${removed.socketCount}`,
+        note: `the target node went with it, and so did anything parented under it; ${SOCKET_NOTE}`
+    };
+}
+
 export async function nodeRemove(client: Driver, spec: { target: string }): Promise<Report> {
     const uuid = await resolveNode(client, spec.target);
     await client.editor.scene.removeNode({ uuid });
@@ -377,4 +547,39 @@ export function registerNode(program: Command, resolve: () => Promise<Resolved>)
         .command('rm <path>')
         .description('remove a node')
         .action((target: string) => withClient(resolve, client => nodeRemove(client, { target })));
+
+    node
+        .command('reset <path>')
+        .description('return a node property to its declared class default — inside a prefab '
+            + 'instance too, where the default is then recorded as an override')
+        .option('--prop <name>', `one property: ${RESETTABLE.join(', ')}`)
+        .option('--transform', 'position, rotation and scale together')
+        .action((target: string, options: { prop?: string; transform?: boolean }) =>
+            withClient(resolve, client => nodeReset(client, {
+                target, property: options.prop, transform: options.transform
+            })));
+
+    const socket = node.command('socket').description('bone sockets of a cc.SkeletalAnimation node');
+
+    socket
+        .command('ls <path>')
+        .description('the sockets on a node and what hangs off each')
+        .option('--json', 'print the structural form instead of text')
+        .action((target: string, options: { json?: boolean }) =>
+            withClient(resolve, client => nodeSocketList(client, { target }), { json: options.json }));
+
+    socket
+        .command('add <path> <bone>')
+        .description('track a bone with a child node, so a weapon parented under it follows the bone')
+        .option('--name <name>', 'name for the tracking node; without it, the bone name')
+        .action((target: string, bone: string, options: { name?: string }) =>
+            withClient(resolve, client => nodeSocketAdd(client, {
+                target, bone, name: options.name
+            })));
+
+    socket
+        .command('rm <path> <bone>')
+        .description('drop a socket and destroy the node that tracked the bone')
+        .action((target: string, bone: string) =>
+            withClient(resolve, client => nodeSocketRemove(client, { target, bone })));
 }

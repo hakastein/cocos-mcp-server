@@ -26,6 +26,12 @@ export function numberFlag(flag: string, raw: string | undefined): number | unde
     return value;
 }
 
+export function requiredNumberFlag(flag: string, raw: string): number {
+    const value = numberFlag(flag, raw);
+    if (value === undefined) throw new Error(`${flag} is required`);
+    return value;
+}
+
 export function vec3PartsFlag(flag: string, raw: string | undefined): Vec3Parts | undefined {
     if (raw === undefined) return undefined;
     try {

@@ -1,12 +1,13 @@
 import type {
     ComponentOwnerReport, Hello, MissingScriptDump, PrefabAssetDump, PrefabOverrideReport,
-    SceneDirtyReport
+    SceneDirtyReport, SkeletalSocketList
 } from '@cocos-cli/shared';
 import { verdictFailed } from './verdict.ts';
 import {
-    assetField, assetListSummary, assetNote, assetVerdict, renderAssetInfo, renderAssetList,
-    renderAssetReport
+    assetField, assetListSummary, assetNote, assetUsersSummary, assetVerdict, renderAssetInfo,
+    renderAssetList, renderAssetReport, renderAssetUsers
 } from './asset.ts';
+import { classListSummary, renderClassList, renderSockets, socketsSummary } from './component.ts';
 import { renderWrites, undoDetail, writesVerdict } from './report.ts';
 import { renderTree } from './tree.ts';
 import { renderInstances } from './instances.ts';
@@ -17,6 +18,8 @@ import {
 } from './scene.ts';
 import type { Verdict } from './verdict.ts';
 import type { AssetReport } from '../asset/settle.ts';
+import type { AssetUsers } from './asset.ts';
+import type { ClassEntry } from './component.ts';
 import type { RenderedWrite } from './report.ts';
 import type { DumpNode, TreeOptions } from './tree.ts';
 import type { AssetRecord } from '../asset/query.ts';
@@ -57,6 +60,10 @@ export type Report =
     | { kind: 'asset'; asset: AssetReport; timeoutMs: number; note?: string }
     | { kind: 'assetInfo'; asset: AssetRecord; field?: string }
     | { kind: 'assetList'; assets: AssetRecord[]; total: number }
+    | { kind: 'assetUsers'; users: AssetUsers }
+    /** The classes the scene's engine knows: under a base when one was named, the add menu when not. */
+    | { kind: 'classList'; classes: ClassEntry[]; base?: string }
+    | { kind: 'nodeSockets'; sockets: SkeletalSocketList }
     | { kind: 'sceneTree'; nodes: DumpNode[]; options: TreeOptions }
     | { kind: 'sceneOwners'; owners: ComponentOwnerReport }
     | { kind: 'sceneDirty'; dirty: SceneDirtyReport }
@@ -138,6 +145,30 @@ function render(report: Report): Rendered {
                 text: renderAssetList(report.assets),
                 json: report.assets,
                 note: assetListSummary(report.assets.length, report.total)
+            };
+
+        case 'assetUsers':
+            return {
+                verdict: 'ok',
+                text: renderAssetUsers(report.users),
+                json: report.users,
+                note: assetUsersSummary(report.users)
+            };
+
+        case 'classList':
+            return {
+                verdict: 'ok',
+                text: renderClassList(report.classes),
+                json: report.classes,
+                note: classListSummary(report.classes.length, report.base)
+            };
+
+        case 'nodeSockets':
+            return {
+                verdict: 'ok',
+                text: renderSockets(report.sockets),
+                json: report.sockets,
+                note: socketsSummary(report.sockets)
             };
 
         case 'sceneTree':

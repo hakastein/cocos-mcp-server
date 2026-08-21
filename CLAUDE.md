@@ -77,7 +77,13 @@ that is what lets the memory adapter drive a command body.
 them goes through `scene.*`, never through `editor.*`.
 
 Command groups implemented in `cli/src/commands/` today: `scene`, `node`, `component`, `prefab`,
-`asset`, plus the top-level `instances`. More groups (build, project, log, ecs, a raw `evalInScene`
+`asset`, plus the top-level `instances`. Two listings there answer questions that look like one and
+are not: `component types` is the editor's Add Component menu (`scene:query-components`), and
+`scene classes <base>` is the engine's class registry under a base (`scene:query-classes`). Measured
+live 2026-08-21: 203 offered against 260 registered under `cc.Component`, the extra ones being
+abstract bases and deprecated aliases; `query-classes` with no `extends` answers `[]`, so the base is
+an argument rather than a filter, and `cc.Asset` is a legal base whose answers are no components at
+all. That is why they are two subcommands in two groups rather than one flag. More groups (build, project, log, ecs, a raw `evalInScene`
 escape hatch) are future work, not yet wired to any command.
 
 `driver/` also carries a small subsystem outside this diagram entirely: a Vue settings panel
@@ -110,7 +116,7 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/driver/memory.ts` | `MemoryDriver implements Driver` — the same seam over a scene held as data, so a command's writes read back. The scene is the test's own input: nodes with components, descriptors in the editor's dump shape, `classes` for what the engine registers, `refuses` for a message that says no, and a node's `prefab` block for what the next load rebuilds — a write inside an instance records the override the editor would record. A primitive it does not model refuses by name |
 | `cli/src/driver/memory-assets.ts` | `MemoryAssetDb` — the asset half of that seam, a database held as data: the `db://` glob, and the move/copy/create/delete that rename on conflict the way the editor does |
 | `cli/src/commands/shared.ts` | `withClient` (resolve → run → present → close) and `emit`, the one place command output touches `stdout`/`stderr`; plus `unwrap` (`SceneResult<T>` → value or thrown error) |
-| `cli/src/commands/flags.ts` | the coercions an `.action()` body applies to the text Commander hands through — `booleanFlag`, `numberFlag`, `vec3Flag` (all three axes, for a node being created), `vec3PartsFlag` (an empty axis keeps its value), `jsonFlag` |
+| `cli/src/commands/flags.ts` | the coercions an `.action()` body applies to the text Commander hands through — `booleanFlag`, `numberFlag`, `requiredNumberFlag` (the same without the `undefined`, for a `requiredOption`), `vec3Flag` (all three axes, for a node being created), `vec3PartsFlag` (an empty axis keeps its value), `jsonFlag` |
 | `cli/src/component-add.ts` | the add cascade `component add` and `node create --component` share: both spellings of a type tried in turn, then polled for, because neither add path is trusted on its own word; plus `queryComponents`, the live component list it polls |
 | `cli/src/undo-bracket.ts` | `withUndoBracket` — one write wrapped in one undo step, `undoNote` when the editor refused or left it open |
 | `cli/src/node-snapshot.ts` | the editor's descriptor-wrapped node dump projected to what a write reads back |
@@ -119,7 +125,7 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/prefab-linkage.ts` | the `type: 'cc.Prefab'` that separates a linked instance from a flat copy, and the two-sided linkage verdict (live node vs serializer) |
 | `cli/src/asset/` | the asset database, whole: the `db://` glob and the name/limit cut a listing takes (`query.ts`), the quiescence verdict every asset command waits on — snapshot fingerprint, `settled`, the asset and component-class deltas, `AssetReport` and `copiedAddress` (`settle.ts`), and the half that asks the editor — the reads, the tree snapshot and the `settleAssetDb` poll built on them (`db.ts`) |
 | `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`), the read side of a component dump — class selection, property rows, default comparison (`component-dump.ts`), uuid → scene name (`reference-index.ts`) and the spelling a reference value is written in — path, `db://` url or uuid (`reference-target.ts`) |
-| `cli/src/render/` | `verdict.ts` (the five head words, their exit codes and `worstVerdict`) and `present.ts` (the `Report` union and `present`) over seven formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `scene.ts`, `instances.ts`. Only `present.ts` is imported from outside `render/` |
+| `cli/src/render/` | `verdict.ts` (the five head words, their exit codes and `worstVerdict`) and `present.ts` (the `Report` union and `present`) over eight formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `scene.ts`, `component.ts` (the class registry and a node's bone sockets, both listings), `instances.ts`, over `columns.ts`'s `padRight`/`columnWidth`. Only `present.ts` is imported from outside `render/` |
 
 Everything a command decides that does not need a live editor lives in a pure module beside
 `commands/`: `property/`, `render/`, `asset/query.ts`, `asset/settle.ts`, `node-type.ts`,
@@ -196,7 +202,7 @@ dropped as a global in `bfb4d01`, because it promised structure where there is n
 bodies. A report with no structural form — `kind: 'action'`, a verdict plus a free-text tail —
 prints its text under `--json` too.
 
-The seven `render/*` formatters are internal to the presenter: nothing outside `render/` imports
+The eight `render/*` formatters are internal to the presenter: nothing outside `render/` imports
 them.
 
 **Undo brackets.** `withUndoBracket(client, nodeUuid, write)` (`cli/src/undo-bracket.ts`) wraps a
@@ -207,6 +213,22 @@ when the bracket held, the note when it did not), and before that it was spelled
 `driver/src/pipe-server.ts` backs this with a bracket gate: while one connection holds an open
 bracket, every other connection's calls wait for it, and a socket that closes mid-bracket has its
 dangling recording cancelled instead of left open.
+
+**A reset is a write of the same kind.** `node reset` and `component reset` answer `WriteReport`
+too — the caller named no value, so the read-back goes in `value` and the old one in the detail, and
+`persisted` is asked the same way `node set` and `component set` ask it. That question is not idle:
+checked live 2026-08-21 on the `cc_hero` prefab instance, a NODE reset left an override carrying the
+new value (`persisted: true`), while `reset-component` on `Health.maxHp` moved the live value and
+recorded no override at all — `prefabInstancePropertyOutcome` answered `carried: false`, so the next
+load rebuilds the prefab's value and the reset is gone. That is an `UNPERSISTED`, and printing `ok`
+over it is exactly what these reports exist to stop.
+
+Two more things about resets, both established live on the same day. A reset inside a prefab instance
+lands on the DECLARED CLASS DEFAULT rather than the prefab's value — `cc_hero/mixamorig_Hips`, whose
+prefab holds y=1.11, came back y=0 — so `node reset` says so and points at `prefab rm-override`,
+which is the one-property route (`prefab revert` drops every override the instance has). And `name`
+and `active` are refused before the call: the editor's node dump declares `default: null` for both,
+`reset-property` threw on `name` and answered `true` while leaving `active` untouched.
 
 ## Asset-Database Honesty
 
@@ -279,10 +301,12 @@ rendered empty.
 2. **The subcommand itself is an exported `(client: Driver, spec) => Promise<Report>`**, one per
    subcommand, and `spec` is one object carrying everything the command takes. That function is what
    a test calls; nothing a command decides lives in a Commander callback, because nothing reaches
-   that callback except through `parseAsync(argv)`. The three subcommands that take nothing
-   (`scene info`, `scene save`, `asset ready`) are `(client) => Promise<Report>`.
+   that callback except through `parseAsync(argv)`. The subcommands that take nothing
+   (`scene info`, `scene save`, `scene close`, `scene reload`, `component types`, `asset ready`)
+   are `(client) => Promise<Report>`.
    The `.action()` body is then wiring and nothing else: turn the typed text into values through
-   `commands/flags.ts` (`booleanFlag`, `numberFlag`, `vec3Flag`, `vec3PartsFlag`, `jsonFlag` —
+   `commands/flags.ts` (`booleanFlag`, `numberFlag`, `requiredNumberFlag`, `vec3Flag`,
+   `vec3PartsFlag`, `jsonFlag` —
    `asset.ts`'s `waitOptions` is the same thing for `--timeout`/`--quiet-for`), and hand the spec to
    `withClient(resolve, client => xxx(client, spec))` from `commands/shared.ts`. `withClient` is the
    one place that resolves the connection, closes it in every branch (success or thrown), and turns

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     assetCopy, assetGet, assetList, assetMkdir, assetMove, assetReady, assetRefresh, assetReimport,
-    assetRemove
+    assetRemove, assetUsers
 } from '../src/commands/asset.ts';
 import { present } from '../src/render/present.ts';
 import { MemoryDriver } from '../src/driver/memory.ts';
@@ -207,4 +207,36 @@ test('a database still starting up is a non-zero exit rather than a quiet no', a
     const output = present(await assetReady(driver));
     assert.equal(output.stdout.split('  ')[0], 'FAILED');
     assert.equal(output.failed, true);
+});
+
+const usingScene = () => new MemoryDriver({
+    assets: { 'db://assets/rifle.prefab': 'rifle-uuid' },
+    nodes: [
+        { name: 'Hero', prefab: { asset: 'rifle-uuid' } },
+        { name: 'Guard', components: [{ type: 'InstrumentSlot', props: {
+            prefab: { name: 'prefab', type: 'cc.Prefab', extends: ['cc.Asset'], value: { uuid: 'rifle-uuid' } }
+        } }] },
+        { name: 'Crate' }
+    ]
+});
+
+test('users names both an instance of the asset and a component field holding it', async () => {
+    const output = present(await assetUsers(usingScene(), { target: 'db://assets/rifle.prefab' }));
+    assert.match(output.stdout, /Hero/);
+    assert.match(output.stdout, /Guard/);
+    assert.doesNotMatch(output.stdout, /Crate/);
+    assert.match(output.stderr, /nodes: 2/);
+});
+
+test('an asset nothing uses is said outright', async () => {
+    const driver = new MemoryDriver({
+        assets: { 'db://assets/rifle.prefab': 'rifle-uuid' }, nodes: [{ name: 'Crate' }]
+    });
+    assert.match(present(await assetUsers(driver, { target: 'db://assets/rifle.prefab' })).stdout,
+        /no node/);
+});
+
+test('an address the database does not know is refused rather than answered with an empty list', async () => {
+    await assert.rejects(
+        () => assetUsers(usingScene(), { target: 'db://assets/nope.prefab' }), /nope\.prefab/);
 });

@@ -1,11 +1,12 @@
 import { EDITOR_METHODS, buildPathIndex, resolvePathInIndex } from '@cocos-cli/shared';
 import type {
-    ComponentOwner, ComponentOwnerReport, Driver, DumpedComponent, EditorMethods, GeneratedPrefab,
-    MissingScriptEntry, NodeDump, NodeInfo, PathIndexNode, PathResolution, PrefabAssetDump,
-    PrefabLinkageReport, PrefabOverrideOutcome, PrefabOverrideRecord, PrefabOverrideRemoval,
-    PrefabOverrideReport, PrefabSyncReport, PropertyDump, ReferenceOutcomeReport,
-    ReferencePlanReport, SceneDirtyReport, SceneDump, SceneFacade, SceneInfo, SceneMethods,
-    SceneNodeEntry, SceneResult, SerializedValue, Vec3Like
+    AddedSkeletalSocket, ComponentOwner, ComponentOwnerReport, Driver, DumpedComponent,
+    EditorMethods, GeneratedPrefab, MissingScriptEntry, NodeDump, NodeInfo, PathIndexNode,
+    PathResolution, PrefabAssetDump, PrefabLinkageReport, PrefabOverrideOutcome,
+    PrefabOverrideRecord, PrefabOverrideRemoval, PrefabOverrideReport, PrefabSyncReport,
+    PropertyDump, ReferenceOutcomeReport, ReferencePlanReport, RemovedSkeletalSocket,
+    SceneDirtyReport, SceneDump, SceneFacade, SceneInfo, SceneMethods, SceneNodeEntry, SceneResult,
+    SerializedValue, SkeletalSocket, SkeletalSocketList, Vec3Like
 } from '@cocos-cli/shared';
 import { isDumpDescriptor, resolveKind } from '../property/kind.ts';
 import { projectValue } from '../property/readers.ts';
@@ -70,12 +71,14 @@ export class MemoryDriver implements Driver {
             fileId: '',
             parent,
             children: [],
-            components: []
+            components: [],
+            sockets: []
         };
         node.fileId = `${node.uuid}.f`;
         this.byUuid.set(node.uuid, node);
         for (const component of spec.components || []) this.attach(node, component);
         for (const child of spec.children || []) node.children.push(this.adopt(child, node));
+        for (const socket of spec.sockets || []) this.attachSocket(node, socket);
         return node;
     }
 
@@ -257,6 +260,56 @@ export class MemoryDriver implements Driver {
                     }
                     throw new Error(`no component ${uuid} is in the open scene`);
                 },
+                resetProperty: async ({ uuid, path }) => {
+                    this.resetNodeProperty(this.requireNode(uuid), path);
+                    return true;
+                },
+                resetNode: async ({ uuid }) => {
+                    for (const one of Array.isArray(uuid) ? uuid : [uuid]) {
+                        const node = this.requireNode(one);
+                        for (const kind of TRANSFORM_PROPERTIES) this.resetNodeProperty(node, kind);
+                    }
+                    return true;
+                },
+                resetComponent: async ({ uuid }) => {
+                    const component = this.componentByUuid(uuid);
+                    if (!component) throw new Error(`no component ${uuid} is in the open scene`);
+                    for (const descriptor of Object.values(component.props)) {
+                        if (isDumpDescriptor(descriptor) && 'default' in descriptor) {
+                            descriptor.value = descriptor.default;
+                        }
+                    }
+                },
+                // Both array messages answer `true` for an index outside the array and change
+                // nothing — checked live 2026-08-21, which is why a command reads the array back.
+                moveArrayElement: async ({ uuid, path, target, offset }) => {
+                    const array = this.arrayAt(this.requireNode(uuid), path);
+                    const landing = target + offset;
+                    if (inRange(array, target) && inRange(array, landing)) {
+                        array.splice(landing, 0, array.splice(target, 1)[0]);
+                    }
+                    return true;
+                },
+                removeArrayElement: async ({ uuid, path, index }) => {
+                    const array = this.arrayAt(this.requireNode(uuid), path);
+                    if (inRange(array, index)) array.splice(index, 1);
+                    return true;
+                },
+                queryComponents: async () => ((this.spec && this.spec.offeredComponents) || []) as never,
+                queryClasses: async options => {
+                    const base = (options as { extends?: string }).extends;
+                    const registry = (this.spec && this.spec.registeredClasses) || {};
+                    const names = base === undefined ? [] : registry[base] || [];
+                    return names
+                        .filter(name => (options as { excludeSelf?: boolean }).excludeSelf !== true
+                            || name !== base)
+                        .map(name => ({ name }));
+                },
+                queryNodesByAssetUuid: async assetUuid => this.everyNode()
+                    .filter(node => this.usesAsset(node, assetUuid))
+                    .map(node => node.uuid),
+                closeScene: async () => !this.spec || this.spec.closeScene !== false,
+                softReload: async () => undefined,
                 removeNode: async ({ uuid }) => {
                     const node = this.requireNode(String(uuid));
                     const siblings = node.parent ? node.parent.children : this.roots;
@@ -368,7 +421,12 @@ export class MemoryDriver implements Driver {
             }),
             dumpMissingScripts: () => ({
                 success: true, data: { entries: (this.spec && this.spec.missingScripts) || [] }
-            })
+            }),
+            listSkeletalSockets: ([uuid]) => this.socketList(uuid as string),
+            addSkeletalSocket: ([uuid, bonePath, targetName]) =>
+                this.addSocket(uuid as string, bonePath as string, targetName as string | undefined),
+            removeSkeletalSocket: ([uuid, bonePath]) =>
+                this.removeSocket(uuid as string, bonePath as string)
         };
 
         return <K extends keyof SceneMethods>(method: K, ...args: Parameters<SceneMethods[K]>) => {
@@ -817,6 +875,166 @@ export class MemoryDriver implements Driver {
         const node = this.byUuid.get(uuid);
         return node && node.components.find(component => component.type === cid);
     }
+
+    private componentByUuid(uuid: string): LiveComponent | undefined {
+        for (const node of this.everyNode()) {
+            const found = node.components.find(component => component.uuid === uuid);
+            if (found) return found;
+        }
+        return undefined;
+    }
+
+    // ----- Resets ----------------------------------------------------------------------------
+
+    /**
+     * The declared class default, wherever the node sits — checked live 2026-08-21: a node inside a
+     * prefab instance resets to the default too, and the editor records THAT as an override rather
+     * than dropping the one it had.
+     */
+    private resetNodeProperty(node: LiveNode, property: string): void {
+        const field = NODE_FIELDS.find(known => known === property);
+        if (!field) throw new Error(`reset-property refused '${property}': a node carries no such property`);
+        const restored = NODE_DEFAULTS[field];
+        if (restored === undefined) {
+            throw new Error(`the engine declares no default for '${property}'`);
+        }
+        Object.assign(node, { [field]: restored });
+        this.recordOverride(node, field);
+    }
+
+    // ----- Arrays ----------------------------------------------------------------------------
+
+    /** The array a `__comps__.<index>.<property>` path addresses, inside the descriptor tree itself. */
+    private arrayAt(node: LiveNode, path: string): unknown[] {
+        const segments = path.split('.');
+        if (segments[0] !== '__comps__') {
+            throw new Error(`the memory scene models array edits on component properties only, not '${path}'`);
+        }
+        const component = node.components[Number(segments[1])];
+        if (!component) throw new Error(`'${path}' addresses a component the node does not carry`);
+        let held: unknown = component.props;
+        for (const segment of segments.slice(2)) {
+            const child = (held as Record<string, unknown>)[segment];
+            held = isDumpDescriptor(child) ? child.value : child;
+        }
+        if (!Array.isArray(held)) throw new Error(`'${path}' is not an array`);
+        return held;
+    }
+
+    // ----- Assets a node depends on ----------------------------------------------------------
+
+    /** By instance, or by any component field holding the uuid — the editor answers both. */
+    private usesAsset(node: LiveNode, assetUuid: string): boolean {
+        if (node.prefab && node.prefab.asset === assetUuid) return true;
+        return node.components.some(component => Object.values(component.props)
+            .some(descriptor => referencedSlots(descriptor).includes(assetUuid)));
+    }
+
+    // ----- Skeletal sockets ------------------------------------------------------------------
+
+    private attachSocket(node: LiveNode, spec: MemorySocket): void {
+        const target = this.adopt({ name: spec.targetName || socketNameFor(spec.path) }, node);
+        node.children.push(target);
+        node.sockets.push({ path: spec.path, target });
+    }
+
+    /**
+     * Every socket call goes through the live `cc.SkeletalAnimation` component, so a node without
+     * one is refused rather than answered with an empty list.
+     */
+    private skeletalOf(uuid: string): LiveNode | { error: string } {
+        const node = this.requireNode(uuid);
+        return node.components.some(component => component.type === SKELETAL_ANIMATION)
+            ? node
+            : { error: 'Node has no cc.SkeletalAnimation component' };
+    }
+
+    private socketList(uuid: string): SceneResult<SkeletalSocketList> {
+        const node = this.skeletalOf(uuid);
+        if ('error' in node) return { success: false, error: node.error };
+        return {
+            success: true,
+            data: {
+                nodeUuid: node.uuid,
+                useBakedAnimation: this.bakedAnimation(node),
+                sockets: node.sockets.map((socket): SkeletalSocket => ({
+                    path: socket.path,
+                    targetUuid: socket.target.uuid,
+                    targetName: socket.target.name,
+                    targetChildren: socket.target.children.map(child => child.name)
+                }))
+            }
+        };
+    }
+
+    private bakedAnimation(node: LiveNode): boolean {
+        const component = node.components.find(one => one.type === SKELETAL_ANIMATION);
+        const descriptor = component && component.props.useBakedAnimation;
+        return isDumpDescriptor(descriptor) ? descriptor.value !== false : true;
+    }
+
+    /** Idempotent, and a bone path naming no descendant is refused: the driver does both. */
+    private addSocket(
+        uuid: string, bonePath: string, targetName?: string
+    ): SceneResult<AddedSkeletalSocket> {
+        const node = this.skeletalOf(uuid);
+        if ('error' in node) return { success: false, error: node.error };
+        if (!bonePath) return { success: false, error: 'bonePath must be a non-empty bone path string' };
+
+        const wanted = targetName && targetName.trim() ? targetName.trim() : null;
+        const existing = node.sockets.find(socket => socket.path === bonePath);
+        if (existing) {
+            const renamed = !!wanted && existing.target.name !== wanted;
+            if (wanted) existing.target.name = wanted;
+            return {
+                success: true,
+                data: {
+                    targetUuid: existing.target.uuid, targetName: existing.target.name,
+                    bonePath, created: false, renamed, socketCount: node.sockets.length
+                }
+            };
+        }
+        if (!this.jointAt(node, bonePath)) {
+            return {
+                success: false,
+                error: `Bone path '${bonePath}' does not resolve to a child joint of node '${node.name}'`
+            };
+        }
+        this.attachSocket(node, { path: bonePath, targetName: wanted || undefined });
+        const created = node.sockets[node.sockets.length - 1];
+        return {
+            success: true,
+            data: {
+                targetUuid: created.target.uuid, targetName: created.target.name,
+                bonePath, created: true, renamed: !!wanted, socketCount: node.sockets.length
+            }
+        };
+    }
+
+    private removeSocket(uuid: string, bonePath: string): SceneResult<RemovedSkeletalSocket> {
+        const node = this.skeletalOf(uuid);
+        if ('error' in node) return { success: false, error: node.error };
+        const match = node.sockets.find(socket => socket.path === bonePath);
+        if (!match) {
+            return { success: false, error: `No socket with bone path '${bonePath}' on this node` };
+        }
+        node.sockets.splice(node.sockets.indexOf(match), 1);
+        node.children.splice(node.children.indexOf(match.target), 1);
+        this.byUuid.delete(match.target.uuid);
+        return {
+            success: true,
+            data: { bonePath, removedTargetUuid: match.target.uuid, socketCount: node.sockets.length }
+        };
+    }
+
+    /** A bone path is a chain of child names under the node, the way `getChildByPath` walks it. */
+    private jointAt(node: LiveNode, bonePath: string): LiveNode | undefined {
+        let at: LiveNode | undefined = node;
+        for (const name of bonePath.split('/')) {
+            at = at && at.children.find(child => child.name === name);
+        }
+        return at;
+    }
 }
 
 export interface MemoryCall {
@@ -844,6 +1062,13 @@ export interface MemoryPrefabInstance {
     syncAccepted?: boolean | null;
 }
 
+/** A socket of the node's `cc.SkeletalAnimation`, with the child node that tracks the bone. */
+export interface MemorySocket {
+    /** The bone path, which has to name a chain of descendants for an add to be accepted. */
+    path: string;
+    targetName?: string;
+}
+
 export interface MemoryNode {
     name: string;
     uuid?: string;
@@ -855,6 +1080,7 @@ export interface MemoryNode {
     components?: MemoryComponent[];
     children?: MemoryNode[];
     prefab?: MemoryPrefabInstance;
+    sockets?: MemorySocket[];
 }
 
 /** Editor messages that refuse, each carrying the refusal it answers with. */
@@ -878,6 +1104,12 @@ export interface MemoryScene {
     missingScripts?: MissingScriptEntry[];
     /** Prefab asset uuid → the dump `dumpPrefabAsset` answers for it. */
     prefabAssets?: Record<string, PrefabAssetDump>;
+    /** What the editor offers in its Add Component menu, which is not the class registry below. */
+    offeredComponents?: Array<{ name: string; cid?: string; path?: string; assetUuid?: string }>;
+    /** Base class → the classes the engine registers under it; `query-classes` reads no other way. */
+    registeredClasses?: Record<string, string[]>;
+    /** What `close-scene` answers; the editor says `false` when it will not close the scene. */
+    closeScene?: boolean;
 }
 
 interface LiveComponent {
@@ -886,6 +1118,11 @@ interface LiveComponent {
     enabled: boolean;
     props: Record<string, unknown>;
     serialized: Record<string, unknown> | null;
+}
+
+interface LiveSocket {
+    path: string;
+    target: LiveNode;
 }
 
 interface LiveNode {
@@ -902,6 +1139,7 @@ interface LiveNode {
     prefab: MemoryPrefabInstance | null;
     /** The node's id inside its prefab, which is what an override record points at. */
     fileId: string;
+    sockets: LiveSocket[];
 }
 
 interface ReferenceArgs {
@@ -932,6 +1170,31 @@ function referencedSlots(descriptor: unknown): Array<string | null> {
 }
 
 const NODE_FIELDS = ['name', 'active', 'layer', 'position', 'rotation', 'scale'] as const;
+
+type NodeField = typeof NODE_FIELDS[number];
+
+/** What `reset-node` returns, checked live 2026-08-21: the transform alone, the name untouched. */
+const TRANSFORM_PROPERTIES = ['position', 'rotation', 'scale'] as const;
+
+/** Only the four the editor declares a default for; `name` and `active` carry `default: null`. */
+const NODE_DEFAULTS: Partial<Record<NodeField, unknown>> = {
+    layer: LAYER_DEFAULT,
+    position: { x: 0, y: 0, z: 0 },
+    rotation: { x: 0, y: 0, z: 0 },
+    scale: { x: 1, y: 1, z: 1 }
+};
+
+const SKELETAL_ANIMATION = 'cc.SkeletalAnimation';
+
+/** `createSocket` names the target node after the last bone of the path. */
+function socketNameFor(bonePath: string): string {
+    const bones = bonePath.split('/');
+    return `${bones[bones.length - 1]} Socket`;
+}
+
+function inRange(array: readonly unknown[], index: number): boolean {
+    return Number.isInteger(index) && index >= 0 && index < array.length;
+}
 
 /** The serializer's spelling back to the field the live node holds it in. */
 const STORED_FIELDS: Record<string, NodeStoredProperty> = Object.fromEntries(

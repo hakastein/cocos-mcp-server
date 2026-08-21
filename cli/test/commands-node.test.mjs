@@ -7,7 +7,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    nodeCreate, nodeDuplicate, nodeGet, nodeMove, nodeRemove, nodeSet, resolveNode
+    nodeCreate, nodeDuplicate, nodeGet, nodeMove, nodeRemove, nodeReset, nodeSet,
+    nodeSocketAdd, nodeSocketList, nodeSocketRemove, resolveNode
 } from '../src/commands/node.ts';
 import { present } from '../src/render/present.ts';
 import { MemoryDriver } from '../src/driver/memory.ts';
@@ -229,4 +230,162 @@ test('a path rm cannot resolve is refused before the editor is told anything', a
     const driver = guard();
     await assert.rejects(() => nodeRemove(driver, { target: 'Nowhere' }), /Nowhere/);
     assert.equal(called(driver, 'scene.removeNode').length, 0);
+});
+
+const moved = (extra = {}) => new MemoryDriver({
+    nodes: [{
+        name: 'Canvas',
+        children: [{ name: 'Bg', position: { x: 12, y: 4, z: 0 }, scale: { x: 2, y: 2, z: 2 }, ...extra }]
+    }]
+});
+
+test('reset --prop returns the property and names both values', async () => {
+    const driver = moved();
+    const output = present(await nodeReset(driver, { target: 'Canvas/Bg', property: 'position' }));
+    assert.match(output.stdout, /^ok/);
+    assert.match(output.stdout, /"x":12/);
+    assert.match(output.stdout, /"x":0/);
+});
+
+test('reset --prop leaves the properties it was not asked about alone', async () => {
+    const driver = moved();
+    await nodeReset(driver, { target: 'Canvas/Bg', property: 'position' });
+    const output = present(await nodeReset(driver, { target: 'Canvas/Bg', property: 'scale' }));
+    assert.match(output.stdout, /"x":2/);
+});
+
+test('reset --transform answers for all three and marks the one that did not move', async () => {
+    const output = present(await nodeReset(moved(), { target: 'Canvas/Bg', transform: true }));
+    assert.match(output.stdout, /^ok {2}Canvas\/Bg {2}3 writes/);
+    assert.match(output.stdout, /position = \{"x":0,"y":0,"z":0\}.*was \{"x":12/);
+    assert.match(output.stdout, /rotation.*already at the value it resets to/);
+});
+
+test('a reset that changed nothing says so instead of printing the same value twice', async () => {
+    const driver = moved();
+    await nodeReset(driver, { target: 'Canvas/Bg', transform: true });
+    const output = present(await nodeReset(driver, { target: 'Canvas/Bg', transform: true }));
+    assert.match(output.stdout, /already at the value it resets to/);
+    assert.doesNotMatch(output.stdout, /was /);
+});
+
+const instance = (over = {}) => new MemoryDriver({
+    nodes: [{
+        name: 'Hero',
+        prefab: { asset: 'prefab-uuid', recordsOverrides: true, ...over },
+        position: { x: 12, y: 4, z: 0 }
+    }]
+});
+
+// Inside an instance the reset lands on the class default like anywhere else, so the line reads
+// like a plain reset while the prefab's own value is still out of reach; the note is what says so.
+test('inside a prefab instance the reset is called out as not restoring the asset', async () => {
+    const output = present(await nodeReset(instance(), { target: 'Hero', property: 'position' }));
+    assert.match(output.stdout, /"x":0/);
+    assert.match(output.stderr, /prefab rm-override/);
+});
+
+test('the override the reset leaves behind is what makes a save carry it', async () => {
+    const output = present(await nodeReset(instance(), { target: 'Hero', property: 'position' }));
+    assert.match(output.stdout, /persisted=true/);
+    assert.equal(output.failed, false);
+});
+
+// A reset the instance records nothing for is undone by the next load; an `ok` over that is the
+// lie the write report exists to stop.
+test('a reset no override carries is UNPERSISTED and exits non-zero', async () => {
+    const output = present(await nodeReset(instance({ recordsOverrides: false }),
+        { target: 'Hero', property: 'position' }));
+    assert.match(output.stdout, /^UNPERSISTED/);
+    assert.equal(output.failed, true);
+});
+
+test('reset is wrapped in an undo bracket', async () => {
+    const driver = moved();
+    await nodeReset(driver, { target: 'Canvas/Bg', property: 'position' });
+    const names = driver.calls.map(call => call.name);
+    assert.ok(names.indexOf('scene.beginRecording') < names.indexOf('scene.resetProperty'));
+    assert.ok(names.indexOf('scene.resetProperty') < names.indexOf('scene.endRecording'));
+});
+
+test('naming neither --prop nor --transform is refused rather than guessed', async () => {
+    await assert.rejects(() => nodeReset(moved(), { target: 'Canvas/Bg' }), /--prop|--transform/);
+});
+
+test('naming both is refused: they are two different resets', async () => {
+    await assert.rejects(
+        () => nodeReset(moved(), { target: 'Canvas/Bg', property: 'position', transform: true }),
+        /--prop|--transform/);
+});
+
+test('a property a node does not have is refused, naming the ones it does', async () => {
+    await assert.rejects(
+        () => nodeReset(moved(), { target: 'Canvas/Bg', property: 'parent' }), /position/);
+});
+
+// The editor takes the message for these two and does nothing with it, so forwarding them would
+// print an `ok` over a value that never moved.
+test('a property the editor declares no default for is refused, pointing at node set', async () => {
+    await assert.rejects(
+        () => nodeReset(moved(), { target: 'Canvas/Bg', property: 'active' }), /node set/);
+});
+
+const rigged = (sockets) => new MemoryDriver({
+    nodes: [{
+        name: 'guard',
+        components: [{ type: 'cc.SkeletalAnimation' }],
+        sockets,
+        children: [{ name: 'Hips', children: [{ name: 'RightHand' }] }]
+    }, { name: 'Crate' }]
+});
+
+test('socket ls names the bone, the tracking node and the baked-animation flag', async () => {
+    const output = present(await nodeSocketList(rigged([{ path: 'Hips/RightHand' }]), { target: 'guard' }));
+    assert.match(output.stdout, /Hips\/RightHand/);
+    assert.match(output.stdout, /RightHand Socket/);
+    assert.match(output.stderr, /useBakedAnimation=true/);
+});
+
+test('a node without the animation component is refused rather than answered with no sockets', async () => {
+    await assert.rejects(
+        () => nodeSocketList(rigged([]), { target: 'Crate' }), /cc\.SkeletalAnimation/);
+});
+
+test('adding a socket reports it as created and names the node that now tracks the bone', async () => {
+    const driver = rigged([]);
+    const output = present(await nodeSocketAdd(driver, { target: 'guard', bone: 'Hips/RightHand' }));
+    assert.match(output.stdout, /socket added/);
+    assert.match(output.stdout, /RightHand Socket/);
+    assert.match(present(await nodeSocketList(driver, { target: 'guard' })).stderr, /sockets: 1/);
+});
+
+test('adding the same bone twice reuses the socket instead of stacking a second one', async () => {
+    const driver = rigged([{ path: 'Hips/RightHand' }]);
+    const output = present(await nodeSocketAdd(driver, { target: 'guard', bone: 'Hips/RightHand' }));
+    assert.match(output.stdout, /already there/);
+    assert.match(present(await nodeSocketList(driver, { target: 'guard' })).stderr, /sockets: 1/);
+});
+
+test('a bone path naming no joint is refused: a socket on one would sit dead at the origin', async () => {
+    await assert.rejects(
+        () => nodeSocketAdd(rigged([]), { target: 'guard', bone: 'Hips/LeftFoot' }), /Hips\/LeftFoot/);
+});
+
+test('the note says Ctrl+Z does not reach a socket, since it is written on the live component', async () => {
+    const output = present(await nodeSocketAdd(rigged([]), { target: 'guard', bone: 'Hips/RightHand' }));
+    assert.match(output.stderr, /Ctrl\+Z/);
+});
+
+test('removing a socket names the target node it destroyed and what is left', async () => {
+    const driver = rigged([{ path: 'Hips/RightHand' }]);
+    const output = present(await nodeSocketRemove(driver, { target: 'guard', bone: 'Hips/RightHand' }));
+    assert.match(output.stdout, /socket removed/);
+    assert.match(output.stdout, /sockets: 0/);
+    assert.match(output.stderr, /parented under it/);
+});
+
+test('removing a bone with no socket is refused rather than reported as a removal', async () => {
+    await assert.rejects(
+        () => nodeSocketRemove(rigged([]), { target: 'guard', bone: 'Hips/RightHand' }),
+        /Hips\/RightHand/);
 });

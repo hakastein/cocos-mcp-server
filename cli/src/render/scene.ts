@@ -1,8 +1,5 @@
 import type { ComponentOwnerReport, MissingScriptDump, SceneDirtyReport } from '@cocos-cli/shared';
-
-function padRight(text: string, width: number): string {
-    return text.length >= width ? text : text + ' '.repeat(width - text.length);
-}
+import { padRight } from './columns.ts';
 
 /**
  * `active` and `activeInHierarchy` print separately: a node switched on under a parent switched off
