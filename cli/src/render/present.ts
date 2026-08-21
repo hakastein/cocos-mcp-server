@@ -7,6 +7,7 @@ import {
     assetField, assetListSummary, assetNote, assetUsersSummary, assetVerdict, renderAssetInfo,
     renderAssetList, renderAssetReport, renderAssetUsers
 } from './asset.ts';
+import { censusSummary, censusVerdict, renderCensus } from './census.ts';
 import { classListSummary, renderClassList, renderSockets, socketsSummary } from './component.ts';
 import { renderWrites, undoDetail, writesVerdict } from './report.ts';
 import { renderTree } from './tree.ts';
@@ -23,6 +24,8 @@ import type { ClassEntry } from './component.ts';
 import type { RenderedWrite } from './report.ts';
 import type { DumpNode, TreeOptions } from './tree.ts';
 import type { AssetRecord } from '../asset/query.ts';
+import type { CensusResult } from '../ecs/census.ts';
+import type { UnreadableFile } from '../ecs/kit.ts';
 import type { ComponentChoice, PropertyReading } from '../property/component-dump.ts';
 import type { ReferenceLabel } from '../property/reference-index.ts';
 
@@ -78,7 +81,12 @@ export type Report =
     }
     | { kind: 'prefabDump'; dump: PrefabAssetDump }
     | { kind: 'prefabOverrides'; overrides: PrefabOverrideReport }
-    | { kind: 'instances'; instances: Hello[] };
+    | { kind: 'instances'; instances: Hello[] }
+    /** The ECS kit read off disk: what reads each component key, and what writes it. */
+    | {
+        kind: 'census'; root: string; result: CensusResult; narrowed: boolean;
+        unreadable: UnreadableFile[];
+    };
 
 interface Rendered {
     verdict: Verdict;
@@ -266,6 +274,14 @@ function render(report: Report): Rendered {
                 verdict: 'ok',
                 text: renderInstances(report.instances),
                 json: report.instances
+            };
+
+        case 'census':
+            return {
+                verdict: censusVerdict(report.result, report.narrowed),
+                text: renderCensus(report.result, report.unreadable),
+                json: { root: report.root, ...report.result, unreadable: report.unreadable },
+                note: censusSummary(report.result, report.root, report.narrowed)
             };
     }
 }

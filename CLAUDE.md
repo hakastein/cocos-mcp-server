@@ -77,14 +77,24 @@ that is what lets the memory adapter drive a command body.
 them goes through `scene.*`, never through `editor.*`.
 
 Command groups implemented in `cli/src/commands/` today: `scene`, `node`, `component`, `prefab`,
-`asset`, plus the top-level `instances`. Two listings there answer questions that look like one and
+`asset`, `ecs`, plus the top-level `instances`. Two listings there answer questions that look like one and
 are not: `component types` is the editor's Add Component menu (`scene:query-components`), and
 `scene classes <base>` is the engine's class registry under a base (`scene:query-classes`). Measured
 live 2026-08-21: 203 offered against 260 registered under `cc.Component`, the extra ones being
 abstract bases and deprecated aliases; `query-classes` with no `extends` answers `[]`, so the base is
 an argument rather than a filter, and `cc.Asset` is a legal base whose answers are no components at
-all. That is why they are two subcommands in two groups rather than one flag. More groups (build, project, log, ecs, a raw `evalInScene`
+all. That is why they are two subcommands in two groups rather than one flag. More groups (build, project, log, a raw `evalInScene`
 escape hatch) are future work, not yet wired to any command.
+
+`ecs census` is the one command that asks the driver nothing. Its question — which component key a
+system reads and nothing writes — is about the project's TypeScript, which the editor does not
+answer; it needs only the open project's path, so it resolves through `resolveProject`/`withProject`
+and opens no connection. Its verdict is `ok` or `UNVERIFIED` only, because a census is not a write
+and cannot fail halfway: `UNVERIFIED` is what a sweep that did not read the whole kit answers, and a
+`--kit` narrower than `db://assets` counts as exactly that — the writer the census did not look for
+leaves a key reading as starved, and the caller having asked for the narrowing does not confirm it.
+`assets/framework` in `CyberCore` is a directory junction onto a shared kit, so `readKit` follows
+links: the first live run stopped at it and answered `keys 0 in 3 files`.
 
 `driver/` also carries a small subsystem outside this diagram entirely: a Vue settings panel
 (`driver/src/panels/default/index.ts`, its own `tsup` entry) that shows `PipeServer` status and
@@ -111,11 +121,11 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `driver/src/panels/default/index.ts` | the Vue settings panel — status and `enableDebugLog`, over the IPC `main.ts` answers, not over the pipe |
 | `cli/src/main.ts` | the command tree (`buildProgram`), the entry point `bin/cocos.js` runs |
 | `cli/src/discovery.ts` | enumerates channels, probes each with `hello`, `selectInstance` narrows by `--project` |
-| `cli/src/resolve.ts` | `resolveClient` — discovery, selection and connect, in the shape every command's `resolve` thunk needs |
+| `cli/src/resolve.ts` | `resolveClient` — discovery, selection and connect, in the shape every command's `resolve` thunk needs; `resolveProject` is the same choice without the connect, for a command that needs only the project's path |
 | `cli/src/driver/client.ts` | `DriverClient implements Driver` — the `editor.*`/`scene.*` facades over JSON-RPC; `editor` is generated from `EDITOR_METHODS` and typed by `EditorMethods`, `scene.call` by `SceneMethods` |
 | `cli/src/driver/memory.ts` | `MemoryDriver implements Driver` — the same seam over a scene held as data, so a command's writes read back. The scene is the test's own input: nodes with components, descriptors in the editor's dump shape, `classes` for what the engine registers, `refuses` for a message that says no, and a node's `prefab` block for what the next load rebuilds — a write inside an instance records the override the editor would record. A primitive it does not model refuses by name |
 | `cli/src/driver/memory-assets.ts` | `MemoryAssetDb` — the asset half of that seam, a database held as data: the `db://` glob, and the move/copy/create/delete that rename on conflict the way the editor does |
-| `cli/src/commands/shared.ts` | `withClient` (resolve → run → present → close) and `emit`, the one place command output touches `stdout`/`stderr`; plus `unwrap` (`SceneResult<T>` → value or thrown error) |
+| `cli/src/commands/shared.ts` | `withClient` (resolve → run → present → close), `withProject` (the same without a connection, for `ecs census`) and `emit`, the one place command output touches `stdout`/`stderr`; plus `unwrap` (`SceneResult<T>` → value or thrown error) |
 | `cli/src/commands/flags.ts` | the coercions an `.action()` body applies to the text Commander hands through — `booleanFlag`, `numberFlag`, `requiredNumberFlag` (the same without the `undefined`, for a `requiredOption`), `vec3Flag` (all three axes, for a node being created), `vec3PartsFlag` (an empty axis keeps its value), `jsonFlag` |
 | `cli/src/component-add.ts` | the add cascade `component add` and `node create --component` share: both spellings of a type tried in turn, then polled for, because neither add path is trusted on its own word; plus `queryComponents`, the live component list it polls |
 | `cli/src/undo-bracket.ts` | `withUndoBracket` — one write wrapped in one undo step, `undoNote` when the editor refused or left it open |
@@ -125,10 +135,11 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/prefab-linkage.ts` | the `type: 'cc.Prefab'` that separates a linked instance from a flat copy, and the two-sided linkage verdict (live node vs serializer) |
 | `cli/src/asset/` | the asset database, whole: the `db://` glob and the name/limit cut a listing takes (`query.ts`), the quiescence verdict every asset command waits on — snapshot fingerprint, `settled`, the asset and component-class deltas, `AssetReport` and `copiedAddress` (`settle.ts`), and the half that asks the editor — the reads, the tree snapshot and the `settleAssetDb` poll built on them (`db.ts`) |
 | `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`), the read side of a component dump — class selection, property rows, default comparison (`component-dump.ts`), uuid → scene name (`reference-index.ts`) and the spelling a reference value is written in — path, `db://` url or uuid (`reference-target.ts`) |
-| `cli/src/render/` | `verdict.ts` (the five head words, their exit codes and `worstVerdict`) and `present.ts` (the `Report` union and `present`) over eight formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `scene.ts`, `component.ts` (the class registry and a node's bone sockets, both listings), `instances.ts`, over `columns.ts`'s `padRight`/`columnWidth`. Only `present.ts` is imported from outside `render/` |
+| `cli/src/ecs/` | the ECS kit read off disk, no driver in either half: `census.ts` — the per-key sweep over the TypeScript parser's own syntax trees, moved from the MCP-era `source/ecs-census.ts` unchanged; `kit.ts` — the `db://assets` → directory mapping and the walk that feeds it, which follows the directory junction a shared kit is mounted into `assets/` by |
+| `cli/src/render/` | `verdict.ts` (the five head words, their exit codes and `worstVerdict`) and `present.ts` (the `Report` union and `present`) over nine formatters — `tree.ts`, `report.ts`, `property.ts`, `prefab.ts`, `asset.ts`, `scene.ts`, `component.ts` (the class registry and a node's bone sockets, both listings), `instances.ts`, `census.ts`, over `columns.ts`'s `padRight`/`columnWidth`. Only `present.ts` is imported from outside `render/` |
 
 Everything a command decides that does not need a live editor lives in a pure module beside
-`commands/`: `property/`, `render/`, `asset/query.ts`, `asset/settle.ts`, `node-type.ts`,
+`commands/`: `property/`, `render/`, `ecs/census.ts`, `asset/query.ts`, `asset/settle.ts`, `node-type.ts`,
 `node-snapshot.ts`, `node-transform.ts`, `prefab-linkage.ts`, `settle.ts`, `discovery.ts`'s
 `selectInstance`. Those and the command bodies are what the test suite covers — a command runs against
 `cli/src/driver/memory.ts`, which answers as the seam does. What drives the editor without being a
@@ -202,7 +213,7 @@ dropped as a global in `bfb4d01`, because it promised structure where there is n
 bodies. A report with no structural form — `kind: 'action'`, a verdict plus a free-text tail —
 prints its text under `--json` too.
 
-The eight `render/*` formatters are internal to the presenter: nothing outside `render/` imports
+The nine `render/*` formatters are internal to the presenter: nothing outside `render/` imports
 them.
 
 **Undo brackets.** `withUndoBracket(client, nodeUuid, write)` (`cli/src/undo-bracket.ts`) wraps a
@@ -313,6 +324,10 @@ rendered empty.
    a thrown `Error` into `process.exitCode = EXIT.FAILED` on `stderr`. A command answers a `Report`
    (`cli/src/render/present.ts`); it assembles neither stream nor the exit code, and never calls
    `process.stdout.write` itself. A `--json` option is handed to `withClient` as its third argument.
+   A command that asks the driver nothing takes no client: its body is `(spec) => Promise<Report>`,
+   its group is registered against `resolveProject` rather than `resolveClient`, and the action hands
+   it to `withProject(resolve, hello => xxx({ projectPath: hello.projectPath, ... }))`, which does
+   the same four things without opening a connection. `ecs census` is the one such command today.
 3. Call a primitive as `client.editor.<group>.<method>(...)` or `client.scene.call('<method>', ...)`
    — the latter is typed against `SceneMethods`, so a signature drift is a compile error. Use
    `unwrap()` from `commands/shared.ts` when the command needs the scene script's `data` rather than
@@ -412,7 +427,11 @@ A write-path change is only checked once the scene has been saved and Ctrl+Z tri
   type-check. `shared` emits `dist/`, which the other two import. `driver` and `cli` emit nothing
   from `tsc` (`noEmit`) — it is their type-check — and ship a `tsup` bundle instead: `driver` into
   `dist/` (the extension's actual `main`), `cli` into `bin/cocos.js` (the actual `cocos` binary),
-  both built from `src/` directly.
+  both built from `src/` directly. `typescript` is the one dependency `cli`'s bundle leaves outside
+  itself (`external` plus the negative lookahead in `noExternal`, which tsup consults first).
+  Measured 2026-08-21: bundling it took `bin/cocos.js` from 1.44 MB to 28.85 MB, and `require`ing it
+  costs 85 ms. Only `ecs census` parses anything, so `commands/ecs.ts` reaches `ecs/census.ts`
+  through a dynamic `import()` and no other command loads a parser it does not use.
 
 ## Settings
 

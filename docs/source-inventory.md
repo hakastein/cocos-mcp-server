@@ -15,7 +15,7 @@ Recover any of them with `git show 0e43954:source/<name>.ts`.
 
 | Module | Lines | What it decided | Where it goes |
 |---|---|---|---|
-| `ecs-census.ts` | 644 | Per-component-key census of an ECS kit over the TypeScript parser: who reads a key, who writes its fields, who adds and removes it, and which keys have readers and no writer at all. | PLY-14 — the `ecs census` command. |
+| `ecs-census.ts` | 644 | Per-component-key census of an ECS kit over the TypeScript parser: who reads a key, who writes its fields, who adds and removes it, and which keys have readers and no writer at all. | **Returned** in PLY-14 as `cli/src/ecs/census.ts`, unchanged, under `ecs census`. |
 | `build-task.ts` | 66 | `BuildExitCode` (36 is BUILD_SUCCESS, not a failure), the build-task description, and saved-vs-requested setting conflicts. | PLY-15 — the `build` group. |
 | `log-search.ts` | 126 | Literal-by-default line search over `project.log`: a blank pattern is an error rather than a match-all, an invalid regex is reported rather than silently re-read as literal text, and `totalMatches` counts the file rather than the capped page. | PLY-15 — the `log` group. |
 | `project-log.ts` | 164 | Entry-level parsing of `temp/logs/project.log`: the level is read from the line's own `- <level>:` field and continuation lines fold into the entry that owns them, instead of every stack frame being classified on its own words. | PLY-15 — the `log` group. |

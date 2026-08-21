@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { unwrap, withClient } from '../src/commands/shared.ts';
+import { unwrap, withClient, withProject } from '../src/commands/shared.ts';
 import { MemoryDriver } from '../src/driver/memory.ts';
 
 /** The two process streams and the exit code are the only place a command's output can be read. */
@@ -88,6 +88,37 @@ test('--json reaches the presenter rather than the command body', async () => {
     const seen = await capture(() => withClient(editor.resolve,
         async () => ({ kind: 'assetList', assets: [asset], total: 1 }), { json: true }));
     assert.equal(seen.stdout, JSON.stringify([asset]) + '\n');
+});
+
+const openProject = () => async () => ({ ok: true, hello: { projectPath: 'D:/CyberCore' } });
+
+test('a command that needs only the project gets its path and opens no connection', async () => {
+    let seenPath = null;
+    const seen = await capture(() => withProject(openProject(), async hello => {
+        seenPath = hello.projectPath;
+        return { kind: 'action', verdict: 'ok', summary: 'swept' };
+    }));
+    assert.equal(seenPath, 'D:/CyberCore');
+    assert.equal(seen.stdout, 'ok  swept\n');
+});
+
+test('with no editor open the project body never runs either', async () => {
+    let ran = false;
+    const seen = await capture(() => withProject(noEditor(), async () => {
+        ran = true;
+        return { kind: 'action', verdict: 'ok', summary: 'unreachable' };
+    }));
+    assert.equal(ran, false);
+    assert.equal(seen.exitCode, 3);
+});
+
+test('a project body that throws is a message on stderr and a non-zero exit', async () => {
+    const seen = await capture(() => withProject(openProject(), async () => {
+        throw new Error('could not read D:/CyberCore/assets');
+    }));
+    assert.equal(seen.stdout, '');
+    assert.equal(seen.stderr, 'could not read D:/CyberCore/assets\n');
+    assert.equal(seen.exitCode, 1);
 });
 
 test('unwrap answers with the data the scene script sent', async () => {

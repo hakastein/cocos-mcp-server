@@ -2,12 +2,13 @@ import { Command, CommanderError } from 'commander';
 import { discover, probeAddress } from './discovery.ts';
 import { present } from './render/present.ts';
 import { emit } from './commands/shared.ts';
-import { resolveClient } from './resolve.ts';
+import { resolveClient, resolveProject } from './resolve.ts';
 import { registerScene } from './commands/scene.ts';
 import { registerNode } from './commands/node.ts';
 import { registerComponent } from './commands/component.ts';
 import { registerPrefab } from './commands/prefab.ts';
 import { registerAsset } from './commands/asset.ts';
+import { registerEcs } from './commands/ecs.ts';
 import { EXIT } from './exit.ts';
 
 export function buildProgram(): Command {
@@ -32,6 +33,7 @@ export function buildProgram(): Command {
     registerComponent(program, () => resolveClient(program.opts().project));
     registerPrefab(program, () => resolveClient(program.opts().project));
     registerAsset(program, () => resolveClient(program.opts().project));
+    registerEcs(program, () => resolveProject(program.opts().project));
 
     return program;
 }

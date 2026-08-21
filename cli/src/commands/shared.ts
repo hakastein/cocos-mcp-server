@@ -1,8 +1,8 @@
-import type { Driver, SceneResult } from '@cocos-cli/shared';
+import type { Driver, Hello, SceneResult } from '@cocos-cli/shared';
 import { EXIT } from '../exit.ts';
 import { present } from '../render/present.ts';
 import type { CommandOutput, PresentOptions, Report } from '../render/present.ts';
-import type { Resolved } from '../resolve.ts';
+import type { Resolved, ResolvedProject } from '../resolve.ts';
 
 /**
  * `client.scene.call` is typed by the `SceneMethods` contract, so the method, its arguments and the
@@ -38,19 +38,36 @@ export async function withClient(
     options?: PresentOptions
 ): Promise<void> {
     const resolved = await resolve();
-    if (!resolved.ok) {
-        process.stderr.write(resolved.message + '\n');
-        process.exitCode = EXIT.NO_EDITOR;
-        return;
-    }
+    if (!resolved.ok) return noEditor(resolved.message);
     try {
-        const output = present(await run(resolved.client), options);
+        await report(() => run(resolved.client), options);
+    } finally {
+        resolved.client.close();
+    }
+}
+
+/** For a command that needs only which project is open: no connection is opened at all. */
+export async function withProject(
+    resolve: () => Promise<ResolvedProject>, run: (hello: Hello) => Promise<Report>,
+    options?: PresentOptions
+): Promise<void> {
+    const resolved = await resolve();
+    if (!resolved.ok) return noEditor(resolved.message);
+    await report(() => run(resolved.hello), options);
+}
+
+function noEditor(message: string): void {
+    process.stderr.write(message + '\n');
+    process.exitCode = EXIT.NO_EDITOR;
+}
+
+async function report(run: () => Promise<Report>, options?: PresentOptions): Promise<void> {
+    try {
+        const output = present(await run(), options);
         emit(output);
         if (output.failed) process.exitCode = EXIT.FAILED;
     } catch (error) {
         process.stderr.write((error instanceof Error ? error.message : String(error)) + '\n');
         process.exitCode = EXIT.FAILED;
-    } finally {
-        resolved.client.close();
     }
 }

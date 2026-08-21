@@ -7,10 +7,20 @@ export type Resolved =
     | { ok: true; client: DriverClient; hello: Hello }
     | { ok: false; message: string };
 
-export async function resolveClient(wanted?: string): Promise<Resolved> {
+export type ResolvedProject =
+    | { ok: true; hello: Hello }
+    | { ok: false; message: string };
+
+/** Which editor is meant, without opening a connection to it. */
+export async function resolveProject(wanted?: string): Promise<ResolvedProject> {
     const candidates = await discover(probeAddress);
     const selection = selectInstance(candidates, wanted);
-    if (!selection.ok) return selection;
-    const client = await DriverClient.connect(pipePath(selection.chosen.projectPath));
-    return { ok: true, client, hello: selection.chosen };
+    return selection.ok ? { ok: true, hello: selection.chosen } : selection;
+}
+
+export async function resolveClient(wanted?: string): Promise<Resolved> {
+    const project = await resolveProject(wanted);
+    if (!project.ok) return project;
+    const client = await DriverClient.connect(pipePath(project.hello.projectPath));
+    return { ok: true, client, hello: project.hello };
 }
