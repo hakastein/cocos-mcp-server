@@ -16,7 +16,7 @@ Script components serialize under a compressed cid. Checked against the open `cc
 | query | answer |
 |---|---|
 | `grep -c FollowCamera cc_action_1a.scene` | `0` |
-| `cocos scene tree \| grep FollowCamera` | `Main Camera  [Camera,FollowCamera,BuiltinPipelineSettings]` |
+| `cocos scene tree \| grep FollowCamera` | `Main Camera  [cc.Camera,FollowCamera,BuiltinPipelineSettings]` |
 | `grep -c GameBootstrap cc_action_1a.scene` | `0` |
 | `cocos scene tree \| grep GameBootstrap` | `Game  [GameRoot,GameBootstrap]` |
 

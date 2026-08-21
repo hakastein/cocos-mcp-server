@@ -5,14 +5,14 @@ answer comes back on stdout.
 
 ```
 $ cocos scene tree
-Main Light  [DirectionalLight]
-Main Camera  [Camera,FollowCamera,BuiltinPipelineSettings]
+Main Light  [cc.DirectionalLight]
+Main Camera  [cc.Camera,FollowCamera,BuiltinPipelineSettings]
 Environment
 ├─┬ cc_scene
 │ └─┬ scene
-│   ├── KB3D_FTW_PropBarrels_A_Main  [MeshRenderer]
-│   └─┬ KB3D_FTW_PropGarageDoor_B_Door  [MeshRenderer]
-│     └── KB3D_FTW_PropGarageDoor_B_Frame  [MeshRenderer]
+│   ├── KB3D_FTW_PropBarrels_A_Main  [cc.MeshRenderer]
+│   └─┬ KB3D_FTW_PropGarageDoor_B_Door  [cc.MeshRenderer]
+│     └── KB3D_FTW_PropGarageDoor_B_Frame  [cc.MeshRenderer]
 ```
 
 Three npm workspaces in one repository: `driver/` is an editor extension holding native
