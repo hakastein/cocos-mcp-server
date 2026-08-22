@@ -81,9 +81,9 @@ function resolveMemberPath(owner: any, segments: string[]): any {
 }
 
 function propertyOverridesFor(
-    instance: any, owner: any, property: string
+    instanceRoot: any, owner: any, property: string
 ): Array<{ path: string; segments: string[]; value: any }> {
-    return instanceOverridesFor(instance, owner, property).map((override) => ({
+    return instanceOverridesFor(instanceRoot, owner, property).map((override) => ({
         path: override.path.join('.'), segments: override.path, value: override.value
     }));
 }
@@ -140,7 +140,7 @@ export const prefabInstancePropertyOutcome: SceneMethods['prefabInstanceProperty
             resolveMemberPath(owner, segments), resolveMemberPath(counterpart, segments), property, divergence
         );
 
-        const overrides = propertyOverridesFor(instance, owner, segments[0]).filter((override) => {
+        const overrides = propertyOverridesFor(root, owner, segments[0]).filter((override) => {
             const recorded: Divergence = { uncovered: [], untyped: [] };
             diffAgainstAsset(resolveMemberPath(owner, override.segments), override.value, override.path, recorded);
             return recorded.uncovered.length === 0;

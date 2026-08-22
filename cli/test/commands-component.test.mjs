@@ -89,6 +89,37 @@ test('the serializer knows the property only under its backing-field name — bo
     assert.match(output.stdout, /persisted=true/);
 });
 
+const instancedRenderer = (prefab) => new MemoryDriver({
+    nodes: [{
+        name: 'Bullet',
+        prefab: { asset: 'prefab-uuid', ...prefab },
+        components: [{
+            type: 'cc.MeshRenderer',
+            props: { shadowCastingMode: { name: 'shadowCastingMode', type: 'Number', value: 0, default: 0 } }
+        }]
+    }]
+});
+
+const castShadow = { node: 'Bullet', component: 'cc.MeshRenderer', property: 'shadowCastingMode', value: 1 };
+
+// Checked live 2026-08-22 on CyberCore: setting `shadowCastingMode` on a prefab instance made the
+// editor record the override as `_shadowCastingMode`, which the write's own spelling never found.
+test('a write finds the override the editor recorded under the backing field', async () => {
+    const output = await setOutput(
+        instancedRenderer({ componentOverrides: { _shadowCastingMode: ['_shadowCastingMode'] } }), castShadow);
+    assert.match(output.stdout, /^ok {2}cc\.MeshRenderer\.shadowCastingMode = 1/);
+    assert.match(output.stdout, /persisted=true/);
+    assert.match(output.stdout, /_shadowCastingMode/);
+    assert.equal(output.failed, false);
+});
+
+test('the backing field agreeing with the asset carries nothing, so the write stays UNPERSISTED', async () => {
+    const output = await setOutput(
+        instancedRenderer({ componentOverrides: { _shadowCastingMode: [] } }), castShadow);
+    assert.equal(output.stdout.split('  ')[0], 'UNPERSISTED');
+    assert.equal(output.failed, true);
+});
+
 test('a node without the requested property gives a refusal naming the properties it has', async () => {
     await assert.rejects(
         () => componentSet(new MemoryDriver(spriteScene()),

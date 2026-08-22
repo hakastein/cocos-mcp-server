@@ -142,7 +142,7 @@ all — it is the editor UI talking to its own extension, not the CLI talking to
 | `cli/src/node-placement.ts` | where a created node actually ended up, read off the scene's own node list: its path, its parent, and whether that parent is the one that was asked for — the scene root being read off the path, since a root node's parent is the scene itself |
 | `cli/src/prefab-linkage.ts` | the `type: 'cc.Prefab'` that separates a linked instance from a flat copy, and the two-sided linkage verdict (live node vs serializer) |
 | `cli/src/asset/` | the asset database, whole: the `db://` glob and the name/limit cut a listing takes (`query.ts`), the quiescence verdict every asset command waits on — snapshot fingerprint, `settled`, the asset and component-class deltas, `AssetReport` and `copiedAddress` (`settle.ts`), and the half that asks the editor — the reads, the tree snapshot and the `settleAssetDb` poll built on them (`db.ts`) |
-| `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`), the read side of a component dump — class selection, property rows, default comparison (`component-dump.ts`), uuid → scene name (`reference-index.ts`) and the spelling a reference value is written in — path, `db://` url or uuid (`reference-target.ts`) |
+| `cli/src/property/` | kind resolution (`kind.ts`), dump-value projection for read-back comparison (`readers.ts`, used by both neighbors below), the names one property answers to — the accessor and the backing field the serializer stores it under (`spelling.ts`), the writer cascade (`writers.ts`), the disk/serializer verified-write wrapper (`verified-write.ts`), the read side of a component dump — class selection, property rows, default comparison (`component-dump.ts`), uuid → scene name (`reference-index.ts`) and the spelling a reference value is written in — path, `db://` url or uuid (`reference-target.ts`) |
 | `cli/src/ecs/` | the ECS kit read off disk, no driver in either half: `census.ts` — the per-key sweep over the TypeScript parser's own syntax trees, moved from the MCP-era `source/ecs-census.ts` unchanged; `kit.ts` — the `db://assets` → directory mapping and the walk that feeds it, which follows the directory junction a shared kit is mounted into `assets/` by |
 | `cli/src/build-task.ts` | the builder's own vocabulary, kept because the editor's typings do not carry it: `BuildExitCode` (the builder answers 36 for a build that succeeded), `BUILD_PLATFORMS`, `describeTask`, and `settingConflicts` — which overrides would overwrite a Build-panel row's saved settings; plus `BuilderStatus` and `BuildRunReport`, the two shapes `render/build.ts` prints |
 | `cli/src/log/` | `{projectPath}/temp/logs/project.log`, no driver in any of the three: `entries.ts` — entry-level parsing, where the level is read from the line's own `- <level>:` field and continuation lines fold into the entry that owns them; `search.ts` — literal-by-default line search, where a blank pattern throws and regex is opt-in; `file.ts` — the read off disk, splitting the text on CRLF as well as LF because the editor writes CRLF |
@@ -187,6 +187,23 @@ every rotation as dropped). A node inside a prefab instance carries nothing of i
 file, so there the verdict comes from the instance's property overrides instead: `nodePrefabLinkage`
 up the parent chain for the instance root and the node's `fileId`, then `listPrefabOverrides` for a
 record naming that `fileId` and that stored property.
+
+A COMPONENT inside an instance is absent from the scene file the same way, and its verdict comes
+from `prefabInstancePropertyOutcome` instead — the prefab asset's value with the instance's property
+overrides laid on top. Two facts decide whether the override behind a write is found at all, both
+established live 2026-08-22 (PLY-22) after every such write had answered `UNPERSISTED`:
+
+- **The editor records an override under the SERIALIZER's name.** `component set --prop
+  shadowCastingMode` is answered by a record named `_shadowCastingMode`, so
+  `cli/src/property/verified-write.ts` asks the outcome under each spelling `property/spelling.ts`
+  gives — and takes the second spelling's answer only when it NAMES an override, because a spelling
+  that merely agrees with the asset has answered about itself rather than about what was written.
+- **`instance.targetMap` is empty on an instance the editor built in this session.** An override
+  names its target by a localID chain resolved through that map, and the engine fills it while
+  expanding an instance it DESERIALIZED; a freshly instantiated prefab carries `{}` and every
+  override resolves to `undefined`. `driver/src/scene/engine.ts` generates the map with the engine's
+  own `generateTargetMap`, which is what the next load does anyway, and `instanceTargets`/`targetIn`
+  are the one route to it — the target overrides in `scene/reference-write.ts` read it the same way.
 
 `cli/src/render/report.ts`'s `writeVerdict` turns a `WriteReport` into one of the five words below
 and `renderWriteReport` prints it — `persisted: null` prints as `unknown`, never as `false`, and

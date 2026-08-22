@@ -1,6 +1,7 @@
 import { isDumpDescriptor, resolveKind } from './kind.ts';
 import type { PropertyDescriptor, PropertyKind } from './kind.ts';
 import { projectValue } from './readers.ts';
+import { propertySpellings } from './spelling.ts';
 import { readBackMatches } from './writers.ts';
 
 /** One `__comps__` entry of the editor's node dump: the component shell plus its property map. */
@@ -196,11 +197,7 @@ export function descriptorOf(component: ComponentDump, property: string): Proper
  * the accessor itself is absent, the same fallback `commands/component.ts` reads a written value by.
  */
 export function findProperty(component: ComponentDump, property: string): PropertyReading | null {
-    const underscored = property.replace(/(^|\.)([^.]+)$/, '$1_$2');
-    const candidates = underscored === property || /(^|\.)_/.test(property)
-        ? [property]
-        : [property, underscored];
-    for (const name of candidates) {
+    for (const name of propertySpellings(property)) {
         const descriptor = descriptorOf(component, name);
         if (descriptor) return readDescriptor(name, descriptor);
     }

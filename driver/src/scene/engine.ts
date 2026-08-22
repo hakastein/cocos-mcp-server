@@ -182,21 +182,44 @@ export function enclosingPrefabInstance(node: any): any {
 }
 
 /**
- * The property overrides the instance records against one component's field, as the recorded path
- * plus its value. An override names its target by a localID resolved through the instance's own
- * targetMap, so a path alone answers for every component of the instance rather than for this one.
+ * What an override's localID chain names inside one instance, generated rather than read off
+ * `instance.targetMap`: the engine fills that one while EXPANDING an instance it deserialized, so on
+ * an instance the editor built in this session it is `{}` and every chain resolves to `undefined` —
+ * checked live 2026-08-22 on a freshly instantiated prefab. Generating it is what the next load does.
  */
-export function instanceOverridesFor(
-    instance: any, owner: any, property: string
-): Array<{ path: string[]; value: any }> {
+export function instanceTargets(instanceRoot: any): Record<string, any> | null {
     const cc = require('cc');
     const utils = cc.Prefab && (cc.Prefab as any)._utils;
+    if (!utils || typeof utils.getTarget !== 'function'
+        || typeof utils.generateTargetMap !== 'function') return null;
+    if (!instanceRoot || !instanceRoot._prefab || !instanceRoot._prefab.instance) return null;
+    const targets: Record<string, any> = {};
+    utils.generateTargetMap(instanceRoot, targets, true);
+    return targets;
+}
+
+export function targetIn(targets: Record<string, any> | null, localID: string[] | undefined): any {
+    const cc = require('cc');
+    const utils = cc.Prefab && (cc.Prefab as any)._utils;
+    return (targets && localID) ? utils.getTarget(localID, targets) : null;
+}
+
+/**
+ * The property overrides the instance records against one component's field, as the recorded path
+ * plus its value. An override names its target by a localID chain rather than by a path, so a path
+ * alone answers for every component of the instance rather than for this one.
+ */
+export function instanceOverridesFor(
+    instanceRoot: any, owner: any, property: string
+): Array<{ path: string[]; value: any }> {
+    const instance = instanceRoot && instanceRoot._prefab && instanceRoot._prefab.instance;
     const found: Array<{ path: string[]; value: any }> = [];
+    if (!instance) return found;
+    const targets = instanceTargets(instanceRoot);
     for (const override of instance.propertyOverrides || []) {
         const path = override.propertyPath;
         if (!override.targetInfo || !Array.isArray(path) || path[0] !== property) continue;
-        if (!utils || typeof utils.getTarget !== 'function' || !instance.targetMap) continue;
-        if (utils.getTarget(override.targetInfo.localID, instance.targetMap) !== owner) continue;
+        if (targetIn(targets, override.targetInfo.localID) !== owner) continue;
         found.push({ path: path.slice(), value: override.value });
     }
     return found;

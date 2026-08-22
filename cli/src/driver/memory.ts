@@ -655,6 +655,23 @@ export class MemoryDriver implements Driver {
                 }
             };
         }
+        const rebuilt: SceneResult<PrefabOverrideOutcome> = {
+            success: true,
+            data: { inPrefabInstance: true, known: true, carried: false, ...placed, uncovered: [property] }
+        };
+        const recorded = node.prefab.componentOverrides;
+        if (recorded) {
+            const paths = recorded[property];
+            return paths
+                ? {
+                    success: true,
+                    data: {
+                        inPrefabInstance: true, known: true, carried: true, ...placed,
+                        overridePaths: paths
+                    }
+                }
+                : rebuilt;
+        }
         return node.prefab.recordsOverrides
             ? {
                 success: true,
@@ -663,13 +680,7 @@ export class MemoryDriver implements Driver {
                     overridePaths: [`${cid}.${property}`]
                 }
             }
-            : {
-                success: true,
-                data: {
-                    inPrefabInstance: true, known: true, carried: false, ...placed,
-                    uncovered: [property]
-                }
-            };
+            : rebuilt;
     }
 
     /**
@@ -1140,6 +1151,8 @@ export interface MemoryPrefabInstance {
     readable?: boolean;
     /** Whether the editor records an override; without one the next load rebuilds the asset's value. */
     recordsOverrides?: boolean;
+    /** Override paths per component property, keyed the SERIALIZER's way: `color` is under `_color`. */
+    componentOverrides?: Record<string, string[]>;
     /** What `apply`/`revert` answer as `accepted`; `null` is the editor not saying either way. */
     syncAccepted?: boolean | null;
 }

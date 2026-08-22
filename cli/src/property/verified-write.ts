@@ -3,6 +3,7 @@ import {
 } from './writers.ts';
 import type { WriteTarget } from './writers.ts';
 import { projectValue } from './readers.ts';
+import { propertySpellings } from './spelling.ts';
 import { withUndoBracket } from '../undo-bracket.ts';
 import type {
     Driver, PrefabOverrideOutcome, SceneDirtyReport, SceneResult, SerializedValue, WriteReport
@@ -80,25 +81,42 @@ export async function withSerializerVerdict(
         `a save would not carry this write — the serializer emits ${mismatches.join('; ')}`);
 }
 
+async function overrideOutcome(
+    target: WriteTarget, cid: string, property: string, ctx: Driver
+): Promise<PrefabOverrideOutcome | string> {
+    let result: SceneResult<PrefabOverrideOutcome>;
+    try {
+        result = await ctx.scene.call('prefabInstancePropertyOutcome', target.nodeUuid, cid, property);
+    } catch (error) {
+        return `the prefab override behind this write was not read (${messageOf(error)})`;
+    }
+    if (!result || result.success !== true) {
+        return 'the prefab override behind this write was not read '
+            + `(${(result && result.error) || 'no answer'})`;
+    }
+    return result.data;
+}
+
 /**
- * A component inside a prefab instance is absent from the scene file: the next load rebuilds it
- * from the prefab asset and replays the instance's property overrides, so those are what decides
- * whether a save carries this write.
+ * A component inside a prefab instance is absent from the scene file: the next load rebuilds it from
+ * the asset and replays the overrides, which the editor records under the SERIALIZER's name — so a
+ * write spelled as the accessor has to look for its own override under the backing field too.
  */
 async function withOverrideVerdict(
     report: WriteReport, target: WriteTarget, cid: string, ctx: Driver
 ): Promise<WriteReport> {
-    let result: SceneResult<PrefabOverrideOutcome>;
-    try {
-        result = await ctx.scene.call('prefabInstancePropertyOutcome', target.nodeUuid, cid, target.propertyPath);
-    } catch (error) {
-        return addDetail(report, `the prefab override behind this write was not read (${messageOf(error)})`);
+    const spellings = propertySpellings(target.propertyPath);
+    const asked = await overrideOutcome(target, cid, spellings[0], ctx);
+    if (typeof asked === 'string') return addDetail(report, asked);
+
+    let outcome = asked;
+    for (const property of spellings.slice(1)) {
+        if (outcome.carried) break;
+        const stored = await overrideOutcome(target, cid, property, ctx);
+        // An override naming nothing says the serializer's spelling does not diverge from the asset,
+        // which answers about that spelling and not about the one the caller wrote.
+        if (typeof stored !== 'string' && stored.carried && stored.overridePaths.length) outcome = stored;
     }
-    if (!result || result.success !== true) {
-        return addDetail(report, 'the prefab override behind this write was not read '
-            + `(${(result && result.error) || 'no answer'})`);
-    }
-    const outcome = result.data;
     if (!outcome.inPrefabInstance || !outcome.known) {
         return addDetail(report, `the scene file carries none of this component's properties and `
             + `${outcome.reason || 'the prefab behind it could not be read'}, so a save carrying the value `
@@ -130,10 +148,7 @@ type SerializedLookup = { value: unknown } | { problem: string; inPrefabInstance
  * for the accessor name alone reports a property nothing carries.
  */
 async function serializedValue(target: WriteTarget, cid: string, ctx: Driver): Promise<SerializedLookup> {
-    const underscored = target.propertyPath.replace(/(^|\.)([^.]+)$/, '$1_$2');
-    const spellings = underscored === target.propertyPath || /(^|\.)_/.test(target.propertyPath)
-        ? [target.propertyPath]
-        : [target.propertyPath, underscored];
+    const spellings = propertySpellings(target.propertyPath);
 
     let problem = '';
     let inPrefabInstance = false;

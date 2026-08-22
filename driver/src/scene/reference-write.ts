@@ -5,8 +5,8 @@ import type { ReferenceOverride } from '@cocos-cli/shared';
 import type { SceneMethods } from '@cocos-cli/shared';
 import {
     componentClassName, ctorIsA, declaredPropertyCtor, enclosingPrefabInstance, fileIdIndex,
-    findComponentByUuid, findNodeByUuid, findNodeByUuidOrNull, instanceOverridesFor, prefabFileId,
-    requireActiveScene, serializedEntityUuid
+    findComponentByUuid, findNodeByUuid, findNodeByUuidOrNull, instanceOverridesFor, instanceTargets,
+    prefabFileId, requireActiveScene, serializedEntityUuid, targetIn
 } from './engine.ts';
 
 /**
@@ -36,12 +36,8 @@ function collectTargetOverrides(scene: any): Array<{ holder: any; override: any 
  * `getTarget` rather than a second reading of the fileId chain.
  */
 function resolveOverrideTarget(override: any): string | null {
-    const cc = require('cc');
-    const utils = cc.Prefab && (cc.Prefab as any)._utils;
-    if (!utils || typeof utils.getTarget !== 'function') return null;
-    const instance = override.target && override.target._prefab && override.target._prefab.instance;
-    if (!instance || !instance.targetMap || !override.targetInfo) return null;
-    const target = utils.getTarget(override.targetInfo.localID, instance.targetMap);
+    if (!override.targetInfo) return null;
+    const target = targetIn(instanceTargets(override.target), override.targetInfo.localID);
     return target ? target.uuid : null;
 }
 
@@ -52,11 +48,7 @@ function resolveOverrideTarget(override: any): string | null {
  */
 function overrideSource(override: any): any {
     if (!override.sourceInfo) return override.source;
-    const cc = require('cc');
-    const utils = cc.Prefab && (cc.Prefab as any)._utils;
-    const instance = override.source && override.source._prefab && override.source._prefab.instance;
-    if (!utils || typeof utils.getTarget !== 'function' || !instance || !instance.targetMap) return null;
-    return utils.getTarget(override.sourceInfo.localID, instance.targetMap);
+    return targetIn(instanceTargets(override.source), override.sourceInfo.localID);
 }
 
 /**
@@ -90,7 +82,6 @@ function referenceOverridesFor(
 function prefabInstanceReferenceSlots(
     instanceRoot: any, owner: any, property: string
 ): { known: boolean; slots: Array<string | null> } {
-    const instance = instanceRoot._prefab.instance;
     const asset = instanceRoot._prefab.asset;
     const ownerFileId = prefabFileId(owner);
     if (!asset || !asset.data || !ownerFileId) return { known: false, slots: [] };
@@ -110,7 +101,7 @@ function prefabInstanceReferenceSlots(
     const base = assetOwner[property];
     const slots: Array<string | null> = Array.isArray(base) ? base.map(translate) : [translate(base)];
 
-    for (const override of instanceOverridesFor(instance, owner, property)) {
+    for (const override of instanceOverridesFor(instanceRoot, owner, property)) {
         const path = override.path;
         const value = override.value;
         if (path.length === 1) {
